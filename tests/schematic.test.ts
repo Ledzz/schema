@@ -1,0 +1,180 @@
+import { describe, expect, it } from 'vitest';
+import { analyze } from '../src/lib/schematic/netlist';
+import { moveItems, rotateItems } from '../src/lib/schematic/ops';
+import { resolverFor } from '../src/lib/schematic/symbols';
+import { autoRoute, routePins, portRotationFor, simplify } from '../src/lib/schematic/route';
+import { worldPins, toWorld } from '../src/lib/schematic/geometry';
+import { nextDesignator, annotate } from '../src/lib/schematic/designators';
+import { comp, project } from './fixtures';
+import type { Vec } from '../src/lib/schematic/types';
+
+const resolve = resolverFor(project({}));
+
+describe('geometry', () => {
+  it('rotates counter-clockwise on screen and mirrors before rotating', () => {
+    expect(toWorld({ x: 100, y: 100, rotation: 90, mirror: false }, [20, 0])).toEqual([100, 80]);
+    expect(toWorld({ x: 0, y: 0, rotation: 0, mirror: true }, [20, 5])).toEqual([-20, 5]);
+  });
+
+  it('places pins in world space', () => {
+    const pins = worldPins(comp('r', 'res', 'R1', 100, 50, { rotation: 90 }), resolve('res'));
+    expect(pins.map((p) => p.at)).toEqual([
+      [100, 70],
+      [100, 30],
+    ]);
+  });
+});
+
+describe('connectivity', () => {
+  it('connects pins through wires and names nets from labels and power flags', () => {
+    // R1 pins at (-20,0),(20,0); R2 at (80,0),(120,0)
+    const p = project({
+      components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 100, 0)],
+      wires: [{ id: 'w1', points: [[20, 0], [80, 0]] }],
+      ports: [
+        { id: 'g', kind: 'ground', name: 'GND', x: -20, y: 0, rotation: 0 },
+        { id: 'l', kind: 'label', name: 'MID', x: 50, y: 0, rotation: 0 },
+      ],
+    });
+    const c = analyze(p, resolve);
+    const names = c.nets.map((n) => [n.name, n.members.map((m) => `${m.designator}.${m.pinNumber}`)]);
+    expect(names).toContainEqual(['MID', ['R1.2', 'R2.1']]);
+    expect(names).toContainEqual(['GND', ['R1.1']]);
+    expect(c.unconnected.map((u) => `${u.designator}.${u.pinNumber}`)).toEqual(['R2.2']);
+  });
+
+  it('joins same-named labels across the sheet', () => {
+    const p = project({
+      components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 0, 100)],
+      ports: [
+        { id: 'l1', kind: 'label', name: 'SDA', x: 20, y: 0, rotation: 0 },
+        { id: 'l2', kind: 'label', name: 'SDA', x: 20, y: 100, rotation: 0 },
+      ],
+    });
+    const sda = analyze(p, resolve).nets.find((n) => n.name === 'SDA');
+    expect(sda?.members.map((m) => m.designator)).toEqual(['R1', 'R2']);
+  });
+
+  it('connects T-junctions but not pins lying mid-wire, and draws junction dots', () => {
+    const p = project({
+      components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 60, 40, { rotation: 90 })],
+      // horizontal wire from R1.2 passes over R2's top pin end (60,20)? No: R2 pins at (60,60),(60,20)
+      wires: [
+        { id: 'w1', points: [[20, 0], [100, 0]] },
+        { id: 'w2', points: [[60, 0], [60, 20]] },
+      ],
+    });
+    const c = analyze(p, resolve);
+    const net = c.nets.find((n) => n.members.some((m) => m.designator === 'R2'));
+    expect(net?.members.map((m) => `${m.designator}.${m.pinNumber}`)).toEqual(['R1.2', 'R2.2']);
+    expect(c.junctions).toEqual([[60, 0]]);
+
+    const midWire = project({
+      components: [comp('a', 'res', 'R1', 0, 0)],
+      wires: [{ id: 'w', points: [[-40, 0], [40, 0]] }],
+    });
+    // Both pin ends lie in the middle of the wire: still unconnected.
+    expect(analyze(midWire, resolve).unconnected).toHaveLength(2);
+  });
+
+  it('reports duplicate and unannotated designators', () => {
+    const p = project({ components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R1', 100, 0), comp('c', 'res', 'R?', 200, 0)] });
+    const messages = analyze(p, resolve).issues.filter((i) => i.severity === 'error').map((i) => i.message);
+    expect(messages).toEqual(['Duplicate designator R1', 'R? is not annotated']);
+  });
+});
+
+describe('editing operations', () => {
+  const base = project({
+    components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 100, 0)],
+    wires: [{ id: 'w', points: [[20, 0], [80, 0]] }],
+  });
+
+  it('drags attached wire ends along and keeps them orthogonal', () => {
+    const moved = moveItems(base, new Set(['b']), 0, 30, resolve);
+    const w = moved.wires[0].points;
+    expect(w[0]).toEqual([20, 0]);
+    expect(w[w.length - 1]).toEqual([80, 30]);
+    for (let i = 1; i < w.length; i++) expect(w[i][0] === w[i - 1][0] || w[i][1] === w[i - 1][1]).toBe(true);
+    expect(analyze({ ...moved, ports: [] }, resolve).nets).toHaveLength(1);
+  });
+
+  it('moves whole wires when they are selected', () => {
+    const moved = moveItems(base, new Set(['a', 'b', 'w']), 10, 10, resolve);
+    expect(moved.wires[0].points).toEqual([
+      [30, 10],
+      [90, 10],
+    ]);
+  });
+
+  it('rotates a component in place and re-attaches its wire', () => {
+    const rotated = rotateItems(base, new Set(['b']), resolve);
+    expect(rotated.components[1].rotation).toBe(90);
+    const end = rotated.wires[0].points.at(-1)!;
+    const pins = worldPins(rotated.components[1], resolve('res')).map((p) => p.at);
+    expect(pins).toContainEqual(end);
+  });
+});
+
+describe('routing', () => {
+  it('connects facing pins with a straight wire', () => {
+    expect(routePins({ at: [20, 0], dir: [-1, 0] }, { at: [80, 0], dir: [1, 0] })).toEqual([
+      [20, 0],
+      [80, 0],
+    ]);
+  });
+
+  it('produces orthogonal routes otherwise', () => {
+    const pts = routePins({ at: [20, 0], dir: [-1, 0] }, { at: [80, 50], dir: [0, 1] });
+    for (let i = 1; i < pts.length; i++) expect(pts[i][0] === pts[i - 1][0] || pts[i][1] === pts[i - 1][1]).toBe(true);
+    expect(pts[0]).toEqual([20, 0]);
+    expect(pts.at(-1)).toEqual([80, 50]);
+  });
+
+  it('routes around component bodies and avoids other connection points', () => {
+    // Pin on the left side of a body that spans x 0..40, target to the right of the body.
+    const body = { x1: 0, y1: -20, x2: 40, y2: 20 };
+    const route = autoRoute({ at: [0, 0], dir: [1, 0] }, { at: [100, 0], dir: [1, 0] }, { boxes: [body], points: [[40, 0]], segments: [] });
+    expect(route).not.toBeNull();
+    const pts = route!;
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts.at(-1)).toEqual([100, 0]);
+    for (let i = 1; i < pts.length; i++) {
+      const [a, b] = [pts[i - 1], pts[i]];
+      expect(a[0] === b[0] || a[1] === b[1]).toBe(true);
+      // No segment passes through the body interior.
+      const midX = (a[0] + b[0]) / 2;
+      const midY = (a[1] + b[1]) / 2;
+      expect(midX > body.x1 && midX < body.x2 && midY > body.y1 && midY < body.y2).toBe(false);
+    }
+  });
+
+  it('simplifies collinear points', () => {
+    expect(simplify([[0, 0], [10, 0], [20, 0], [20, 0], [20, 10]] as Vec[])).toEqual([
+      [0, 0],
+      [20, 0],
+      [20, 10],
+    ]);
+  });
+
+  it('orients ports along a direction', () => {
+    expect(portRotationFor('label', [-1, 0])).toBe(180);
+    expect(portRotationFor('power', [0, -1])).toBe(0);
+    expect(portRotationFor('ground', [1, 0])).toBe(90);
+  });
+});
+
+describe('designators', () => {
+  it('fills the lowest gap', () => {
+    expect(nextDesignator('R', [{ designator: 'R1' }, { designator: 'R3' }, { designator: 'C2' }])).toBe('R2');
+  });
+
+  it('annotates by position', () => {
+    const names = annotate([comp('a', 'res', 'R7', 100, 0), comp('b', 'res', 'R2', 0, 0), comp('c', 'res', 'R9', 0, 200)]);
+    expect([...names.entries()]).toEqual([
+      ['b', 'R1'],
+      ['a', 'R2'],
+      ['c', 'R3'],
+    ]);
+  });
+});

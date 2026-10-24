@@ -1,0 +1,295 @@
+import { useEffect, useMemo, useRef } from 'react';
+import {
+  Bot,
+  Cable,
+  CircleOff,
+  FlipHorizontal2,
+  Maximize,
+  Moon,
+  MousePointer2,
+  PanelBottom,
+  Redo2,
+  RotateCcw,
+  Sun,
+  Tag,
+  Trash2,
+  Undo2,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import { useEditor, type Tool } from '../store/editor';
+import { useWebMcp } from '../store/webmcp';
+import { connectivity, downloadText, refreshStock, safeFileName } from '../lib/actions';
+import {
+  deleteSelection,
+  duplicateSelection,
+  exportSvg,
+  fitView,
+  mirrorSelection,
+  newProject,
+  openProjectFile,
+  reannotate,
+  rotateSelection,
+  saveProjectFile,
+  selectAll,
+  zoomBy,
+} from '../lib/editing';
+import { formatNetlist } from '../lib/schematic/netlist';
+import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
+import { focusLibrarySearch } from '../lib/libraryFocus';
+import { IconButton, MenuButton, cx } from './ui';
+
+const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+
+function PowerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+      <path d="M12 20V8M6 8h12" />
+    </svg>
+  );
+}
+function GroundIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+      <path d="M12 4v9M5 13h14M8 16.5h8M10.5 20h3" />
+    </svg>
+  );
+}
+
+export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | null> }) {
+  const name = useEditor((s) => s.project.name);
+  const theme = useEditor((s) => s.theme);
+  const canUndo = useEditor((s) => s.past.length > 0);
+  const canRedo = useEditor((s) => s.future.length > 0);
+  const status = useWebMcp((s) => s.status);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const s = useEditor.getState;
+
+  return (
+    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel px-2">
+      <div className="flex items-center gap-2 pl-1 pr-2">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-600 text-white">
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12h4l2-5 4 10 2-5h6" />
+          </svg>
+        </div>
+        <span className="text-sm font-semibold tracking-tight">Schematics</span>
+      </div>
+      <nav className="flex items-center">
+        <MenuButton
+          label="File"
+          items={[
+            { label: 'New schematic', onSelect: () => (s().project.components.length === 0 || confirm('Discard the current schematic?')) && newProject() },
+            { label: 'Open…', shortcut: `${mod}O`, onSelect: () => fileInput.current?.click() },
+            { label: 'Save to file', shortcut: `${mod}S`, onSelect: saveProjectFile },
+            {
+              label: 'Export BOM (JLCPCB CSV)',
+              separatorBefore: true,
+              onSelect: () => downloadText(`${safeFileName(s().project.name)}-BOM-JLCPCB.csv`, bomToJlcpcbCsv(buildBom(s().project.components)), 'text/csv'),
+            },
+            { label: 'Export netlist', onSelect: () => downloadText(`${safeFileName(s().project.name)}.net.txt`, formatNetlist(connectivity())) },
+            { label: 'Export SVG', onSelect: () => exportSvg(svgRef.current) },
+          ]}
+        />
+        <MenuButton
+          label="Edit"
+          items={[
+            { label: 'Undo', shortcut: `${mod}Z`, onSelect: () => s().undo(), disabled: !canUndo },
+            { label: 'Redo', shortcut: `${mod}⇧Z`, onSelect: () => s().redo(), disabled: !canRedo },
+            { label: 'Duplicate', shortcut: `${mod}D`, separatorBefore: true, onSelect: duplicateSelection },
+            { label: 'Rotate', shortcut: 'R', onSelect: rotateSelection },
+            { label: 'Mirror', shortcut: 'X', onSelect: mirrorSelection },
+            { label: 'Delete', shortcut: 'Del', onSelect: deleteSelection },
+            { label: 'Select all', shortcut: `${mod}A`, separatorBefore: true, onSelect: selectAll },
+          ]}
+        />
+        <MenuButton
+          label="Place"
+          items={[
+            { label: 'Part from library…', shortcut: '/', onSelect: focusLibrarySearch },
+            { label: 'Wire', shortcut: 'W', separatorBefore: true, onSelect: () => s().setTool('wire') },
+            { label: 'Net label', shortcut: 'N', onSelect: () => s().startPort('label') },
+            { label: 'Power flag', shortcut: 'P', onSelect: () => s().startPort('power') },
+            { label: 'Ground flag', shortcut: 'G', onSelect: () => s().startPort('ground') },
+            { label: 'No-connect flag', shortcut: 'Q', onSelect: () => s().startPort('noconnect') },
+          ]}
+        />
+        <MenuButton
+          label="View"
+          items={[
+            { label: 'Zoom to fit', shortcut: 'F', onSelect: () => fitView() },
+            { label: 'Zoom in', shortcut: '+', onSelect: () => zoomBy(1.25) },
+            { label: 'Zoom out', shortcut: '−', onSelect: () => zoomBy(0.8) },
+            { label: 'Toggle library', shortcut: 'L', separatorBefore: true, onSelect: () => s().setLibraryOpen(!s().libraryOpen) },
+            { label: theme === 'dark' ? 'Light theme' : 'Dark theme', onSelect: () => s().toggleTheme() },
+          ]}
+        />
+        <MenuButton
+          label="Tools"
+          items={[
+            { label: 'Re-annotate designators', onSelect: reannotate },
+            { label: 'Refresh stock & part types', onSelect: () => refreshStock().then((n) => s().notify(`Updated ${n} parts`)) },
+            { label: 'Design check', onSelect: () => s().setLeftTab('check') },
+            { label: 'Agent tools (WebMCP)', separatorBefore: true, onSelect: () => s().setRightTab('agent') },
+          ]}
+        />
+      </nav>
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) openProjectFile(f);
+          e.target.value = '';
+        }}
+      />
+      <div className="mx-auto flex min-w-0 items-center">
+        <input
+          value={name}
+          onChange={(e) => s().renameProject(e.target.value)}
+          aria-label="Project name"
+          className="w-56 truncate rounded-md bg-transparent px-2 py-1 text-center text-[13px] font-medium outline-none hover:bg-black/5 focus:bg-panel-2 focus:ring-2 focus:ring-indigo-500/30 dark:hover:bg-white/5"
+        />
+      </div>
+      <div className="flex items-center gap-1">
+        <IconButton label="Undo" shortcut={`${mod}Z`} onClick={() => s().undo()} disabled={!canUndo}>
+          <Undo2 className="h-4 w-4" />
+        </IconButton>
+        <IconButton label="Redo" shortcut={`${mod}⇧Z`} onClick={() => s().redo()} disabled={!canRedo}>
+          <Redo2 className="h-4 w-4" />
+        </IconButton>
+        <div className="mx-1 h-5 w-px bg-[var(--line)]" />
+        <button
+          onClick={() => s().setRightTab('agent')}
+          title={status?.api ? `WebMCP: ${status.registered.length} tools registered via ${status.api}` : 'WebMCP not detected in this browser'}
+          className={cx(
+            'inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs',
+            status?.api ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-300' : 'border-line text-muted',
+          )}
+        >
+          <Bot className="h-3.5 w-3.5" />
+          WebMCP
+          <span className={cx('h-1.5 w-1.5 rounded-full', status?.api ? 'bg-emerald-500' : 'bg-zinc-400')} />
+        </button>
+        <IconButton label={theme === 'dark' ? 'Light theme' : 'Dark theme'} onClick={() => s().toggleTheme()}>
+          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </IconButton>
+      </div>
+    </header>
+  );
+}
+
+const TOOLS: { tool: Tool; label: string; key: string; icon: React.ReactNode }[] = [
+  { tool: 'select', label: 'Select', key: 'Esc', icon: <MousePointer2 className="h-4 w-4" /> },
+  { tool: 'wire', label: 'Wire', key: 'W', icon: <Cable className="h-4 w-4" /> },
+  { tool: 'label', label: 'Net label', key: 'N', icon: <Tag className="h-4 w-4" /> },
+  { tool: 'power', label: 'Power flag', key: 'P', icon: <PowerIcon /> },
+  { tool: 'ground', label: 'Ground flag', key: 'G', icon: <GroundIcon /> },
+  { tool: 'noconnect', label: 'No-connect flag', key: 'Q', icon: <CircleOff className="h-4 w-4" /> },
+];
+
+export function ToolRail() {
+  const tool = useEditor((s) => s.tool);
+  const libraryOpen = useEditor((s) => s.libraryOpen);
+  const hasSelection = useEditor((s) => s.selection.length > 0);
+  const s = useEditor.getState;
+  return (
+    <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="Tools">
+      {TOOLS.map((t) => (
+        <IconButton
+          key={t.tool}
+          label={t.label}
+          shortcut={t.key}
+          active={tool === t.tool}
+          onClick={() => (t.tool === 'select' || t.tool === 'wire' ? s().setTool(t.tool) : s().startPort(t.tool as 'label'))}
+        >
+          {t.icon}
+        </IconButton>
+      ))}
+      <div className="my-1 h-px w-6 bg-[var(--line)]" />
+      <IconButton label="Rotate" shortcut="R" onClick={rotateSelection} disabled={!hasSelection && tool === 'select'}>
+        <RotateCcw className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Mirror" shortcut="X" onClick={mirrorSelection} disabled={!hasSelection && tool !== 'place'}>
+        <FlipHorizontal2 className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Delete" shortcut="Del" onClick={deleteSelection} disabled={!hasSelection}>
+        <Trash2 className="h-4 w-4" />
+      </IconButton>
+      <div className="mt-auto flex flex-col items-center gap-1">
+        <IconButton label="Zoom in" shortcut="+" onClick={() => zoomBy(1.25)}>
+          <ZoomIn className="h-4 w-4" />
+        </IconButton>
+        <IconButton label="Zoom out" shortcut="−" onClick={() => zoomBy(0.8)}>
+          <ZoomOut className="h-4 w-4" />
+        </IconButton>
+        <IconButton label="Zoom to fit" shortcut="F" onClick={() => fitView()}>
+          <Maximize className="h-4 w-4" />
+        </IconButton>
+        <IconButton label="Parts library" shortcut="L" active={libraryOpen} onClick={() => s().setLibraryOpen(!libraryOpen)}>
+          <PanelBottom className="h-4 w-4" />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
+const TOOL_HINT: Record<Tool, string> = {
+  select: 'Click to select · drag to move · drag empty space to box-select',
+  wire: 'Click to add corners · click a pin or wire to finish · double-click / right-click ends',
+  label: 'Click a wire or pin to drop the label · R rotates',
+  power: 'Click to place a power flag · R rotates',
+  ground: 'Click to place a ground flag · R rotates',
+  noconnect: 'Click a pin to mark it as not connected',
+  place: 'Click to place · R rotate · X mirror · Esc to stop',
+};
+
+export function StatusBar() {
+  const cursor = useEditor((s) => s.cursor);
+  const zoom = useEditor((s) => s.view.zoom);
+  const tool = useEditor((s) => s.tool);
+  const project = useEditor((s) => s.project);
+  const conn = useMemo(() => connectivity(project), [project]);
+  const errors = conn.issues.filter((i) => i.severity === 'error').length;
+  const warnings = conn.issues.length - errors;
+  return (
+    <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-panel px-3 text-[11px] text-muted">
+      <span className="tabular w-28">
+        X {cursor[0]} · Y {cursor[1]}
+      </span>
+      <span className="tabular w-12">{Math.round(zoom * 40)}%</span>
+      <span className="truncate">{TOOL_HINT[tool]}</span>
+      <button className="ml-auto hover:text-[var(--text)]" onClick={() => useEditor.getState().setLeftTab('check')}>
+        {errors > 0 && <span className="text-rose-500">{errors} errors · </span>}
+        {warnings} warnings
+      </button>
+      <span>
+        {project.components.length} parts · {conn.nets.length} nets
+      </span>
+    </footer>
+  );
+}
+
+export function Toast() {
+  const toast = useEditor((s) => s.toast);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => useEditor.setState({ toast: null }), 3200);
+    return () => clearTimeout(t);
+  }, [toast]);
+  if (!toast) return null;
+  return (
+    <div
+      key={toast.id}
+      role="status"
+      className={cx(
+        'toast-in pointer-events-none fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-lg border px-3 py-2 text-xs shadow-xl',
+        toast.tone === 'error' ? 'border-rose-500/40 bg-rose-950 text-rose-100' : 'border-line bg-panel',
+      )}
+    >
+      {toast.message}
+    </div>
+  );
+}

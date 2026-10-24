@@ -1,0 +1,264 @@
+import { create } from 'zustand';
+import { newId, type Doc } from '../lib/schematic/ops';
+import type { Component, NetPort, PortKind, Project, Rotation, Vec } from '../lib/schematic/types';
+import type { PartClass } from '../shared/parts';
+
+export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
+
+export interface Placing {
+  symbolKey: string;
+  prefix: string;
+  template: Omit<Component, 'id' | 'x' | 'y' | 'designator'>;
+}
+
+export interface PortTemplate {
+  kind: PortKind;
+  name: string;
+  rotation: Rotation;
+}
+
+export interface View {
+  /** screen = world * zoom + (x, y) */
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface AgentLogEntry {
+  id: string;
+  at: number;
+  tool: string;
+  input: unknown;
+  ok: boolean;
+  summary: string;
+}
+
+export type LeftTab = 'project' | 'bom' | 'check';
+export type RightTab = 'properties' | 'agent';
+
+const HISTORY_LIMIT = 200;
+const STORAGE_KEY = 'schematics:project';
+
+export function emptyProject(name = 'Untitled'): Project {
+  return { version: 1, id: newId('prj'), name, updatedAt: Date.now(), components: [], wires: [], ports: [], symbols: {} };
+}
+
+function loadProject(): Project {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Project;
+      if (p.version === 1 && Array.isArray(p.components)) return p;
+    }
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return emptyProject();
+}
+
+const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols });
+
+interface EditorState {
+  project: Project;
+  past: Doc[];
+  future: Doc[];
+  /** Document before the current drag/transient edit started. */
+  transientBase: Doc | null;
+  selection: string[];
+  tool: Tool;
+  placing: Placing | null;
+  portTemplate: PortTemplate;
+  placementRotation: Rotation;
+  placementMirror: boolean;
+  view: View;
+  canvasSize: { width: number; height: number };
+  cursor: Vec;
+  wireDraft: Vec[] | null;
+  theme: 'dark' | 'light';
+  libraryOpen: boolean;
+  libraryHeight: number;
+  leftTab: LeftTab;
+  rightTab: RightTab;
+  /** Set to drive the library panel from elsewhere (inspector "replace", agent tools…). */
+  libraryRequest: { q: string; nonce: number; replaceId?: string; types?: PartClass[] } | null;
+  highlightNet: string | null;
+  agentLog: AgentLogEntry[];
+  toast: { id: number; message: string; tone: 'info' | 'error' } | null;
+
+  commit: (fn: (doc: Doc) => Doc) => void;
+  beginTransient: () => void;
+  updateTransient: (fn: (base: Doc) => Doc) => void;
+  endTransient: () => void;
+  undo: () => void;
+  redo: () => void;
+  addSymbols: (symbols: Project['symbols']) => void;
+  loadProject: (p: Project) => void;
+  renameProject: (name: string) => void;
+  setTool: (tool: Tool) => void;
+  startPlacing: (placing: Placing) => void;
+  startPort: (kind: PortKind, name?: string) => void;
+  setPortTemplate: (patch: Partial<PortTemplate>) => void;
+  rotatePlacement: () => void;
+  mirrorPlacement: () => void;
+  setSelection: (ids: string[]) => void;
+  setView: (view: View) => void;
+  setCanvasSize: (size: { width: number; height: number }) => void;
+  setCursor: (p: Vec) => void;
+  setWireDraft: (draft: Vec[] | null) => void;
+  toggleTheme: () => void;
+  setLibraryOpen: (open: boolean) => void;
+  setLibraryHeight: (h: number) => void;
+  setLeftTab: (t: LeftTab) => void;
+  setRightTab: (t: RightTab) => void;
+  requestLibrary: (q: string, replaceId?: string, types?: PartClass[]) => void;
+  setHighlightNet: (net: string | null) => void;
+  logAgent: (entry: Omit<AgentLogEntry, 'id' | 'at'>) => void;
+  notify: (message: string, tone?: 'info' | 'error') => void;
+  updateComponent: (id: string, patch: Partial<Component>) => void;
+  updatePort: (id: string, patch: Partial<NetPort>) => void;
+}
+
+const initialTheme = (): 'dark' | 'light' => {
+  try {
+    const t = localStorage.getItem('schematics:theme');
+    if (t === 'dark' || t === 'light') return t;
+  } catch {
+    /* ignore */
+  }
+  return 'dark';
+};
+
+let toastId = 0;
+
+export const useEditor = create<EditorState>()((set, get) => ({
+  project: loadProject(),
+  past: [],
+  future: [],
+  transientBase: null,
+  selection: [],
+  tool: 'select',
+  placing: null,
+  portTemplate: { kind: 'label', name: 'NET1', rotation: 0 },
+  placementRotation: 0,
+  placementMirror: false,
+  view: { x: 400, y: 260, zoom: 2.5 },
+  canvasSize: { width: 800, height: 520 },
+  cursor: [0, 0],
+  wireDraft: null,
+  theme: initialTheme(),
+  libraryOpen: true,
+  libraryHeight: 360,
+  leftTab: 'project',
+  rightTab: 'properties',
+  libraryRequest: null,
+  highlightNet: null,
+  agentLog: [],
+  toast: null,
+
+  commit: (fn) => {
+    const { project, past } = get();
+    const before = docOf(project);
+    const after = fn(before);
+    if (after === before) return;
+    const ids = new Set([...after.components, ...after.wires, ...after.ports].map((i) => i.id));
+    set({
+      project: { ...project, ...after, updatedAt: Date.now() },
+      past: [...past.slice(-HISTORY_LIMIT + 1), before],
+      future: [],
+      selection: get().selection.filter((id) => ids.has(id)),
+    });
+  },
+
+  beginTransient: () => set({ transientBase: docOf(get().project) }),
+  updateTransient: (fn) => {
+    const base = get().transientBase;
+    if (!base) return;
+    set({ project: { ...get().project, ...fn(base) } });
+  },
+  endTransient: () => {
+    const { transientBase, project, past } = get();
+    if (!transientBase) return;
+    const changed =
+      transientBase.components !== project.components || transientBase.wires !== project.wires || transientBase.ports !== project.ports;
+    set({
+      transientBase: null,
+      ...(changed ? { past: [...past.slice(-HISTORY_LIMIT + 1), transientBase], future: [], project: { ...project, updatedAt: Date.now() } } : {}),
+    });
+  },
+
+  undo: () => {
+    const { past, future, project } = get();
+    const prev = past[past.length - 1];
+    if (!prev) return;
+    // Symbols are an append-only cache, so history never removes them.
+    const symbols = { ...prev.symbols, ...project.symbols };
+    set({ project: { ...project, ...prev, symbols, updatedAt: Date.now() }, past: past.slice(0, -1), future: [docOf(project), ...future], selection: [] });
+  },
+  redo: () => {
+    const { past, future, project } = get();
+    const next = future[0];
+    if (!next) return;
+    const symbols = { ...next.symbols, ...project.symbols };
+    set({ project: { ...project, ...next, symbols, updatedAt: Date.now() }, past: [...past, docOf(project)], future: future.slice(1), selection: [] });
+  },
+  addSymbols: (symbols) => set({ project: { ...get().project, symbols: { ...get().project.symbols, ...symbols } } }),
+
+  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], tool: 'select', placing: null }),
+  renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
+
+  setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null }),
+  startPlacing: (placing) => set({ tool: 'place', placing, placementRotation: 0, placementMirror: false, selection: [] }),
+  startPort: (kind, name) => {
+    const defaults: Record<PortKind, string> = { label: get().portTemplate.name || 'NET1', power: 'VCC', ground: 'GND', noconnect: '' };
+    set({ tool: kind, placing: null, portTemplate: { kind, name: name ?? defaults[kind], rotation: 0 } });
+  },
+  setPortTemplate: (patch) => set({ portTemplate: { ...get().portTemplate, ...patch } }),
+  rotatePlacement: () => {
+    const { tool } = get();
+    if (tool === 'place') set({ placementRotation: (((get().placementRotation + 90) % 360) as Rotation) });
+    else set({ portTemplate: { ...get().portTemplate, rotation: (((get().portTemplate.rotation + 90) % 360) as Rotation) } });
+  },
+  mirrorPlacement: () => set({ placementMirror: !get().placementMirror }),
+
+  setSelection: (selection) => set({ selection }),
+  setView: (view) => set({ view }),
+  setCanvasSize: (canvasSize) => set({ canvasSize }),
+  setCursor: (cursor) => set({ cursor }),
+  setWireDraft: (wireDraft) => set({ wireDraft }),
+  toggleTheme: () => {
+    const theme = get().theme === 'dark' ? 'light' : 'dark';
+    try {
+      localStorage.setItem('schematics:theme', theme);
+    } catch {
+      /* ignore */
+    }
+    set({ theme });
+  },
+  setLibraryOpen: (libraryOpen) => set({ libraryOpen }),
+  setLibraryHeight: (libraryHeight) => set({ libraryHeight: Math.min(Math.max(libraryHeight, 180), window.innerHeight - 160) }),
+  setLeftTab: (leftTab) => set({ leftTab }),
+  setRightTab: (rightTab) => set({ rightTab }),
+  requestLibrary: (q, replaceId, types) => set({ libraryOpen: true, libraryRequest: { q, nonce: Date.now(), replaceId, types } }),
+  setHighlightNet: (highlightNet) => set({ highlightNet }),
+  logAgent: (entry) =>
+    set({ agentLog: [{ ...entry, id: newId('log'), at: Date.now() }, ...get().agentLog].slice(0, 100) }),
+  notify: (message, tone = 'info') => set({ toast: { id: ++toastId, message, tone } }),
+
+  updateComponent: (id, patch) =>
+    get().commit((doc) => ({ ...doc, components: doc.components.map((c) => (c.id === id ? { ...c, ...patch } : c)) })),
+  updatePort: (id, patch) => get().commit((doc) => ({ ...doc, ports: doc.ports.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
+}));
+
+// Autosave the current project.
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+useEditor.subscribe((state, prev) => {
+  if (state.project === prev.project || state.transientBase) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(useEditor.getState().project));
+    } catch {
+      useEditor.getState().notify('Could not autosave: browser storage is full or unavailable', 'error');
+    }
+  }, 400);
+});

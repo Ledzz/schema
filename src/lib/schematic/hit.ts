@@ -1,0 +1,93 @@
+import type { Box } from '../easyeda/symbol';
+import { boxContains, boxIntersects, componentBox, distToSegment, normBox, rotate, samePoint, worldPins } from './geometry';
+import type { SymbolResolver } from './symbols';
+import type { NetPort, Project, Vec } from './types';
+
+type Doc = Pick<Project, 'components' | 'wires' | 'ports'>;
+
+export function portBox(p: NetPort): Box {
+  if (p.kind === 'noconnect') return { x1: p.x - 4, y1: p.y - 4, x2: p.x + 4, y2: p.y + 4 };
+  if (p.kind === 'label') {
+    const w = Math.max(p.name.length * 4.2 + 4, 10) + 3;
+    switch (p.rotation) {
+      case 90:
+        return { x1: p.x - 5, y1: p.y - w, x2: p.x + 5, y2: p.y };
+      case 180:
+        return { x1: p.x - w, y1: p.y - 5, x2: p.x, y2: p.y + 5 };
+      case 270:
+        return { x1: p.x - 5, y1: p.y, x2: p.x + 5, y2: p.y + w };
+      default:
+        return { x1: p.x, y1: p.y - 5, x2: p.x + w, y2: p.y + 5 };
+    }
+  }
+  const corners: Vec[] = p.kind === 'power' ? [[-7, -14], [7, 0]] : [[-7, 0], [7, 16]];
+  const [a, b] = corners.map((c) => rotate(c, p.rotation));
+  return normBox([a[0] + p.x, a[1] + p.y], [b[0] + p.x, b[1] + p.y]);
+}
+
+/** Topmost item under a world point. */
+export function hitTest(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number): string | null {
+  for (let i = doc.ports.length - 1; i >= 0; i--) if (boxContains(portBox(doc.ports[i]), p, tol / 2)) return doc.ports[i].id;
+  for (let i = doc.wires.length - 1; i >= 0; i--) {
+    const w = doc.wires[i];
+    for (let k = 1; k < w.points.length; k++) if (distToSegment(p, w.points[k - 1], w.points[k]) <= tol) return w.id;
+  }
+  for (let i = doc.components.length - 1; i >= 0; i--) {
+    const c = doc.components[i];
+    if (boxContains(componentBox(c, symbols(c.symbolKey)), p, 1)) return c.id;
+  }
+  return null;
+}
+
+export function itemsInBox(doc: Doc, symbols: SymbolResolver, box: Box): string[] {
+  const ids: string[] = [];
+  for (const c of doc.components) if (boxIntersects(componentBox(c, symbols(c.symbolKey)), box)) ids.push(c.id);
+  for (const w of doc.wires) if (w.points.some((pt) => boxContains(box, pt))) ids.push(w.id);
+  for (const p of doc.ports) if (boxContains(box, [p.x, p.y])) ids.push(p.id);
+  return ids;
+}
+
+export interface ConnectionPoint {
+  at: Vec;
+  kind: 'pin' | 'wire-end' | 'wire' | 'port';
+  label?: string;
+  /** `${componentId}:${pinId}` for pins, the item id otherwise. */
+  ref?: string;
+}
+
+/** Nearest electrical connection point (pin end, wire, port anchor) within `tol`. */
+export function connectionNear(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number): ConnectionPoint | null {
+  let best: ConnectionPoint | null = null;
+  let bestD = tol;
+  const consider = (at: Vec, kind: ConnectionPoint['kind'], ref: string, label?: string) => {
+    const d = Math.hypot(at[0] - p[0], at[1] - p[1]);
+    if (d <= bestD) {
+      bestD = d;
+      best = { at, kind, label, ref };
+    }
+  };
+  for (const c of doc.components) {
+    for (const wp of worldPins(c, symbols(c.symbolKey))) {
+      const name = wp.pin.name && wp.pin.name !== wp.pin.number ? ` (${wp.pin.name})` : '';
+      consider(wp.at, 'pin', `${c.id}:${wp.pin.id}`, `${c.designator} pin ${wp.pin.number}${name}`);
+    }
+  }
+  for (const port of doc.ports) if (port.kind !== 'noconnect') consider([port.x, port.y], 'port', port.id, port.name);
+  for (const w of doc.wires) {
+    consider(w.points[0], 'wire-end', w.id);
+    consider(w.points[w.points.length - 1], 'wire-end', w.id);
+  }
+  if (best) return best;
+  // Points on a wire, snapped to the grid along the segment.
+  for (const w of doc.wires) {
+    for (let k = 1; k < w.points.length; k++) {
+      const a = w.points[k - 1];
+      const b = w.points[k];
+      if (distToSegment(p, a, b) <= tol) {
+        const at: Vec = a[0] === b[0] ? [a[0], Math.round(p[1] / 5) * 5] : a[1] === b[1] ? [Math.round(p[0] / 5) * 5, a[1]] : p;
+        if (distToSegment(at, a, b) < 0.01 || samePoint(at, a) || samePoint(at, b)) return { at, kind: 'wire', ref: w.id };
+      }
+    }
+  }
+  return null;
+}
