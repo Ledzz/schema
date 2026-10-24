@@ -16,6 +16,10 @@ import {
 import { moveItems } from '../lib/schematic/ops';
 import { resolverFor } from '../lib/schematic/symbols';
 import { focusLibrarySearch } from '../lib/libraryFocus';
+import { startPassive } from '../lib/passives';
+import type { PassiveKind } from '../shared/passives';
+
+const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
 
 const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
@@ -47,7 +51,19 @@ export function useShortcuts() {
         return;
       }
 
+      if (e.shiftKey && PASSIVE_KEYS[key]) {
+        e.preventDefault();
+        startPassive(PASSIVE_KEYS[key]);
+        return;
+      }
+
       switch (key) {
+        case 'enter': {
+          const id = s.selection.length >= 1 ? s.selection.find((x) => s.project.components.find((c) => c.id === x)?.generic) : undefined;
+          if (!id) return;
+          s.setQuickEdit(id);
+          break;
+        }
         case 'escape':
           if (s.wireDraft) finishWireDraft();
           else if (s.tool !== 'select') s.setTool('select');

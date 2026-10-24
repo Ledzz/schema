@@ -38,6 +38,8 @@ import { formatNetlist } from '../lib/schematic/netlist';
 import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
+import { startPassive } from '../lib/passives';
+import { PASSIVES, type PassiveKind } from '../shared/passives';
 
 const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
@@ -107,6 +109,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           label="Place"
           items={[
             { label: 'Part from library…', shortcut: '/', onSelect: focusLibrarySearch },
+            ...PASSIVE_TOOLS.map((t, i) => ({ label: PASSIVES[t.kind].label, shortcut: t.key, separatorBefore: i === 0, onSelect: () => startPassive(t.kind) })),
             { label: 'Wire', shortcut: 'W', separatorBefore: true, onSelect: () => s().setTool('wire') },
             { label: 'Net label', shortcut: 'N', onSelect: () => s().startPort('label') },
             { label: 'Power flag', shortcut: 'P', onSelect: () => s().startPort('power') },
@@ -190,13 +193,29 @@ const TOOLS: { tool: Tool; label: string; key: string; icon: React.ReactNode }[]
   { tool: 'noconnect', label: 'No-connect flag', key: 'Q', icon: <CircleOff className="h-4 w-4" /> },
 ];
 
+const svgIcon = (d: string) => (
+  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+
+export const PASSIVE_TOOLS: { kind: PassiveKind; key: string; icon: React.ReactNode }[] = [
+  { kind: 'resistor', key: '⇧R', icon: svgIcon('M2 12h4M18 12h4M6 9h12v6H6z') },
+  { kind: 'capacitor', key: '⇧C', icon: svgIcon('M2 12h8M14 12h8M10 6v12M14 6v12') },
+  { kind: 'inductor', key: '⇧L', icon: svgIcon('M2 14h2a2.5 2.5 0 0 1 5 0a2.5 2.5 0 0 1 5 0a2.5 2.5 0 0 1 5 0h3') },
+  { kind: 'ferrite', key: '⇧F', icon: svgIcon('M2 12h5M17 12h5M7 15l3-6h7l-3 6z') },
+  { kind: 'diode', key: '⇧D', icon: svgIcon('M2 12h6M16 12h6M8 7v10l8-5zM16 7v10') },
+  { kind: 'led', key: '⇧E', icon: svgIcon('M2 13h5M15 13h7M7 8v10l8-5zM15 8v10M14 6l3-3M17 7l3-3') },
+];
+
 export function ToolRail() {
   const tool = useEditor((s) => s.tool);
+  const placingKind = useEditor((s) => s.placing?.template.generic?.kind);
   const libraryOpen = useEditor((s) => s.libraryOpen);
   const hasSelection = useEditor((s) => s.selection.length > 0);
   const s = useEditor.getState;
   return (
-    <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="Tools">
+    <div className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="Tools">
       {TOOLS.map((t) => (
         <IconButton
           key={t.tool}
@@ -205,6 +224,12 @@ export function ToolRail() {
           active={tool === t.tool}
           onClick={() => (t.tool === 'select' || t.tool === 'wire' ? s().setTool(t.tool) : s().startPort(t.tool as 'label'))}
         >
+          {t.icon}
+        </IconButton>
+      ))}
+      <div className="my-1 h-px w-6 bg-[var(--line)]" />
+      {PASSIVE_TOOLS.map((t) => (
+        <IconButton key={t.kind} label={PASSIVES[t.kind].label} shortcut={t.key} active={tool === 'place' && placingKind === t.kind} onClick={() => startPassive(t.kind)}>
           {t.icon}
         </IconButton>
       ))}

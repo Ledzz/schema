@@ -16,6 +16,7 @@ import {
   designatorPrefix,
   findPin,
   markNoConnect,
+  nextFreePosition,
   placePartAt,
   replacePart,
 } from './actions';
@@ -27,6 +28,8 @@ import { symbolFor } from './schematic/symbols';
 import type { Component, Rotation } from './schematic/types';
 import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
+import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
+import { assignPassive, placePassiveAt } from './passives';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -65,6 +68,7 @@ function componentInfo(c: Component, withPins = true) {
     part_type: c.partClass ?? null,
     mpn: c.attrs['Manufacturer Part'] ?? null,
     package: c.attrs['Package'] ?? null,
+    generic: c.generic ? `${c.generic.kind} ${c.generic.size}` : undefined,
     x: c.x,
     y: c.y,
     rotation: c.rotation,
@@ -194,6 +198,58 @@ export const TOOLS: ToolDefinition[] = [
       });
       st().setSelection([c.id]);
       return componentInfo(c);
+    },
+  },
+  {
+    name: 'place_passive',
+    title: 'Place resistor / capacitor / …',
+    description:
+      'Place a generic passive by value and size; the cheapest-to-assemble in-stock JLCPCB part is matched automatically (basic first, then preferred, then extended). Values accept forms like "10k", "4k7", "100n", "0.1u", "10u 16V", "22uH"; LEDs take a colour, diodes a part number (e.g. "SS34").',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: PASSIVE_KINDS },
+        value: { type: 'string' },
+        size: { type: 'string', description: 'Imperial chip size ("0402", "0603", "0805", "1206") or diode package ("SOD-123", "SMA").' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        rotation: { type: 'integer', enum: [0, 90, 180, 270] },
+        designator: { type: 'string' },
+      },
+      required: ['kind', 'value'],
+    },
+    execute: async (input) => {
+      const kind = input.kind as PassiveKind;
+      if (!PASSIVE_KINDS.includes(kind)) throw new Error(`kind must be one of ${PASSIVE_KINDS.join(', ')}`);
+      const size = input.size ? String(input.size) : PASSIVES[kind].defaultSize;
+      const at: [number, number] = input.x !== undefined && input.y !== undefined ? [Number(input.x), Number(input.y)] : nextFreePosition();
+      const { component, match } = await placePassiveAt(kind, String(input.value), size, at, asRotation(input.rotation), input.designator ? String(input.designator) : undefined);
+      st().setSelection([component.id]);
+      return { ...componentInfo(component), match_error: match?.error ?? (match?.candidates.length ? undefined : 'No in-stock JLCPCB part found; component left unassigned') };
+    },
+  },
+  {
+    name: 'set_passive',
+    title: 'Change passive value / size',
+    description: 'Change the value and/or size of placed generic passives (resistors, capacitors, …) and re-match their JLCPCB part.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        designators: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        value: { type: 'string' },
+        size: { type: 'string' },
+      },
+      required: ['designators'],
+    },
+    execute: async (input) => {
+      const list = (input.designators as string[]).map(byDesignator);
+      const bad = list.filter((c) => !c.generic).map((c) => c.designator);
+      if (bad.length) throw new Error(`${bad.join(', ')} are not generic passives; use replace_part instead`);
+      await assignPassive(
+        list.map((c) => c.id),
+        { value: input.value === undefined ? undefined : String(input.value), size: input.size === undefined ? undefined : String(input.size) },
+      );
+      return { components: list.map((c) => componentInfo(st().project.components.find((x) => x.id === c.id)!, false)) };
     },
   },
   {

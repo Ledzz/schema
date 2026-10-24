@@ -12,6 +12,9 @@ import { resolverFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, Vec } from '../../lib/schematic/types';
 import { ComponentGraphic, PortGraphic } from './graphics';
 import { Kbd } from '../ui';
+import { QuickEdit } from '../passives/QuickEdit';
+import { PassiveEditor } from '../passives/PassiveEditor';
+import { pickPlacingPart, updatePlacingPassive } from '../../lib/passives';
 
 type Interaction =
   | { mode: 'none' }
@@ -240,8 +243,12 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     else if (s.tool !== 'select') s.setTool('select');
   };
 
-  const onDoubleClick = () => {
-    if (useEditor.getState().tool === 'wire') finishWireDraft();
+  const onDoubleClick = (e: React.MouseEvent) => {
+    const s = useEditor.getState();
+    if (s.tool === 'wire') return finishWireDraft();
+    if (s.tool !== 'select') return;
+    const id = hitTest(project, symbols, toWorld(e.clientX, e.clientY), tolerance());
+    if (id && project.components.find((c) => c.id === id)?.generic) s.setQuickEdit(id);
   };
 
   // Ghost previews.
@@ -391,7 +398,24 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
           </div>
         </div>
       )}
-      {tool === 'place' && placing && (
+      <QuickEdit />
+      {tool === 'place' && placing?.template.generic && (
+        <div className="absolute left-1/2 top-3 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+          <PassiveEditor
+            inline
+            kind={placing.template.generic.kind}
+            value={placing.template.value}
+            size={placing.template.generic.size}
+            lcsc={placing.template.lcsc}
+            onChange={updatePlacingPassive}
+            onPick={pickPlacingPart}
+          />
+          <span className="whitespace-nowrap text-muted">
+            click to place · <Kbd>R</Kbd> rotate · <Kbd>Esc</Kbd> done
+          </span>
+        </div>
+      )}
+      {tool === 'place' && placing && !placing.template.generic && (
         <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-panel/90 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
           <MousePointerClick className="h-3.5 w-3.5 text-indigo-400" />
           Click to place <span className="font-semibold">{placing.template.value}</span>

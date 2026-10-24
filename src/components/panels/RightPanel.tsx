@@ -9,6 +9,9 @@ import { symbolFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
 import { TOOLS, runTool, type ToolDefinition } from '../../lib/webmcp';
 import { CLASS_HINT, ClassBadge, Field, Tabs, cx, formatPrice, formatStock, inputClass } from '../ui';
+import { PassiveEditor } from '../passives/PassiveEditor';
+import { assignPassive, pickPart } from '../../lib/passives';
+import { PASSIVES } from '../../shared/passives';
 
 export function RightPanel() {
   const tab = useEditor((s) => s.rightTab);
@@ -42,9 +45,24 @@ function Inspector() {
   const selection = useEditor((s) => s.selection);
   if (selection.length === 0) return <ProjectSummary />;
   if (selection.length > 1) {
+    const selected = project.components.filter((c) => selection.includes(c.id));
+    const kind = selected[0]?.generic?.kind;
+    const samePassives = kind && selected.length === selection.length && selected.every((c) => c.generic?.kind === kind);
     return (
       <div className="space-y-3 p-3 text-xs">
-        <div className="font-semibold">{selection.length} items selected</div>
+        <div className="font-semibold">
+          {samePassives ? `${selected.length} ${PASSIVES[kind].label.toLowerCase()}s` : `${selection.length} items selected`}
+        </div>
+        {samePassives && (
+          <PassiveEditor
+            kind={kind}
+            value={selected[0].value}
+            size={selected[0].generic!.size}
+            lcsc={selected[0].lcsc}
+            onChange={(patch) => assignPassive(selection, patch)}
+            onPick={(part) => pickPart(selection, part)}
+          />
+        )}
         <SelectionActions />
       </div>
     );
@@ -147,15 +165,17 @@ function ComponentInspector({ c }: { c: Component }) {
             onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
           />
         </Field>
-        <Field label="Value">
-          <input
-            className={inputClass}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onBlur={() => value !== c.value && update({ value })}
-            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          />
-        </Field>
+        {!c.generic && (
+          <Field label="Value">
+            <input
+              className={inputClass}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onBlur={() => value !== c.value && update({ value })}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+          </Field>
+        )}
         <Field label="Rotation">
           <select className={inputClass} value={c.rotation} onChange={(e) => update({ rotation: Number(e.target.value) as Rotation })}>
             {[0, 90, 180, 270].map((r) => (
@@ -177,6 +197,18 @@ function ComponentInspector({ c }: { c: Component }) {
           </Field>
         )}
       </div>
+      {c.generic && (
+        <div className="rounded-lg border border-line bg-panel-2 p-2.5">
+          <PassiveEditor
+            kind={c.generic.kind}
+            value={c.value}
+            size={c.generic.size}
+            lcsc={c.lcsc}
+            onChange={(patch) => assignPassive([c.id], patch)}
+            onPick={(part) => pickPart([c.id], part)}
+          />
+        </div>
+      )}
       <SelectionActions />
 
       {c.lcsc && (

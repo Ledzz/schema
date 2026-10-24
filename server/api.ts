@@ -13,12 +13,15 @@ import {
 import { TtlCache } from './cache';
 import { countInStockByClass, getPart, searchFacets, searchParts } from './jlcpcb';
 import { getDevice, getStock } from './easyeda';
+import { matchPassive, type PassiveMatch } from './match';
+import { PASSIVE_KINDS, type PassiveKind } from '../src/shared/passives';
 
 const MINUTE = 60_000;
 const searchCache = new TtlCache<SearchResult>(500, 10 * MINUTE);
 const facetCache = new TtlCache<SearchFacets>(300, 10 * MINUTE);
 const partCache = new TtlCache<PartSummary | null>(2000, 30 * MINUTE);
 const deviceCache = new TtlCache<DeviceData | null>(2000, 24 * 60 * MINUTE);
+const matchCache = new TtlCache<PassiveMatch>(1000, 30 * MINUTE);
 
 const LCSC_CODE = /^C\d{1,12}$/i;
 const SORTS: SortKey[] = ['relevance', 'stock', 'price', 'mpn'];
@@ -95,6 +98,14 @@ api.get('/parts/facets', async (c) => {
     return counts ? { ...f, classCounts: counts } : f;
   });
   return c.json(facets);
+});
+
+api.get('/parts/match', async (c) => {
+  const kind = c.req.query('kind') as PassiveKind;
+  if (!PASSIVE_KINDS.includes(kind)) return c.json({ error: `kind must be one of ${PASSIVE_KINDS.join(', ')}` }, 400);
+  const value = (c.req.query('value') ?? '').slice(0, 60);
+  const size = (c.req.query('size') ?? '').slice(0, 40);
+  return c.json(await matchCache.get(`${kind}|${value}|${size}`, () => matchPassive(kind, value, size)));
 });
 
 api.get('/parts/:code', async (c) => {

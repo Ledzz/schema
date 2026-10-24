@@ -86,6 +86,10 @@ interface EditorState {
   toast: { id: number; message: string; tone: 'info' | 'error' } | null;
 
   commit: (fn: (doc: Doc) => Doc) => void;
+  /** Changes the document without a new undo step (folds into the previous one). */
+  amend: (fn: (doc: Doc) => Doc) => void;
+  quickEditId: string | null;
+  setQuickEdit: (id: string | null) => void;
   beginTransient: () => void;
   updateTransient: (fn: (base: Doc) => Doc) => void;
   endTransient: () => void;
@@ -168,6 +172,14 @@ export const useEditor = create<EditorState>()((set, get) => ({
       selection: get().selection.filter((id) => ids.has(id)),
     });
   },
+
+  amend: (fn) => {
+    const { project } = get();
+    const after = fn(docOf(project));
+    set({ project: { ...project, ...after, updatedAt: Date.now() } });
+  },
+  quickEditId: null,
+  setQuickEdit: (quickEditId) => set({ quickEditId }),
 
   beginTransient: () => set({ transientBase: docOf(get().project) }),
   updateTransient: (fn) => {

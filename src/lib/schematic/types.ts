@@ -1,4 +1,5 @@
 import type { PartClass, PriceBreak } from '../../shared/parts';
+import type { PassiveKind } from '../../shared/passives';
 import type { Vec } from '../easyeda/symbol';
 
 export type { Vec };
@@ -24,6 +25,8 @@ export interface Component {
   prices?: PriceBreak[];
   /** Manufacturer, MPN, Package, Footprint, Datasheet, Description … */
   attrs: Record<string, string>;
+  /** Set for generic passives placed by value and size; the LCSC part is matched from these. */
+  generic?: { kind: PassiveKind; size: string };
 }
 
 export interface Wire {
@@ -46,7 +49,7 @@ export interface NetPort {
 export interface StoredSymbol {
   title: string;
   dataStr: string;
-  source: 'easyeda' | 'generic';
+  source: 'easyeda' | 'generic' | 'builtin';
   pinCount?: number;
 }
 
