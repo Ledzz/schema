@@ -10,12 +10,14 @@ import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
 import { TOOLS, runTool, type ToolDefinition } from '../../lib/webmcp';
 import { CLASS_HINT, ClassBadge, Field, Tabs, cx, formatPrice, formatStock, inputClass } from '../ui';
 import { PassiveEditor } from '../passives/PassiveEditor';
+import { PcbInspector } from '../pcb/PcbPanels';
 import { assignPassive, pickPart } from '../../lib/passives';
 import { PASSIVES } from '../../shared/passives';
 
 export function RightPanel() {
   const tab = useEditor((s) => s.rightTab);
   const setTab = useEditor((s) => s.setRightTab);
+  const mode = useEditor((s) => s.mode);
   const status = useWebMcp((s) => s.status);
   return (
     <aside className="flex min-h-0 w-80 flex-col border-l border-line bg-panel" aria-label="Inspector">
@@ -35,7 +37,7 @@ export function RightPanel() {
           },
         ]}
       />
-      <div className="min-h-0 flex-1 overflow-auto">{tab === 'properties' ? <Inspector /> : <AgentPanel />}</div>
+      <div className="min-h-0 flex-1 overflow-auto">{tab === 'agent' ? <AgentPanel /> : mode === 'pcb' ? <PcbInspector /> : <Inspector />}</div>
     </aside>
   );
 }
@@ -411,6 +413,12 @@ function exampleInput(tool: ToolDefinition): string {
     focus_components: { designators: ['R1'] },
     check_pin: { pin: 'R1.1' },
     new_schematic: { name: 'Untitled' },
+    place_passive: { kind: 'resistor', value: '10k', size: '0603' },
+    set_passive: { designators: ['R1'], value: '4k7', size: '0402' },
+    pcb_set_board: { width: 40, height: 30 },
+    pcb_move_part: { designator: 'R1', x: 10, y: 10, rotation: 90, side: 'top' },
+    pcb_autoroute: {},
+    pcb_clear_routing: { net: 'GND' },
   };
   return JSON.stringify(examples[tool.name] ?? {}, null, 2);
 }

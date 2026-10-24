@@ -5,7 +5,7 @@ import type { PartDetail, PartSummary } from '../shared/parts';
 import { useEditor, type Placing } from '../store/editor';
 import { fetchPartDetail, fetchStock } from './api';
 import { nextDesignator, splitDesignator } from './schematic/designators';
-import { boxContains, boxIntersects, componentBox, normBox, samePoint, snap, worldPins, type WorldPin } from './schematic/geometry';
+import { boxContains, boxIntersects, componentBox, normBox, onSegment, samePoint, snap, worldPins, type WorldPin } from './schematic/geometry';
 import { portBox } from './schematic/hit';
 import { analyze } from './schematic/netlist';
 import { newId } from './schematic/ops';
@@ -173,12 +173,22 @@ export function connectPins(a: string, b: string): { wireId: string; points: Vec
   const obstacles = routeObstacles(project, [pa.at, pb.at]);
   const resolve = resolverFor(project);
   const bodiesOnly: RouteObstacles = { boxes: project.components.map((c) => componentBox(c, resolve(c.symbolKey))), points: [], segments: obstacles.segments };
-  const points =
-    autoRoute(pa, pb, obstacles) ??
-    autoRoute(pa, pb, obstacles, 5) ??
+  const attempts = [
+    () => autoRoute(pa, pb, obstacles),
+    () => autoRoute(pa, pb, obstacles, 5),
     // Crowded around the pins: only keep clear of part bodies.
-    autoRoute(pa, pb, bodiesOnly, 5) ??
-    routePins(pa, pb);
+    () => autoRoute(pa, pb, bodiesOnly, 5),
+    () => routePins(pa, pb),
+  ];
+  let points: Vec[] | null = null;
+  for (const attempt of attempts) {
+    const r = attempt();
+    if (r && !createsContact(project, r, [pa.at, pb.at])) {
+      points = r;
+      break;
+    }
+  }
+  if (!points) throw new Error(`Cannot wire ${a} to ${b} without touching other connections; use net labels on both pins instead`);
   const id = newId('w');
   state().commit((doc) => ({ ...doc, wires: [...doc.wires, { id, points }] }));
   return { wireId: id, points };
@@ -198,14 +208,32 @@ function flagLayouts(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>): Fl
     const e = along(len);
     return { points: [pin.at, e, [e[0], e[1] + v * rise]], rotation: 0 };
   };
-  return [
-    ...[10, 20, 30, 40, 60].map((len) => elbow(len, 10)),
-    ...[20, 40, 60].map((len) => elbow(len, 30)),
-    ...[20, 40, 60].map(straight),
-  ];
+  // Upright flags first; sideways ones keep dense pin columns (e.g. SOT-223) wireable.
+  return [elbow(10, 10), elbow(20, 10), straight(20), straight(30), elbow(30, 10), elbow(40, 10), straight(40), elbow(60, 10), straight(60), elbow(20, 30), straight(80)];
 }
 
-/** Number of collisions between a flag layout and the drawing (0 = clear). */
+/**
+ * Whether a new wire would electrically touch existing wiring: its far end on another pin, wire
+ * or label anchor (including mid-wire T-junctions), or an existing wire end / anchor on it.
+ */
+function createsContact(project: Project, points: Vec[], allowed: Vec[]): boolean {
+  const resolve = resolverFor(project);
+  const ok = (p: Vec) => allowed.some((a) => samePoint(a, p));
+  const end = points[points.length - 1];
+  const segs = points.slice(1).map((p, i) => [points[i], p] as [Vec, Vec]);
+  if (!ok(end)) {
+    const pins = project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey)).map((p) => p.at));
+    if (pins.some((p) => samePoint(p, end))) return true;
+    for (const w of project.wires) for (let i = 1; i < w.points.length; i++) if (onSegment(end, w.points[i - 1], w.points[i])) return true;
+  }
+  const anchors = [
+    ...project.wires.flatMap((w) => [w.points[0], w.points[w.points.length - 1]]),
+    ...project.ports.filter((p) => p.kind !== 'noconnect').map((p) => [p.x, p.y] as Vec),
+  ].filter((a) => !ok(a));
+  return anchors.some((a) => segs.some(([p, q]) => onSegment(a, p, q)));
+}
+
+/** Number of collisions between a flag layout and the drawing (0 = clear, Infinity = would short). */
 function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, self: Vec): number {
   const resolve = resolverFor(project);
   const flag = portBox(port);
@@ -218,7 +246,7 @@ function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, se
     worldPins(c, resolve(c.symbolKey))
       .filter((p) => !samePoint(p.at, self))
       .map((p) => {
-        const b = normBox(p.at, [p.at[0] - p.dir[0] * 10, p.at[1] - p.dir[1] * 10]);
+        const b = normBox(p.at, [p.at[0] - p.dir[0] * 30, p.at[1] - p.dir[1] * 30]);
         return { x1: b.x1 - 1, y1: b.y1 - 1, x2: b.x2 + 1, y2: b.y2 + 1 };
       }),
   );
@@ -234,13 +262,8 @@ function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, se
       if (boxIntersects(seg, flag) || stubBoxes.some((s) => boxIntersects(seg, s))) conflicts += 1;
     }
   }
-  // Touching another connection point would short the stub to it.
-  const taken = [
-    ...project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey)).map((p) => p.at)),
-    ...project.wires.flatMap((w) => w.points),
-    ...project.ports.map((p) => [p.x, p.y] as Vec),
-  ];
-  for (const p of stubPoints) if (taken.some((t) => samePoint(t, p))) conflicts += 10;
+  // Any electrical contact with other wiring would short the new net to it: forbidden.
+  if (createsContact(project, layout.points, [self])) return Infinity;
   return conflicts;
 }
 
@@ -262,6 +285,9 @@ export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>,
       layout = l;
     }
     if (n === 0) break;
+  }
+  if (best === Infinity) {
+    throw new Error(`No room to attach a ${kind === 'label' ? 'label' : 'flag'} to ${pinRef} without touching other wiring; move parts apart or connect it with a wire`);
   }
   const { points } = layout;
   const port = toPort(layout);

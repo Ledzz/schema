@@ -2,8 +2,18 @@ import { create } from 'zustand';
 import { newId, type Doc } from '../lib/schematic/ops';
 import type { Component, NetPort, PortKind, Project, Rotation, Vec } from '../lib/schematic/types';
 import type { PartClass } from '../shared/parts';
+import type { CopperLayer } from '../lib/pcb/types';
+import type { DrcIssue } from '../lib/pcb/drc';
 
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
+export type PcbTool = 'select' | 'route' | 'via';
+
+export interface RouteDraft {
+  net: string | null;
+  layer: CopperLayer;
+  width: number;
+  points: Vec[];
+}
 
 export interface Placing {
   symbolKey: string;
@@ -56,7 +66,14 @@ function loadProject(): Project {
   return emptyProject();
 }
 
-const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols });
+const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, pcb: p.pcb });
+
+/** Symbols and footprints are append-only caches, so history never removes them. */
+function keepCaches(target: Doc, current: Project): Doc {
+  const symbols = { ...target.symbols, ...current.symbols };
+  const pcb = target.pcb && current.pcb ? { ...target.pcb, footprints: { ...target.pcb.footprints, ...current.pcb.footprints } } : target.pcb;
+  return { ...target, symbols, pcb };
+}
 
 interface EditorState {
   project: Project;
@@ -90,6 +107,29 @@ interface EditorState {
   amend: (fn: (doc: Doc) => Doc) => void;
   quickEditId: string | null;
   setQuickEdit: (id: string | null) => void;
+
+  mode: 'schematic' | 'pcb';
+  setMode: (mode: 'schematic' | 'pcb') => void;
+  pcbView: View;
+  setPcbView: (view: View) => void;
+  pcbTool: PcbTool;
+  setPcbTool: (tool: PcbTool) => void;
+  activeLayer: CopperLayer;
+  setActiveLayer: (layer: CopperLayer) => void;
+  pcbSelection: string[];
+  setPcbSelection: (ids: string[]) => void;
+  routeDraft: RouteDraft | null;
+  setRouteDraft: (draft: RouteDraft | null) => void;
+  pcbHighlightNet: string | null;
+  setPcbHighlightNet: (net: string | null) => void;
+  pcbCursor: Vec;
+  setPcbCursor: (p: Vec) => void;
+  pcbLeftTab: 'parts' | 'nets' | 'drc';
+  setPcbLeftTab: (tab: 'parts' | 'nets' | 'drc') => void;
+  pcbCanvasSize: { width: number; height: number };
+  setPcbCanvasSize: (size: { width: number; height: number }) => void;
+  pcbIssues: DrcIssue[];
+  setPcbIssues: (issues: DrcIssue[]) => void;
   beginTransient: () => void;
   updateTransient: (fn: (base: Doc) => Doc) => void;
   endTransient: () => void;
@@ -181,6 +221,42 @@ export const useEditor = create<EditorState>()((set, get) => ({
   quickEditId: null,
   setQuickEdit: (quickEditId) => set({ quickEditId }),
 
+  mode: (() => {
+    try {
+      return localStorage.getItem('schematics:mode') === 'pcb' ? 'pcb' : 'schematic';
+    } catch {
+      return 'schematic';
+    }
+  })(),
+  setMode: (mode) => {
+    try {
+      localStorage.setItem('schematics:mode', mode);
+    } catch {
+      /* ignore */
+    }
+    set({ mode, routeDraft: null, quickEditId: null });
+  },
+  pcbView: { x: 120, y: 80, zoom: 12 },
+  setPcbView: (pcbView) => set({ pcbView }),
+  pcbTool: 'select',
+  setPcbTool: (pcbTool) => set({ pcbTool, routeDraft: null }),
+  activeLayer: 'top',
+  setActiveLayer: (activeLayer) => set({ activeLayer }),
+  pcbSelection: [],
+  setPcbSelection: (pcbSelection) => set({ pcbSelection }),
+  routeDraft: null,
+  setRouteDraft: (routeDraft) => set({ routeDraft }),
+  pcbHighlightNet: null,
+  setPcbHighlightNet: (pcbHighlightNet) => set({ pcbHighlightNet }),
+  pcbCursor: [0, 0],
+  setPcbCursor: (pcbCursor) => set({ pcbCursor }),
+  pcbLeftTab: 'parts',
+  setPcbLeftTab: (pcbLeftTab) => set({ pcbLeftTab }),
+  pcbCanvasSize: { width: 800, height: 500 },
+  setPcbCanvasSize: (pcbCanvasSize) => set({ pcbCanvasSize }),
+  pcbIssues: [],
+  setPcbIssues: (pcbIssues) => set({ pcbIssues }),
+
   beginTransient: () => set({ transientBase: docOf(get().project) }),
   updateTransient: (fn) => {
     const base = get().transientBase;
@@ -191,7 +267,10 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const { transientBase, project, past } = get();
     if (!transientBase) return;
     const changed =
-      transientBase.components !== project.components || transientBase.wires !== project.wires || transientBase.ports !== project.ports;
+      transientBase.components !== project.components ||
+      transientBase.wires !== project.wires ||
+      transientBase.ports !== project.ports ||
+      transientBase.pcb !== project.pcb;
     set({
       transientBase: null,
       ...(changed ? { past: [...past.slice(-HISTORY_LIMIT + 1), transientBase], future: [], project: { ...project, updatedAt: Date.now() } } : {}),
@@ -202,20 +281,29 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const { past, future, project } = get();
     const prev = past[past.length - 1];
     if (!prev) return;
-    // Symbols are an append-only cache, so history never removes them.
-    const symbols = { ...prev.symbols, ...project.symbols };
-    set({ project: { ...project, ...prev, symbols, updatedAt: Date.now() }, past: past.slice(0, -1), future: [docOf(project), ...future], selection: [] });
+    set({
+      project: { ...project, ...keepCaches(prev, project), updatedAt: Date.now() },
+      past: past.slice(0, -1),
+      future: [docOf(project), ...future],
+      selection: [],
+      pcbSelection: [],
+    });
   },
   redo: () => {
     const { past, future, project } = get();
     const next = future[0];
     if (!next) return;
-    const symbols = { ...next.symbols, ...project.symbols };
-    set({ project: { ...project, ...next, symbols, updatedAt: Date.now() }, past: [...past, docOf(project)], future: future.slice(1), selection: [] });
+    set({
+      project: { ...project, ...keepCaches(next, project), updatedAt: Date.now() },
+      past: [...past, docOf(project)],
+      future: future.slice(1),
+      selection: [],
+      pcbSelection: [],
+    });
   },
   addSymbols: (symbols) => set({ project: { ...get().project, symbols: { ...get().project.symbols, ...symbols } } }),
 
-  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], tool: 'select', placing: null }),
+  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null }),
   renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
 
   setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null }),

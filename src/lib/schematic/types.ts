@@ -1,5 +1,6 @@
 import type { PartClass, PriceBreak } from '../../shared/parts';
 import type { PassiveKind } from '../../shared/passives';
+import type { Pcb } from '../pcb/types';
 import type { Vec } from '../easyeda/symbol';
 
 export type { Vec };
@@ -62,6 +63,7 @@ export interface Project {
   wires: Wire[];
   ports: NetPort[];
   symbols: Record<string, StoredSymbol>;
+  pcb?: Pcb;
 }
 
 export type ItemRef = { type: 'component' | 'wire' | 'port'; id: string };

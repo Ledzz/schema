@@ -8,6 +8,8 @@ import { LibraryPanel } from './components/library/LibraryPanel';
 import { LeftPanel } from './components/panels/LeftPanel';
 import { RightPanel } from './components/panels/RightPanel';
 import { StatusBar, Toast, ToolRail, TopBar } from './components/Chrome';
+import { PcbCanvas } from './components/pcb/PcbCanvas';
+import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
 function LibraryResizer() {
   const onPointerDown = (e: React.PointerEvent) => {
@@ -35,6 +37,7 @@ function LibraryResizer() {
 export default function App() {
   const theme = useEditor((s) => s.theme);
   const libraryOpen = useEditor((s) => s.libraryOpen);
+  const mode = useEditor((s) => s.mode);
   const svgRef = useRef<SVGSVGElement>(null);
   useShortcuts();
 
@@ -50,14 +53,12 @@ export default function App() {
     <div className="flex h-full flex-col">
       <TopBar svgRef={svgRef} />
       <div className="flex min-h-0 flex-1">
-        <LeftPanel />
-        <ToolRail />
-        <main className="min-w-0 flex-1">
-          <SchematicCanvas svgRef={svgRef} />
-        </main>
+        {mode === 'pcb' ? <PcbLeftPanel /> : <LeftPanel />}
+        {mode === 'pcb' ? <PcbToolRail /> : <ToolRail />}
+        <main className="min-w-0 flex-1">{mode === 'pcb' ? <PcbCanvas /> : <SchematicCanvas svgRef={svgRef} />}</main>
         <RightPanel />
       </div>
-      {libraryOpen && (
+      {libraryOpen && mode === 'schematic' && (
         <>
           <LibraryResizer />
           <LibraryPanel />

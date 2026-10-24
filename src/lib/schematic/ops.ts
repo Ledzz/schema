@@ -3,7 +3,7 @@ import { simplify } from './route';
 import type { SymbolResolver } from './symbols';
 import type { Component, NetPort, Project, Vec, Wire } from './types';
 
-export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols'>;
+export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'pcb'>;
 
 let counter = 0;
 export function newId(prefix: string): string {

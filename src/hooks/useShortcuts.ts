@@ -18,8 +18,69 @@ import { resolverFor } from '../lib/schematic/symbols';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
+import { deleteSelectedCopper, finishDraft, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
+import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
 
 const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
+
+/** PCB editor keys; returns true when handled. */
+function pcbKey(key: string, e: KeyboardEvent): boolean {
+  const s = useEditor.getState();
+  const draft = s.routeDraft;
+  switch (key) {
+    case 'escape':
+      if (draft) finishDraft();
+      else if (s.pcbTool !== 'select') s.setPcbTool('select');
+      else {
+        s.setPcbSelection([]);
+        s.setPcbHighlightNet(null);
+      }
+      return true;
+    case 'w':
+      s.setPcbTool('route');
+      return true;
+    case 'v':
+      if (draft) viaInDraft();
+      else s.setPcbTool('via');
+      return true;
+    case '1':
+    case '2': {
+      const layer = key === '1' ? 'top' : 'bottom';
+      if (draft) viaInDraft(layer);
+      else s.setActiveLayer(layer);
+      return true;
+    }
+    case 'r':
+      rotateSelected(e.shiftKey ? -90 : 90);
+      return true;
+    case 'x':
+      flipSelected();
+      return true;
+    case 'backspace':
+      if (draft) {
+        if (draft.points.length > 1) s.setRouteDraft({ ...draft, points: draft.points.slice(0, -1) });
+        else s.setRouteDraft(null);
+        return true;
+      }
+      deleteSelectedCopper();
+      return true;
+    case 'delete':
+      deleteSelectedCopper();
+      return true;
+    case 'f':
+      fitPcbView();
+      return true;
+    case '=':
+    case '+':
+      zoomPcbBy(1.25);
+      return true;
+    case '-':
+      zoomPcbBy(0.8);
+      return true;
+    default:
+      return false;
+  }
+}
 
 const isEditable = (t: EventTarget | null) =>
   t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
@@ -48,6 +109,11 @@ export function useShortcuts() {
           e.preventDefault();
           command();
         }
+        return;
+      }
+
+      if (s.mode === 'pcb') {
+        if (pcbKey(key, e)) e.preventDefault();
         return;
       }
 

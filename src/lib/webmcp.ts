@@ -30,6 +30,9 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, placePassiveAt } from './passives';
+import { autoroute, boardModel, checkPcb, currentPcb, exportFabrication, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
+import { fitPcbView } from './pcb/view';
+import type { Pcb } from './pcb/types';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -466,6 +469,131 @@ export const TOOLS: ToolDefinition[] = [
       const net = connectivity().pinNet.get(`${p.component.id}:${p.pin.id}`) ?? null;
       return { designator: p.component.designator, number: p.pin.number, name: p.pin.name, x: p.at[0], y: p.at[1], outward: [-p.dir[0], -p.dir[1]], net };
     },
+  },
+  {
+    name: 'pcb_update',
+    title: 'Update PCB from schematic',
+    description:
+      'Switch to the PCB editor and bring it in line with the schematic: loads each part’s JLCPCB footprint (built-in footprints for unmatched passives), adds new parts packed in schematic order and removes deleted ones. Existing positions and routing are kept.',
+    inputSchema: { type: 'object', properties: {} },
+    execute: async () => {
+      st().setMode('pcb');
+      const r = await syncPcb();
+      fitPcbView();
+      return { added: r.added, removed: r.removed, without_footprint: r.missing };
+    },
+  },
+  {
+    name: 'pcb_get_state',
+    title: 'Get PCB state',
+    description: 'Board outline, design rules, every placed part (position in mm, rotation, side, footprint, bounding box), nets with unrouted connection counts, and track/via counts. y grows downwards; the board origin is its top-left corner.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const { pcb, board, conn } = boardModel();
+      const round = (v: number) => Math.round(v * 1000) / 1000;
+      return {
+        board: pcb.board,
+        rules: pcb.rules,
+        parts: board.parts.map((p) => ({
+          designator: p.component.designator,
+          x: round(p.placement.x),
+          y: round(p.placement.y),
+          rotation: p.placement.rotation,
+          side: p.placement.side,
+          footprint: pcb.footprints[pcb.footprintOf[p.component.id] ?? '']?.title ?? null,
+          bbox: p.fp ? { x1: round(p.box.x1), y1: round(p.box.y1), x2: round(p.box.x2), y2: round(p.box.y2) } : null,
+        })),
+        unrouted: Object.fromEntries([...conn.unrouted].filter(([, n]) => n > 0)),
+        tracks: pcb.tracks.length,
+        vias: pcb.vias.length,
+      };
+    },
+  },
+  {
+    name: 'pcb_set_board',
+    title: 'Set board size',
+    description: 'Set the board outline size in millimetres (and optional corner radius).',
+    inputSchema: {
+      type: 'object',
+      properties: { width: { type: 'number', minimum: 5 }, height: { type: 'number', minimum: 5 }, corner_radius: { type: 'number', minimum: 0 } },
+    },
+    execute: async (input) => {
+      const patch: Partial<Pcb['board']> = {};
+      if (input.width !== undefined) patch.width = Number(input.width);
+      if (input.height !== undefined) patch.height = Number(input.height);
+      if (input.corner_radius !== undefined) patch.cornerRadius = Number(input.corner_radius);
+      updateBoard(patch);
+      return { board: currentPcb().board };
+    },
+  },
+  {
+    name: 'pcb_move_part',
+    title: 'Move a part on the PCB',
+    description: 'Place a part at x/y (mm, footprint origin), with optional rotation (degrees CCW) and side ("top" or "bottom").',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        designator: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        rotation: { type: 'number' },
+        side: { type: 'string', enum: ['top', 'bottom'] },
+      },
+      required: ['designator'],
+    },
+    execute: async (input) => {
+      const c = byDesignator(String(input.designator));
+      if (!currentPcb().placements.some((p) => p.componentId === c.id)) throw new Error(`${c.designator} is not on the PCB; run pcb_update first`);
+      const patch: Record<string, unknown> = {};
+      for (const k of ['x', 'y', 'rotation'] as const) if (input[k] !== undefined) patch[k] = Number(input[k]);
+      if (input.side === 'top' || input.side === 'bottom') patch.side = input.side;
+      updatePlacement(c.id, patch);
+      return currentPcb().placements.find((p) => p.componentId === c.id);
+    },
+  },
+  {
+    name: 'pcb_autoroute',
+    title: 'Auto-route PCB',
+    description: 'Route unrouted connections with the built-in two-layer grid router (shortest first; power nets use the wider power track width). Optionally limit to one net. Check the result with pcb_check.',
+    inputSchema: { type: 'object', properties: { net: { type: 'string' } } },
+    execute: async (input) => {
+      const r = autoroute(input.net ? String(input.net) : undefined);
+      return { routed: r.routed, failed: r.failed.map((f) => f.net) };
+    },
+  },
+  {
+    name: 'pcb_clear_routing',
+    title: 'Remove PCB routing',
+    description: 'Delete all tracks and vias, or only those of one net.',
+    inputSchema: { type: 'object', properties: { net: { type: 'string' } } },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const { conn } = boardModel();
+      const net = input.net ? String(input.net) : null;
+      const keep = (id: string, own: string | null) => net !== null && (conn.itemNet.get(id) ?? own) !== net;
+      st().commit((doc) => ({ ...doc, pcb: { ...currentPcb(), tracks: currentPcb().tracks.filter((t) => keep(t.id, t.net)), vias: currentPcb().vias.filter((v) => keep(v.id, v.net)) } }));
+      return { tracks: currentPcb().tracks.length, vias: currentPcb().vias.length };
+    },
+  },
+  {
+    name: 'pcb_check',
+    title: 'PCB design rule check',
+    description: 'DRC: copper clearance, shorts, unrouted connections, parts outside the board, vias in pads, overlapping parts, missing footprints.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const { issues } = checkPcb();
+      st().setPcbIssues(issues);
+      return { ok: !issues.some((i) => i.severity === 'error'), issues: issues.map((i) => ({ severity: i.severity, message: i.message, at: i.at })) };
+    },
+  },
+  {
+    name: 'pcb_export',
+    title: 'Export fabrication files',
+    description: 'Download the JLCPCB-ready Gerber + drill zip, the CPL (pick-and-place) CSV and the BOM CSV to the user’s computer.',
+    inputSchema: { type: 'object', properties: {} },
+    execute: async () => exportFabrication(),
   },
   {
     name: 'new_schematic',

@@ -1,6 +1,6 @@
 # Schematics
 
-A web-based schematic editor modelled on EasyEDA Pro. Its focus is quick JLCPCB part
+A web-based schematic and PCB editor modelled on EasyEDA Pro. Its focus is quick JLCPCB part
 selection: every search result shows whether a part is **Basic**, **Preferred** (promotional
 extended, no setup fee) or **Extended** ($3 setup fee per unique part), and you can filter on
 that. The editor also exposes its tools to in-browser AI agents through **WebMCP**.
@@ -26,16 +26,29 @@ Checks: `pnpm typecheck`, `pnpm test`.
 ## Features
 
 - **Parts library** (bottom panel, `/` to focus) — searches 7M+ JLCPCB/LCSC parts.
-  - Part type filters with live counts (Basic, Preferred, Extended), a "No setup fee" preset, and an in-stock toggle.
+  - Part type filters with live in-stock counts (Basic, Preferred, Extended), a "No setup fee" preset, and an in-stock toggle.
   - Sort by relevance, stock, price or part number.
   - Category tree and package filters. A chip size typed in the query ("10uF 0805") becomes an exact package filter.
   - Detail pane: symbol, footprint and photo previews, price breaks, parameters, datasheet link.
   - Placing: double-click or Enter. "Replace" swaps the part on a selected component.
+- **Quick passives** — tools for resistor, capacitor, inductor, ferrite bead, diode and LED
+  (`⇧R` `⇧C` `⇧L` `⇧F` `⇧D` `⇧E`).
+  - Type a value as you would write it ("4k7", "100R", "0.1u", "10u 16V", "22uH") and pick a size (0402…1206, SOD-123, SMA…).
+  - The cheapest-to-assemble in-stock part is matched automatically: Basic first, then Preferred, then Extended, by stock. You can pick an alternative instead.
+  - Set it in the placement bar before placing. Afterwards, double-click a passive (or press Enter) for a quick-edit popover.
+  - The inspector edits several selected passives of the same kind at once.
 - **Schematic editor**
   - Places real EasyEDA library symbols, including multi-unit parts.
   - Drawing tools: wires, net labels, power and ground flags, no-connect markers.
   - Move with rubber-banding wires, rotate, mirror, duplicate, copy/paste, undo/redo.
   - Box select, zoom and pan, junction dots, pin hover info, net highlighting.
+- **PCB editor** (Schematic / PCB switch in the top bar)
+  - **Sync from the schematic.** Loads each part's JLCPCB footprint, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
+  - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
+  - **Interactive routing** (`W`) with 45° corners on the top or bottom layer (`1` / `2`). Press `V` to drop a via and continue on the other layer. Power nets get wider tracks automatically.
+  - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance and never places vias in SMD pads.
+  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints.
+  - **Export for JLCPCB.** Gerber RS-274X (copper, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files.
 - **Design data**
   - Live netlist and a design check: unconnected pins, duplicate or unannotated designators, conflicting net names.
   - BOM grouped by part, with counts per part type and the extended setup fee.
@@ -43,24 +56,29 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - JLCPCB BOM CSV export.
 - **Files** — autosave in the browser, plus save/open project JSON, export SVG and netlist.
 
-Keys: `W` wire · `N` label · `P`/`G` power/ground · `Q` no-connect · `R` rotate · `X` mirror ·
-`Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate ·
-Space-drag or middle-drag pans, the wheel zooms.
+Schematic keys: `W` wire · `N` label · `P`/`G` power/ground · `Q` no-connect · `R` rotate ·
+`X` mirror · `Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate.
+PCB keys: `W` route · `V` via · `1`/`2` layer · `R` rotate · `X` flip side · `⌫` remove last
+corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms.
 
 ## WebMCP
 
-On load the app registers 18 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 28 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
-`search_parts`, `get_part_details`, `place_part`, `list_components`, `connect_pins`
-(obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`,
-`update_component`, `replace_part`, `delete_components`, `get_netlist`, `check_design`,
-`get_bom` (JSON or JLCPCB CSV), `annotate`, `focus_components`, `check_pin`, `new_schematic`.
+- **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
+- **Schematic:**
+  - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`
+  - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
+- **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
+- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_check`, `pcb_export`
 
-Pins are addressed as `R1.2` or `U1.VIN`. Read-only tools carry `readOnlyHint`. Destructive tools
-carry `consequentialHint`, and `new_schematic` also asks the user to confirm. Errors come back as
-`{error}` results, so the agent sees the reason (for example the list of valid pins). The
-**Agent** tab lists the tools, lets you run any of them by hand, and logs every call an agent makes.
+Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
+other wiring, so an agent cannot short two nets by accident; when there is no room, the tool says so.
+Read-only tools carry `readOnlyHint`. Destructive tools carry `consequentialHint`, and
+`new_schematic` also asks the user to confirm. Errors come back as `{error}` results, so the agent
+sees the reason. The **Agent** tab lists the tools, lets you run any of them by hand, and logs
+every call an agent makes.
 
 To try it in Chrome, enable `chrome://flags/#enable-webmcp-testing`, or start Chrome with
 `--enable-features=WebMCP,WebMCPTesting`.
@@ -71,22 +89,25 @@ To try it in Chrome, enable `chrome://flags/#enable-webmcp-testing`, or start Ch
 server/            Hono API (runs inside Vite in dev, standalone in prod)
   jlcpcb.ts        JLCPCB parts search, facets, type filters, 429 retry + concurrency limit
   easyeda.ts       EasyEDA device lookup, AES-GCM document decryption, bulk stock
-  api.ts           /api/parts/search | facets | :code | stock
+  match.ts         passive value -> best JLCPCB part
+  api.ts           /api/parts/search | facets | match | :code | stock
 src/
-  shared/parts.ts  types shared by server and client
+  shared/          types and passive value parsing shared by server and client
   lib/easyeda/     symbol and footprint parsers for EasyEDA Pro documents
   lib/schematic/   geometry, connectivity/netlist, ops (move/rotate…), router, BOM, hit-testing
-  lib/actions.ts   high-level actions used by both the UI and the WebMCP tools
+  lib/pcb/         footprints (mm), board model + connectivity, DRC, A* router, Gerber/drill/CPL
+  lib/actions.ts   schematic actions used by both the UI and the WebMCP tools
+  lib/passives.ts  generic passive placement and matching
   lib/webmcp.ts    tool definitions and registration
   store/           zustand editor store with history and autosave
-  components/      canvas (SVG), library panel, side panels, chrome
+  components/      schematic canvas, PCB canvas, library panel, side panels, chrome
 ```
 
 ## Limitations
 
-- Schematic capture only. There is no PCB layout, simulation, or multi-sheet hierarchy.
-- The JLCPCB and EasyEDA endpoints are unofficial and undocumented. They can change, rate-limit
-  or block without notice.
-- Symbols and footprints come from the JLCEDA/EasyEDA Official Library. Its embedded notice
-  grants commercial use when the data is used in JLCEDA/EasyEDA, so check the terms before using
-  this tool commercially. The app credits the library wherever that data is shown.
+- **Missing PCB features.** No copper pours or zones, no keepouts, no differential pairs or length tuning, no 3D view. There is also no multi-sheet schematic hierarchy and no simulation.
+- **Auto-router.** It is a simple grid router meant for small boards. Expect to clean up dense layouts by hand.
+- **Gerber output.** Covered by unit tests and a structural check. Look at it in JLCPCB's Gerber viewer before ordering.
+- **CPL rotations.** These are the design's own rotations. JLCPCB sometimes needs per-part rotation fixes, which you confirm in their placement preview.
+- **Unofficial APIs.** The JLCPCB and EasyEDA endpoints are undocumented. They can change, rate-limit or block without notice.
+- **Library licence.** Symbols and footprints come from the JLCEDA/EasyEDA Official Library. Its embedded notice grants commercial use when the data is used in JLCEDA/EasyEDA, so check the terms before using this tool commercially. The app credits the library wherever that data is shown.

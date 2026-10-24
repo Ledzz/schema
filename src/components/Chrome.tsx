@@ -39,6 +39,7 @@ import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
 import { startPassive } from '../lib/passives';
+import { boardModel, enterPcb } from '../lib/pcb/actions';
 import { PASSIVES, type PassiveKind } from '../shared/passives';
 
 const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
@@ -148,7 +149,8 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           e.target.value = '';
         }}
       />
-      <div className="mx-auto flex min-w-0 items-center">
+      <div className="mx-auto flex min-w-0 items-center gap-3">
+        <ModeSwitch />
         <input
           value={name}
           onChange={(e) => s().renameProject(e.target.value)}
@@ -181,6 +183,25 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
         </IconButton>
       </div>
     </header>
+  );
+}
+
+function ModeSwitch() {
+  const mode = useEditor((s) => s.mode);
+  return (
+    <div className="flex items-center rounded-lg border border-line bg-panel-2 p-0.5" role="tablist" aria-label="Editor">
+      {(['schematic', 'pcb'] as const).map((m) => (
+        <button
+          key={m}
+          role="tab"
+          aria-selected={mode === m}
+          onClick={() => (m === 'pcb' ? enterPcb() : useEditor.getState().setMode('schematic'))}
+          className={cx('h-6 rounded-md px-2.5 text-xs font-medium', mode === m ? 'bg-panel text-[var(--text)] shadow-sm' : 'text-muted hover:text-[var(--text)]')}
+        >
+          {m === 'pcb' ? 'PCB' : 'Schematic'}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -271,7 +292,38 @@ const TOOL_HINT: Record<Tool, string> = {
   place: 'Click to place · R rotate · X mirror · Esc to stop',
 };
 
+function PcbStatusBar() {
+  const cursor = useEditor((s) => s.pcbCursor);
+  const zoom = useEditor((s) => s.pcbView.zoom);
+  const layer = useEditor((s) => s.activeLayer);
+  const tool = useEditor((s) => s.pcbTool);
+  const project = useEditor((s) => s.project);
+  const unrouted = useMemo(() => [...boardModel(project).conn.unrouted.values()].reduce((a, b) => a + b, 0), [project]);
+  const hint = { select: 'Click to select · drag parts to move · R rotate · X flip side', route: 'Click a pad to start · click to add corners · V via · Esc finish', via: 'Click to place a via' }[tool];
+  return (
+    <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-panel px-3 text-[11px] text-muted">
+      <span className="tabular w-36">
+        X {cursor[0].toFixed(2)} · Y {cursor[1].toFixed(2)} mm
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2 w-2 rounded-full" style={{ background: layer === 'top' ? 'var(--pcb-top)' : 'var(--pcb-bottom)' }} />
+        {layer} layer
+      </span>
+      <span className="tabular w-14">{Math.round(zoom * 10)}%</span>
+      <span className="truncate">{hint}</span>
+      <button className="ml-auto hover:text-[var(--text)]" onClick={() => useEditor.getState().setPcbLeftTab('nets')}>
+        <span className={unrouted ? 'text-amber-500' : 'text-emerald-500'}>{unrouted} unrouted</span>
+      </button>
+    </footer>
+  );
+}
+
 export function StatusBar() {
+  const mode = useEditor((s) => s.mode);
+  return mode === 'pcb' ? <PcbStatusBar /> : <SchematicStatusBar />;
+}
+
+function SchematicStatusBar() {
   const cursor = useEditor((s) => s.cursor);
   const zoom = useEditor((s) => s.view.zoom);
   const tool = useEditor((s) => s.tool);

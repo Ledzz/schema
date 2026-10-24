@@ -36,9 +36,22 @@
   --select: #6366f1;
   --highlight: #db2777;
   --unconnected: #ef4444;
+
+  --pcb-bg: #e7e9e4;
+  --pcb-board: #14301f;
+  --pcb-edge: #facc15;
+  --pcb-top: #e5483d;
+  --pcb-bottom: #3d7bf0;
+  --pcb-tht: #c9a33f;
+  --pcb-hole: #0b0d10;
+  --pcb-silk-top: #f8e36b;
+  --pcb-silk-bottom: #9fd38a;
+  --pcb-ratsnest: #f4f4f5;
 }
 
 .dark {
+  --pcb-bg: #090b0f;
+  --pcb-board: #102419;
   color-scheme: dark;
   --app-bg: #0b0d12;
   --panel: #12151c;
