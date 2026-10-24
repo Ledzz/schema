@@ -4,7 +4,7 @@
  */
 import type { Vec } from '../schematic/types';
 import type { BoardModel } from './board';
-import { padOutline, rotateDeg, type WorldPad } from './geometry';
+import { boardOutline, padOutline, rotateDeg, type WorldPad } from './geometry';
 import { textStrokes } from './font';
 import type { Board, CopperLayer, Pcb } from './types';
 
@@ -59,6 +59,11 @@ class Gerber {
     for (const p of points.slice(1)) this.body.push(`${this.xy(p)}D01*`);
   }
 
+  /** Switches between dark (adds copper) and clear (removes) polarity. */
+  setPolarity(dark: boolean) {
+    this.body.push(dark ? '%LPD*%' : '%LPC*%');
+  }
+
   region(points: Vec[]) {
     if (points.length < 3) return;
     this.body.push('G36*', `${this.xy(points[0])}D02*`);
@@ -95,37 +100,6 @@ function emitPad(g: Gerber, pad: WorldPad, grow: number, pcbPlacement: Parameter
   g.region(padOutline(pcbPlacement, p, grow));
 }
 
-function outlinePoints(b: Board): Vec[] {
-  const r = Math.min(b.cornerRadius, b.width / 2, b.height / 2);
-  if (r <= 0) {
-    return [
-      [b.x, b.y],
-      [b.x + b.width, b.y],
-      [b.x + b.width, b.y + b.height],
-      [b.x, b.y + b.height],
-      [b.x, b.y],
-    ];
-  }
-  const pts: Vec[] = [];
-  const corners: [Vec, number][] = [
-    [[b.x + b.width - r, b.y + r], -90],
-    [[b.x + b.width - r, b.y + b.height - r], 0],
-    [[b.x + r, b.y + b.height - r], 90],
-    [[b.x + r, b.y + r], 180],
-  ];
-  for (const [c, start] of corners) {
-    for (let i = 0; i <= 8; i++) {
-      const a = ((start + (90 * i) / 8) * Math.PI) / 180;
-      pts.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
-    }
-  }
-  pts.push(pts[0]);
-  return pts;
-}
-
-export function boardOutline(b: Board): Vec[] {
-  return outlinePoints(b);
-}
 
 /** Designator position: above the part's bounding box. */
 export function designatorAnchor(box: { x1: number; y1: number; x2: number; y2: number }): Vec {
@@ -148,6 +122,19 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
   const copper = (l: CopperLayer) => layers[l === 'top' ? 'F_Cu.gtl' : 'B_Cu.gbl'];
   const mask = (l: CopperLayer) => layers[l === 'top' ? 'F_Mask.gts' : 'B_Mask.gbs'];
   const paste = (l: CopperLayer) => layers[l === 'top' ? 'F_Paste.gtp' : 'B_Paste.gbp'];
+
+  // Pours first: each area dark, its holes cleared, so pads and tracks drawn later stay intact.
+  for (const f of board.fills) {
+    const g = copper(f.pour.layer);
+    for (const area of f.areas) {
+      g.region(area.outer);
+      if (area.holes.length) {
+        g.setPolarity(false);
+        for (const h of area.holes) g.region(h);
+        g.setPolarity(true);
+      }
+    }
+  }
 
   for (const part of board.parts) {
     for (const pad of part.pads) {
@@ -174,7 +161,7 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     copper('top').circle(v.diameter, [v.x, v.y]);
     copper('bottom').circle(v.diameter, [v.x, v.y]);
   }
-  layers['Edge_Cuts.gm1'].stroke(0.1, outlinePoints(b));
+  layers['Edge_Cuts.gm1'].stroke(0.1, boardOutline(b));
 
   return [
     ...Object.entries(layers).map(([suffix, g]) => ({ name: `${baseName}-${suffix}`, content: g.toString() })),

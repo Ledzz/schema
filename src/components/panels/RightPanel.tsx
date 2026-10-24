@@ -419,6 +419,8 @@ function exampleInput(tool: ToolDefinition): string {
     pcb_move_part: { designator: 'R1', x: 10, y: 10, rotation: 90, side: 'top' },
     pcb_autoroute: {},
     pcb_clear_routing: { net: 'GND' },
+    pcb_add_pour: { net: 'GND', layers: ['top', 'bottom'] },
+    pcb_remove_pours: { net: 'GND' },
   };
   return JSON.stringify(examples[tool.name] ?? {}, null, 2);
 }

@@ -130,6 +130,8 @@ interface EditorState {
   setPcbCanvasSize: (size: { width: number; height: number }) => void;
   pcbIssues: DrcIssue[];
   setPcbIssues: (issues: DrcIssue[]) => void;
+  showPours: boolean;
+  setShowPours: (show: boolean) => void;
   beginTransient: () => void;
   updateTransient: (fn: (base: Doc) => Doc) => void;
   endTransient: () => void;
@@ -256,6 +258,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setPcbCanvasSize: (pcbCanvasSize) => set({ pcbCanvasSize }),
   pcbIssues: [],
   setPcbIssues: (pcbIssues) => set({ pcbIssues }),
+  showPours: true,
+  setShowPours: (showPours) => set({ showPours }),
 
   beginTransient: () => set({ transientBase: docOf(get().project) }),
   updateTransient: (fn) => {

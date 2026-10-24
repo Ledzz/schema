@@ -4,8 +4,10 @@ import { useEditor } from '../../store/editor';
 import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
 import { pointInPolygon, pointSegDist, type WorldPad } from '../../lib/pcb/geometry';
+import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
 import { textStrokes } from '../../lib/pcb/font';
-import { boardOutline, designatorAnchor } from '../../lib/pcb/gerber';
+import { designatorAnchor } from '../../lib/pcb/gerber';
+import { boardOutline } from '../../lib/pcb/geometry';
 import { addVia, finishDraft, movePlacements, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
 import { emptyPcb, type CopperLayer, type Pcb } from '../../lib/pcb/types';
@@ -15,7 +17,7 @@ const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', bottom
 const other = (l: CopperLayer): CopperLayer => (l === 'top' ? 'bottom' : 'top');
 const pts = (p: Vec[]) => p.map((q) => `${q[0]},${q[1]}`).join(' ');
 
-type Hit = { kind: 'part'; id: string } | { kind: 'track'; id: string } | { kind: 'via'; id: string } | null;
+type Hit = { kind: 'part'; id: string } | { kind: 'track'; id: string } | { kind: 'via'; id: string } | { kind: 'pour'; id: string } | null;
 
 function padAt(board: BoardModel, p: Vec, layer?: CopperLayer): WorldPad | null {
   for (const pad of board.pads) {
@@ -33,6 +35,7 @@ export function PcbCanvas() {
   const selection = useEditor((s) => s.pcbSelection);
   const draft = useEditor((s) => s.routeDraft);
   const highlightNet = useEditor((s) => s.pcbHighlightNet);
+  const showPours = useEditor((s) => s.showPours);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [pointer, setPointer] = useState<Vec>([0, 0]);
@@ -103,6 +106,10 @@ export function PcbCanvas() {
     for (const t of tracks) for (let i = 1; i < t.points.length; i++) if (pointSegDist(p, t.points[i - 1], t.points[i]) <= t.width / 2 + tol) return { kind: 'track', id: t.id };
     const parts = [...model.board.parts].sort((a) => (a.placement.side === activeLayer ? -1 : 1));
     for (const part of parts) if (p[0] >= part.box.x1 && p[0] <= part.box.x2 && p[1] >= part.box.y1 && p[1] <= part.box.y2) return { kind: 'part', id: part.component.id };
+    if (useEditor.getState().showPours) {
+      const fills = [...model.board.fills].sort((a) => (a.pour.layer === activeLayer ? -1 : 1));
+      for (const f of fills) if (f.areas.some((a) => pointInArea(p, a))) return { kind: 'pour', id: f.pour.id };
+    }
     return null;
   };
 
@@ -136,6 +143,13 @@ export function PcbCanvas() {
       }
       if (e.shiftKey) {
         s.setPcbSelection(selected.has(hit.id) ? selection.filter((x) => x !== hit.id) : [...selection, hit.id]);
+        return;
+      }
+      if (hit.kind === 'pour') {
+        // Clicking a pour selects it; dragging from it still box-selects.
+        s.setPcbSelection([hit.id]);
+        interaction.current = { mode: 'box', start: w };
+        setBox({ a: w, b: w });
         return;
       }
       if (!selected.has(hit.id)) s.setPcbSelection([hit.id]);
@@ -257,7 +271,7 @@ export function PcbCanvas() {
 
         <g data-layer="world" transform={`translate(${view.x} ${view.y}) scale(${view.zoom})`}>
           <polygon points={pts(boardOutline(pcb.board))} fill="var(--pcb-board)" stroke="var(--pcb-edge)" strokeWidth={0.1} />
-          <BoardLayers board={model.board} conn={model.conn} pcb={pcb} activeLayer={activeLayer} selected={selected} highlightNet={highlightNet} />
+          <BoardLayers board={model.board} conn={model.conn} pcb={pcb} activeLayer={activeLayer} selected={selected} highlightNet={highlightNet} showPours={showPours} />
           {/* ratsnest */}
           <g stroke="var(--pcb-ratsnest)" strokeWidth={1 / view.zoom} opacity={0.85}>
             {model.conn.airwires.map((a, i) => (
@@ -332,6 +346,7 @@ const BoardLayers = memo(function BoardLayers({
   activeLayer,
   selected,
   highlightNet,
+  showPours,
 }: {
   board: BoardModel;
   conn: PcbConnectivity;
@@ -339,6 +354,7 @@ const BoardLayers = memo(function BoardLayers({
   activeLayer: CopperLayer;
   selected: Set<string>;
   highlightNet: string | null;
+  showPours: boolean;
 }) {
   const order: CopperLayer[] = [other(activeLayer), activeLayer];
   const netOfTrack = (id: string, fallback: string | null) => conn.itemNet.get(id) ?? fallback;
@@ -348,6 +364,18 @@ const BoardLayers = memo(function BoardLayers({
         const dim = layer !== activeLayer;
         return (
           <g key={layer} opacity={dim ? 0.45 : 0.92}>
+            {showPours &&
+              board.fills
+                .filter((f) => f.pour.layer === layer)
+                .map((f) => (
+                  <path
+                    key={f.pour.id}
+                    d={areasToSvgPath(f.areas)}
+                    fillRule="evenodd"
+                    fill={selected.has(f.pour.id) || (highlightNet && f.pour.net === highlightNet) ? 'var(--highlight)' : LAYER_COLOR[layer]}
+                    opacity={selected.has(f.pour.id) ? 0.5 : 0.4}
+                  />
+                ))}
             {pcb.tracks
               .filter((t) => t.layer === layer)
               .map((t) => {

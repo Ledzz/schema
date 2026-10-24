@@ -1,6 +1,6 @@
 import type { Vec } from '../schematic/types';
 import type { FootprintGeom, Graphic, GraphicLayer, PadGeom } from './footprint';
-import type { CopperLayer, Placement, Track, Via } from './types';
+import type { Board, CopperLayer, Placement, Track, Via } from './types';
 
 export interface Box {
   x1: number;
@@ -276,3 +276,33 @@ export function padItem(p: WorldPad): CopperItem {
 }
 
 export const boxesOverlap = (a: Box, b: Box, pad = 0) => a.x1 - pad <= b.x2 && a.x2 + pad >= b.x1 && a.y1 - pad <= b.y2 && a.y2 + pad >= b.y1;
+
+/** Board outline polygon (rounded corners approximated), closed. */
+export function boardOutline(b: Board): Vec[] {
+  const r = Math.min(b.cornerRadius, b.width / 2, b.height / 2);
+  if (r <= 0) {
+    return [
+      [b.x, b.y],
+      [b.x + b.width, b.y],
+      [b.x + b.width, b.y + b.height],
+      [b.x, b.y + b.height],
+      [b.x, b.y],
+    ];
+  }
+  const pts: Vec[] = [];
+  const corners: [Vec, number][] = [
+    [[b.x + b.width - r, b.y + r], -90],
+    [[b.x + b.width - r, b.y + b.height - r], 0],
+    [[b.x + r, b.y + b.height - r], 90],
+    [[b.x + r, b.y + r], 180],
+  ];
+  for (const [c, start] of corners) {
+    for (let i = 0; i <= 8; i++) {
+      const a = ((start + (90 * i) / 8) * Math.PI) / 180;
+      pts.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
+    }
+  }
+  pts.push(pts[0]);
+  return pts;
+}
+

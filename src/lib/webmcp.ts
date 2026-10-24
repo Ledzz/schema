@@ -30,9 +30,9 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, placePassiveAt } from './passives';
-import { autoroute, boardModel, checkPcb, currentPcb, exportFabrication, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
+import { addPours, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
 import { fitPcbView } from './pcb/view';
-import type { Pcb } from './pcb/types';
+import type { CopperLayer, Pcb, Pour } from './pcb/types';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -504,6 +504,14 @@ export const TOOLS: ToolDefinition[] = [
           footprint: pcb.footprints[pcb.footprintOf[p.component.id] ?? '']?.title ?? null,
           bbox: p.fp ? { x1: round(p.box.x1), y1: round(p.box.y1), x2: round(p.box.x2), y2: round(p.box.y2) } : null,
         })),
+        pours: board.fills.map((f) => ({
+          net: f.pour.net,
+          layer: f.pour.layer,
+          clearance: f.pour.clearance,
+          connection: f.pour.connection,
+          areas: f.areas.length,
+          weak_thermals: f.thermals.filter((t) => t.spokes < 2).map((t) => `${t.designator}.${t.number}`),
+        })),
         unrouted: Object.fromEntries([...conn.unrouted].filter(([, n]) => n > 0)),
         tracks: pcb.tracks.length,
         vias: pcb.vias.length,
@@ -574,6 +582,51 @@ export const TOOLS: ToolDefinition[] = [
       const keep = (id: string, own: string | null) => net !== null && (conn.itemNet.get(id) ?? own) !== net;
       st().commit((doc) => ({ ...doc, pcb: { ...currentPcb(), tracks: currentPcb().tracks.filter((t) => keep(t.id, t.net)), vias: currentPcb().vias.filter((v) => keep(v.id, v.net)) } }));
       return { tracks: currentPcb().tracks.length, vias: currentPcb().vias.length };
+    },
+  },
+  {
+    name: 'pcb_add_pour',
+    title: 'Add copper pour',
+    description:
+      'Fill the board with copper on a net (usually GND) on one or both layers, keeping the clearance to other nets. Same-net pads join through thermal reliefs (or solidly). Replaces existing pours of that net on those layers. Pours count as connections for the ratsnest, so run pcb_get_state afterwards to see what is still unrouted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        net: { type: 'string', description: 'Net to pour (default GND).' },
+        layers: { type: 'array', items: { type: 'string', enum: ['top', 'bottom'] }, description: 'Default both.' },
+        clearance: { type: 'number', minimum: 0.1, description: 'Gap to other nets in mm (default 0.3).' },
+        connection: { type: 'string', enum: ['thermal', 'solid'] },
+      },
+    },
+    execute: async (input) => {
+      const net = input.net ? String(input.net) : 'GND';
+      if (!boardNets().includes(net)) throw new Error(`No pad on the PCB is on net ${net}. Nets: ${boardNets().join(', ')}`);
+      const layers = Array.isArray(input.layers) && input.layers.length ? (input.layers as CopperLayer[]) : (['top', 'bottom'] as CopperLayer[]);
+      const settings: Partial<Pour> = {};
+      if (input.clearance !== undefined) settings.clearance = Number(input.clearance);
+      if (input.connection === 'thermal' || input.connection === 'solid') settings.connection = input.connection;
+      const pours = addPours(net, layers, settings);
+      const { board, conn } = boardModel();
+      return {
+        pours: pours.map((p) => {
+          const f = board.fills.find((x) => x.pour.id === p.id);
+          return { layer: p.layer, areas: f?.areas.length ?? 0, weak_thermals: f?.thermals.filter((t) => t.spokes < 2).length ?? 0 };
+        }),
+        unrouted: Object.fromEntries([...conn.unrouted].filter(([, n]) => n > 0)),
+      };
+    },
+  },
+  {
+    name: 'pcb_remove_pours',
+    title: 'Remove copper pours',
+    description: 'Remove all copper pours, or only those of one net.',
+    inputSchema: { type: 'object', properties: { net: { type: 'string' } } },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const pours = currentPcb().pours ?? [];
+      const ids = pours.filter((p) => !input.net || p.net === String(input.net)).map((p) => p.id);
+      removePours(ids);
+      return { removed: ids.length };
     },
   },
   {

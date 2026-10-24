@@ -3,7 +3,9 @@ import { resolverFor, symbolFor } from '../schematic/symbols';
 import { unitOf } from '../schematic/geometry';
 import type { Component, Project, Vec } from '../schematic/types';
 import { parsePcbFootprint, type FootprintGeom, type Graphic } from './footprint';
+import { fillPour, pointInArea, type PourFill } from './pour';
 import {
+  boardOutline,
   padItem,
   placementBox,
   pointInPolygon,
@@ -43,6 +45,8 @@ export interface BoardModel {
   parts: BoardPart[];
   pads: WorldPad[];
   items: CopperItem[];
+  /** Filled copper pours. */
+  fills: PourFill[];
   /** Schematic pin net by component id and pin number. */
   pinNets: Map<string, Map<string, string>>;
   missingFootprints: Component[];
@@ -91,7 +95,9 @@ export function buildBoard(project: Project, pcb: Pcb): BoardModel {
   }
   const pads = parts.flatMap((p) => p.pads);
   const items = [...pads.map(padItem), ...pcb.tracks.flatMap(trackItems), ...pcb.vias.map(viaItem)];
-  return { parts, pads, items, pinNets, missingFootprints };
+  const outline = boardOutline(pcb.board);
+  const fills = (pcb.pours ?? []).map((pour) => fillPour(pour, { pcb, boardOutline: outline, items, pads }));
+  return { parts, pads, items, fills, pinNets, missingFootprints };
 }
 
 /* ---------- connectivity ---------- */
@@ -170,6 +176,19 @@ export function pcbConnectivity(board: BoardModel, pcb: Pcb): PcbConnectivity {
       if (it.type === 'via' && it.ref === v.id) continue;
       if (endpointTouches([v.x, v.y], 'top', it) || endpointTouches([v.x, v.y], 'bottom', it)) uf.union(`v:${v.id}`, nodeOf(it));
     }
+  }
+
+  // Copper pours: each filled island joins the same-net copper it covers.
+  for (const f of board.fills) {
+    f.areas.forEach((area, i) => {
+      const node = `z:${f.pour.id}:${i}`;
+      for (const p of board.pads) if (p.net === f.pour.net && p.layers.includes(f.pour.layer) && pointInArea(p.center, area)) uf.union(node, `p:${p.componentId}:${p.index}`);
+      for (const v of pcb.vias) if (v.net === f.pour.net && pointInArea([v.x, v.y], area)) uf.union(node, `v:${v.id}`);
+      for (const t of pcb.tracks) {
+        if (t.layer !== f.pour.layer || t.net !== f.pour.net) continue;
+        if (pointInArea(t.points[0], area) || pointInArea(t.points[t.points.length - 1], area)) uf.union(node, `t:${t.id}`);
+      }
+    });
   }
 
   // Group pads per net and per copper island.

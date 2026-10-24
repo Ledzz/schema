@@ -30,6 +30,32 @@ export interface Via {
   net: string | null;
 }
 
+/** Copper pour (zone) filled with one net on one layer. */
+export interface Pour {
+  id: string;
+  net: string;
+  layer: CopperLayer;
+  /** Zone outline in mm; null fills the whole board. */
+  outline: Vec[] | null;
+  /** Gap to copper of other nets. */
+  clearance: number;
+  /** How same-net pads join the pour. */
+  connection: 'thermal' | 'solid';
+  thermalGap: number;
+  spokeWidth: number;
+  /** Copper narrower than this is removed. */
+  minWidth: number;
+}
+
+export const DEFAULT_POUR: Omit<Pour, 'id' | 'net' | 'layer'> = {
+  outline: null,
+  clearance: 0.3,
+  connection: 'thermal',
+  thermalGap: 0.3,
+  spokeWidth: 0.35,
+  minWidth: 0.2,
+};
+
 export interface Board {
   x: number;
   y: number;
@@ -61,6 +87,7 @@ export interface Pcb {
   placements: Placement[];
   tracks: Track[];
   vias: Via[];
+  pours?: Pour[];
   /** Footprint documents keyed like "lcsc:C25804" or "builtin:0603". */
   footprints: Record<string, StoredFootprint>;
   /** componentId -> footprint key (null: no footprint available). */

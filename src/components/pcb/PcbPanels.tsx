@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CircleAlert, CircleCheck, Download, FlipHorizontal2, Maximize, MousePointer2, RefreshCcw, RotateCcw, Route, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
+  addPours,
   autoroute,
   boardModel,
+  boardNets,
+  removePours,
+  updatePour,
   checkPcb,
   currentPcb,
   deleteSelectedCopper,
@@ -18,7 +22,8 @@ import {
   updateTrack,
 } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
-import type { CopperLayer } from '../../lib/pcb/types';
+import type { CopperLayer, Pour } from '../../lib/pcb/types';
+import type { PourFill } from '../../lib/pcb/pour';
 import { Field, IconButton, Tabs, cx, inputClass } from '../ui';
 
 function useBoardModel() {
@@ -193,7 +198,7 @@ export function PcbInspector() {
   const project = useEditor((s) => s.project);
   const selection = useEditor((s) => s.pcbSelection);
   const pcb = currentPcb(project);
-  const { conn } = useBoardModel();
+  const { conn, board } = useBoardModel();
   const outOfDate = pcbOutOfDate(project);
   const [busy, setBusy] = useState(false);
 
@@ -201,6 +206,7 @@ export function PcbInspector() {
   const placement = one ? pcb.placements.find((p) => p.componentId === one) : undefined;
   const track = one ? pcb.tracks.find((t) => t.id === one) : undefined;
   const via = one ? pcb.vias.find((v) => v.id === one) : undefined;
+  const pour = one ? pcb.pours?.find((z) => z.id === one) : undefined;
   const component = placement ? project.components.find((c) => c.id === placement.componentId) : undefined;
   const unrouted = [...conn.unrouted.values()].reduce((a, b) => a + b, 0);
 
@@ -327,8 +333,11 @@ export function PcbInspector() {
         </section>
       )}
 
+      {pour && <PourEditor pour={pour} fill={board.fills.find((f) => f.pour.id === pour.id)} />}
+
       {!one && (
         <>
+          <PoursSection fills={board.fills} />
           <section className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Board</h3>
             <Field label="Width (mm)">
@@ -366,12 +375,146 @@ export function PcbInspector() {
   );
 }
 
+/* ---------- copper pours ---------- */
+
+function PoursSection({ fills }: { fills: PourFill[] }) {
+  const project = useEditor((s) => s.project);
+  const nets = useMemo(() => boardNets(project), [project]);
+  const [net, setNet] = useState('');
+  const [layers, setLayers] = useState<'both' | CopperLayer>('both');
+  const chosen = net || nets[0] || '';
+  return (
+    <section className="space-y-1.5">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Copper pours</h3>
+      {fills.map((f) => {
+        const starved = f.thermals.filter((t) => t.spokes < 2).length;
+        return (
+          <button
+            key={f.pour.id}
+            onClick={() => useEditor.getState().setPcbSelection([f.pour.id])}
+            className="flex w-full items-center gap-2 rounded-md border border-line px-2 py-1 text-left hover:bg-black/5 dark:hover:bg-white/5"
+          >
+            <span className="h-2 w-2 rounded-full" style={{ background: f.pour.layer === 'top' ? 'var(--pcb-top)' : 'var(--pcb-bottom)' }} />
+            <span className="font-medium">{f.pour.net}</span>
+            <span className="text-muted">{f.pour.layer}</span>
+            <span className={cx('ml-auto text-[10px]', f.areas.length ? 'text-muted' : 'text-amber-500')}>
+              {f.areas.length} area{f.areas.length === 1 ? '' : 's'}
+              {starved > 0 && <span className="text-amber-500"> · {starved} weak</span>}
+            </span>
+          </button>
+        );
+      })}
+      {nets.length > 0 ? (
+        <div className="flex gap-1">
+          <select aria-label="Pour net" className={inputClass} value={chosen} onChange={(e) => setNet(e.target.value)}>
+            {nets.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Pour layers" className={cx(inputClass, 'w-24')} value={layers} onChange={(e) => setLayers(e.target.value as 'both' | CopperLayer)}>
+            <option value="both">Both</option>
+            <option value="top">Top</option>
+            <option value="bottom">Bottom</option>
+          </select>
+          <button
+            aria-label="Add copper pour"
+            title="Add a pour on the chosen net (replaces existing pours of that net on those layers)"
+            onClick={() => {
+              const created = addPours(chosen, layers === 'both' ? ['top', 'bottom'] : [layers]);
+              useEditor.getState().setPcbSelection(created.length === 1 ? [created[0].id] : []);
+              useEditor.getState().notify(`Added ${chosen} pour${created.length > 1 ? 's on both layers' : ` on ${created[0].layer}`}`);
+            }}
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-indigo-600 px-2 text-white hover:bg-indigo-500"
+          >
+            <Plus className="h-3.5 w-3.5" /> Pour
+          </button>
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted">Wire the schematic first; pours fill a net.</p>
+      )}
+    </section>
+  );
+}
+
+function PourEditor({ pour, fill }: { pour: Pour; fill?: PourFill }) {
+  const nets = boardNets(useEditor((s) => s.project));
+  const set = (patch: Partial<Pour>) => updatePour(pour.id, patch);
+  return (
+    <section className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Copper pour</h3>
+        <button
+          onClick={() => {
+            removePours([pour.id]);
+            useEditor.getState().setPcbSelection([]);
+          }}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-rose-500 hover:bg-rose-500/10"
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Delete
+        </button>
+      </div>
+      <Field label="Net">
+        <select className={inputClass} value={pour.net} onChange={(e) => set({ net: e.target.value })}>
+          {[...new Set([pour.net, ...nets])].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Layer">
+        <div className="flex gap-1">
+          {(['top', 'bottom'] as CopperLayer[]).map((layer) => (
+            <button key={layer} onClick={() => set({ layer })} className={cx('h-7 flex-1 rounded-md border capitalize', pour.layer === layer ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
+              {layer}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Clearance">
+        <NumberInput label="Pour clearance" min={0.1} value={pour.clearance} onCommit={(clearance) => set({ clearance })} />
+      </Field>
+      <Field label="Pads">
+        <div className="flex gap-1">
+          {(['thermal', 'solid'] as const).map((connection) => (
+            <button key={connection} onClick={() => set({ connection })} className={cx('h-7 flex-1 rounded-md border capitalize', pour.connection === connection ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
+              {connection}
+            </button>
+          ))}
+        </div>
+      </Field>
+      {pour.connection === 'thermal' && (
+        <>
+          <Field label="Thermal gap">
+            <NumberInput label="Thermal gap" min={0.1} value={pour.thermalGap} onCommit={(thermalGap) => set({ thermalGap })} />
+          </Field>
+          <Field label="Spoke width">
+            <NumberInput label="Spoke width" min={0.15} value={pour.spokeWidth} onCommit={(spokeWidth) => set({ spokeWidth })} />
+          </Field>
+        </>
+      )}
+      <Field label="Min width">
+        <NumberInput label="Minimum copper width" min={0} value={pour.minWidth} onCommit={(minWidth) => set({ minWidth })} />
+      </Field>
+      {fill && (
+        <p className="text-[11px] text-muted">
+          {fill.areas.length} copper area{fill.areas.length === 1 ? '' : 's'}
+          {pour.connection === 'thermal' && ` · ${fill.thermals.length} thermal pads${fill.thermals.some((t) => t.spokes < 2) ? `, ${fill.thermals.filter((t) => t.spokes < 2).length} with fewer than 2 spokes` : ''}`}
+        </p>
+      )}
+    </section>
+  );
+}
+
 /* ---------- tool rail ---------- */
 
 export function PcbToolRail() {
   const tool = useEditor((s) => s.pcbTool);
   const layer = useEditor((s) => s.activeLayer);
   const hasSelection = useEditor((s) => s.pcbSelection.length > 0);
+  const showPours = useEditor((s) => s.showPours);
   const s = useEditor.getState;
   return (
     <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="PCB tools">
@@ -400,6 +543,9 @@ export function PcbToolRail() {
           {l === 'top' ? 'TOP' : 'BOT'}
         </button>
       ))}
+      <IconButton label={showPours ? 'Hide copper pours' : 'Show copper pours'} active={showPours} onClick={() => s().setShowPours(!showPours)}>
+        <Layers className="h-4 w-4" />
+      </IconButton>
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
       <IconButton label="Rotate" shortcut="R" onClick={() => rotateSelected()} disabled={!hasSelection}>
         <RotateCcw className="h-4 w-4" />

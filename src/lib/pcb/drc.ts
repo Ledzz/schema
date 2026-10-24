@@ -83,6 +83,17 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
     if (pad) issues.push({ severity: 'warning', message: `Via in SMD pad ${label(pad, board)} (solder can wick into the hole)`, at: [v.x, v.y], refs: [v.id] });
   }
 
+  const netsOnBoard = new Set(board.pads.map((p) => p.net).filter(Boolean));
+  for (const f of board.fills) {
+    const where = `${f.pour.net} pour (${f.pour.layer})`;
+    if (!netsOnBoard.has(f.pour.net)) issues.push({ severity: 'warning', message: `${where}: no pad is on net ${f.pour.net}`, at: null, refs: [f.pour.id] });
+    else if (f.areas.length === 0) issues.push({ severity: 'warning', message: `${where} has no copper left after clearances`, at: null, refs: [f.pour.id] });
+    for (const t of f.thermals) {
+      if (t.spokes === 0) issues.push({ severity: 'warning', message: `${t.designator}.${t.number} is not reached by the ${where}`, at: t.center, refs: [] });
+      else if (t.spokes === 1) issues.push({ severity: 'warning', message: `${t.designator}.${t.number} has only 1 thermal spoke to the ${where}`, at: t.center, refs: [] });
+    }
+  }
+
   for (const t of pcb.tracks) {
     if (t.width < pcb.rules.minTrackWidth) issues.push({ severity: 'warning', message: `Track narrower than ${pcb.rules.minTrackWidth} mm`, at: t.points[0], refs: [t.id] });
   }

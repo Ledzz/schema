@@ -47,8 +47,9 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
   - **Interactive routing** (`W`) with 45° corners on the top or bottom layer (`1` / `2`). Press `V` to drop a via and continue on the other layer. Power nets get wider tracks automatically.
   - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance and never places vias in SMD pads.
-  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints.
-  - **Export for JLCPCB.** Gerber RS-274X (copper, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files.
+  - **Copper pours** (e.g. a GND fill on both layers). Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
+  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads.
+  - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files.
 - **Design data**
   - Live netlist and a design check: unconnected pins, duplicate or unannotated designators, conflicting net names.
   - BOM grouped by part, with counts per part type and the extended setup fee.
@@ -63,7 +64,7 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 28 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 30 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
@@ -71,7 +72,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
-- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_check`, `pcb_export`
+- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_export`
 
 Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
 other wiring, so an agent cannot short two nets by accident; when there is no room, the tool says so.
@@ -95,7 +96,7 @@ src/
   shared/          types and passive value parsing shared by server and client
   lib/easyeda/     symbol and footprint parsers for EasyEDA Pro documents
   lib/schematic/   geometry, connectivity/netlist, ops (move/rotate…), router, BOM, hit-testing
-  lib/pcb/         footprints (mm), board model + connectivity, DRC, A* router, Gerber/drill/CPL
+  lib/pcb/         footprints (mm), board model + connectivity, copper pours (Clipper), DRC, A* router, Gerber/drill/CPL
   lib/actions.ts   schematic actions used by both the UI and the WebMCP tools
   lib/passives.ts  generic passive placement and matching
   lib/webmcp.ts    tool definitions and registration
@@ -105,7 +106,7 @@ src/
 
 ## Limitations
 
-- **Missing PCB features.** No copper pours or zones, no keepouts, no differential pairs or length tuning, no 3D view. There is also no multi-sheet schematic hierarchy and no simulation.
+- **Missing PCB features.** Pours always cover the whole board; there's no tool yet to draw a custom zone outline (the data model supports one). No keepouts, no differential pairs or length tuning, no 3D view. There is also no multi-sheet schematic hierarchy and no simulation.
 - **Auto-router.** It is a simple grid router meant for small boards. Expect to clean up dense layouts by hand.
 - **Gerber output.** Covered by unit tests and a structural check. Look at it in JLCPCB's Gerber viewer before ordering.
 - **CPL rotations.** These are the design's own rotations. JLCPCB sometimes needs per-part rotation fixes, which you confirm in their placement preview.

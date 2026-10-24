@@ -13,7 +13,7 @@ import { runDrc } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
 import { routeConnection, simplifyPath } from './router';
-import { emptyPcb, type CopperLayer, type Pcb, type Placement, type StoredFootprint, type Track, type Via } from './types';
+import { DEFAULT_POUR, emptyPcb, type CopperLayer, type Pcb, type Placement, type Pour, type StoredFootprint, type Track, type Via } from './types';
 import { fitPcbView } from './view';
 
 const st = () => useEditor.getState();
@@ -192,7 +192,12 @@ export function flipSelected() {
 
 export function deleteSelectedCopper() {
   const ids = new Set(st().pcbSelection);
-  commitPcb((pcb) => ({ ...pcb, tracks: pcb.tracks.filter((t) => !ids.has(t.id)), vias: pcb.vias.filter((v) => !ids.has(v.id)) }));
+  commitPcb((pcb) => ({
+    ...pcb,
+    tracks: pcb.tracks.filter((t) => !ids.has(t.id)),
+    vias: pcb.vias.filter((v) => !ids.has(v.id)),
+    pours: (pcb.pours ?? []).filter((z) => !ids.has(z.id)),
+  }));
   st().setPcbSelection(st().pcbSelection.filter((id) => !ids.has(id) || st().project.components.some((c) => c.id === id)));
 }
 
@@ -227,7 +232,35 @@ export function addVia(at: Vec, net: string | null): Via {
   return via;
 }
 
-const POWER_NET = /^(gnd|agnd|pgnd|vcc|vdd|vin|vbus|vbat|\+?\d+v\d*|\+?\d+\.\d+v)$/i;
+/* ---------- copper pours ---------- */
+
+/** Adds a pour for `net` on each layer (replacing existing pours of that net there). */
+export function addPours(net: string, layers: CopperLayer[] = ['top', 'bottom'], settings: Partial<Omit<Pour, 'id' | 'net' | 'layer'>> = {}): Pour[] {
+  const pours: Pour[] = layers.map((layer) => ({ ...DEFAULT_POUR, ...settings, id: newId('z'), net, layer }));
+  commitPcb((pcb) => ({
+    ...pcb,
+    pours: [...(pcb.pours ?? []).filter((p) => !(p.net === net && layers.includes(p.layer))), ...pours],
+  }));
+  return pours;
+}
+
+export function updatePour(id: string, patch: Partial<Omit<Pour, 'id'>>) {
+  commitPcb((pcb) => ({ ...pcb, pours: (pcb.pours ?? []).map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+}
+
+export function removePours(ids?: string[]) {
+  commitPcb((pcb) => ({ ...pcb, pours: ids ? (pcb.pours ?? []).filter((p) => !ids.includes(p.id)) : [] }));
+}
+
+/** Nets that have pads on the board, most-connected first (GND first when present). */
+export function boardNets(project: Project = st().project): string[] {
+  const { board } = boardModel(project);
+  const count = new Map<string, number>();
+  for (const p of board.pads) if (p.net) count.set(p.net, (count.get(p.net) ?? 0) + 1);
+  return [...count].sort((a, b) => Number(/gnd/i.test(b[0])) - Number(/gnd/i.test(a[0])) || b[1] - a[1]).map(([n]) => n);
+}
+
+const POWER_NET =/^(gnd|agnd|pgnd|vcc|vdd|vin|vbus|vbat|\+?\d+v\d*|\+?\d+\.\d+v)$/i;
 
 export function trackWidthFor(net: string | null, pcb: Pcb = currentPcb()): number {
   return net && POWER_NET.test(net.replace(/^\+/, '+')) ? pcb.rules.powerTrackWidth : pcb.rules.trackWidth;
