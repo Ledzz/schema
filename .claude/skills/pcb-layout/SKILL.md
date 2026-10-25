@@ -140,7 +140,11 @@ Then tell the user:
 - to check the Gerbers in JLCPCB's viewer after uploading, and the part rotations in their
   assembly preview (CPL rotations follow the design and occasionally need a fix there);
 - that through-hole parts (pin headers, most connectors) add a hand-soldering charge to JLCPCB
-  assembly, or can be left out of the order and soldered by hand;
+  assembly; if the user would rather solder them, export again with
+  `"hand_solder_through_hole": true`, which leaves them out of the BOM and CPL;
+- that the app's **Order from JLCPCB** button (PCB panel, or File menu) does the ordering
+  legwork: it checks the board, downloads the files, opens JLCPCB's quote page and lists the
+  settings to pick there. JLCPCB has no public API, so the upload and checkout stay manual;
 - how to look at the board: run `pnpm dev` and open the local URL it prints (usually
   `http://localhost:5173`) with `/?open=<slug>.schematic.json&mode=pcb` added. The open page
   updates by itself whenever you change the file, and edits saved there (⌘S) go back to the

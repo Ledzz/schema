@@ -49,7 +49,8 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance, never places vias in SMD pads and keeps other nets out from under metal connector shells where it can. Supply nets get wide tracks, and any net can be routed at a chosen width; wide tracks neck down to the pad width only where they enter fine-pitch pins.
   - **Copper pours** (e.g. a GND fill on both layers). Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
   - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads, tracks or vias of other nets under a metal connector shell (USB, RJ45…).
-  - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files.
+  - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files; through-hole parts can be left out of them to solder by hand.
+  - **Order from JLCPCB** (PCB panel or File menu). The sheet checks the board (DRC errors block the order), shows the board size, the parts JLCPCB would assemble, their Basic/Extended split, setup fee and estimated cost for the chosen quantity. One click downloads the files and opens JLCPCB's quote page, and the sheet lists the settings to pick there. JLCPCB has no public ordering API, so dropping the files on their page and checking out stay manual.
 - **Design data**
   - Live netlist and a design check: unconnected pins, duplicate or unannotated designators, conflicting net names.
   - BOM grouped by part, with counts per part type and the extended setup fee.
@@ -73,7 +74,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
-- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_render` (board picture with mm rulers), `pcb_export`
+- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_render` (board picture with mm rulers), `pcb_export` (optionally without through-hole parts in the assembly files)
 
 Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
 other wiring, and `update_component` refuses a move whose dragged wires would join two nets, so an

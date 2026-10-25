@@ -32,7 +32,7 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
+import { addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, throughHoleParts, updateBoard, updatePlacement } from './pcb/actions';
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
@@ -94,6 +94,11 @@ const asRotation = (r: unknown): Rotation | undefined => {
   const n = ((Math.round(Number(r) / 90) * 90) % 360 + 360) % 360;
   return n as Rotation;
 };
+
+/** Component ids of the through-hole parts on the board. */
+export function throughHoleIds(): Set<string> {
+  return new Set(throughHoleParts(boardModel().board).map((c) => c.id));
+}
 
 /** The board picture pcb_render draws, from the tool's input. */
 export function pcbPicture(input: Record<string, unknown>) {
@@ -817,9 +822,13 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'pcb_export',
     title: 'Export fabrication files',
-    description: 'Download the JLCPCB-ready Gerber + drill zip, the CPL (pick-and-place) CSV and the BOM CSV to the user’s computer.',
-    inputSchema: { type: 'object', properties: {} },
-    execute: async () => exportFabrication(),
+    description:
+      'Download the JLCPCB-ready Gerber + drill zip, the CPL (pick-and-place) CSV and the BOM CSV to the user’s computer. With hand_solder_through_hole, through-hole parts (pin headers, most connectors) stay out of the BOM and CPL so JLCPCB doesn’t charge for soldering them.',
+    inputSchema: {
+      type: 'object',
+      properties: { hand_solder_through_hole: { type: 'boolean', description: 'Leave through-hole parts out of the assembly files (default false).' } },
+    },
+    execute: async (input) => exportFabrication(input.hand_solder_through_hole ? throughHoleIds() : undefined),
   },
   {
     name: 'new_schematic',

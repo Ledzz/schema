@@ -101,6 +101,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             },
             { label: 'Export netlist', onSelect: () => downloadText(`${safeFileName(s().project.name)}.net.txt`, formatNetlist(connectivity())) },
             { label: 'Export SVG', onSelect: () => exportSvg(svgRef.current) },
+            { label: 'Order from JLCPCB…', separatorBefore: true, onSelect: () => s().setOrderOpen(true) },
           ]}
         />
         <MenuButton

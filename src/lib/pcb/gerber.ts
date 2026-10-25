@@ -198,11 +198,12 @@ export function generateDrill(pcb: Pcb, board: BoardModel): string {
 }
 
 /** Pick-and-place file in JLCPCB's CPL layout. */
-export function generateCpl(pcb: Pcb, board: BoardModel): string {
+/** Pick-and-place file; parts whose component id is in `skip` are left out (hand-soldered). */
+export function generateCpl(pcb: Pcb, board: BoardModel, skip: ReadonlySet<string> = new Set()): string {
   const b = pcb.board;
   const rows = [['Designator', 'Mid X', 'Mid Y', 'Layer', 'Rotation']];
   for (const part of board.parts) {
-    if (!part.fp || part.component.attrs['Add into BOM'] === 'no') continue;
+    if (!part.fp || part.component.attrs['Add into BOM'] === 'no' || skip.has(part.component.id)) continue;
     const { x, y, rotation, side } = part.placement;
     const rot = ((Math.round(rotation) % 360) + 360) % 360;
     rows.push([part.component.designator, `${(x - b.x).toFixed(3)}mm`, `${(b.y + b.height - y).toFixed(3)}mm`, side === 'top' ? 'Top' : 'Bottom', String(rot)]);

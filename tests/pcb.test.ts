@@ -4,7 +4,7 @@ import { placementToWorld, pointInPolygon, worldPads, shapeDistance, type Copper
 import { buildBoard, pcbConnectivity } from '../src/lib/pcb/board';
 import { runDrc, shellAreas } from '../src/lib/pcb/drc';
 import { renderPcbSvg } from '../src/lib/pcb/render';
-import { autoroute } from '../src/lib/pcb/actions';
+import { autoroute, fabricationFiles, throughHoleParts } from '../src/lib/pcb/actions';
 import { useEditor } from '../src/store/editor';
 import { routeConnection, type RouteEnd } from '../src/lib/pcb/router';
 import { generateCpl, generateDrill, generateGerbers } from '../src/lib/pcb/gerber';
@@ -220,6 +220,25 @@ describe('board picture', () => {
     expect(svg).toMatch(/<polyline points="5\.8,5 11\.2,5" fill="none" stroke="#ffffff"/);
     expect(svg).toContain('stroke="#f59e0b"');
     expect(svg).not.toMatch(/<text/);
+  });
+});
+
+describe('ordering', () => {
+  it('finds through-hole parts and can leave them out of the assembly files', () => {
+    const base = fixture();
+    const project: Project = {
+      ...base,
+      pcb: { ...base.pcb!, footprints: { ...base.pcb!.footprints, tht: { title: 'THT', dataStr: THT, source: 'easyeda' } }, footprintOf: { a: 'builtin:0603', b: 'tht' } },
+    };
+    const board = buildBoard(project, project.pcb!);
+    expect(throughHoleParts(board).map((c) => c.designator)).toEqual(['R2']);
+    const all = fabricationFiles(project);
+    const smdOnly = fabricationFiles(project, new Set(['b']));
+    expect(all.cpl).toContain('R2,');
+    expect(smdOnly.cpl).not.toContain('R2,');
+    expect(smdOnly.cpl).toContain('R1,');
+    expect(all.bom).toContain('R2');
+    expect(smdOnly.bom).not.toContain('R2');
   });
 });
 

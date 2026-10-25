@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
   addPours,
@@ -254,9 +254,17 @@ export function PcbInspector() {
             if (errors && !confirm(`DRC reports ${errors} error${errors > 1 ? 's' : ''}. Export anyway?`)) return;
             exportFabrication();
           }}
-          className="col-span-2 inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-indigo-600 font-medium text-white hover:bg-indigo-500"
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
+          title="Download the Gerber zip, BOM and pick-and-place files"
         >
-          <Download className="h-4 w-4" /> Export Gerbers, BOM & CPL
+          <Download className="h-3.5 w-3.5" /> Export files
+        </button>
+        <button
+          onClick={() => useEditor.getState().setOrderOpen(true)}
+          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-indigo-600 font-medium text-white hover:bg-indigo-500"
+          title="Check the board, download the files and open JLCPCB's order page"
+        >
+          <ShoppingCart className="h-3.5 w-3.5" /> Order from JLCPCB
         </button>
       </div>
       <div className="flex justify-between rounded-lg border border-line bg-panel-2 p-2 text-[11px]">

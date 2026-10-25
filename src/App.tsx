@@ -10,6 +10,7 @@ import { LeftPanel } from './components/panels/LeftPanel';
 import { RightPanel } from './components/panels/RightPanel';
 import { StatusBar, Toast, ToolRail, TopBar } from './components/Chrome';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
+import { OrderDialog } from './components/pcb/OrderDialog';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
 function LibraryResizer() {
@@ -71,6 +72,7 @@ export default function App() {
       )}
       <StatusBar />
       <Toast />
+      <OrderDialog />
     </div>
   );
 }

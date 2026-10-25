@@ -50,7 +50,7 @@ async function main() {
   }) as typeof fetch;
 
   const { useEditor, emptyProject } = await import('../src/store/editor');
-  const { TOOLS, runTool, validateInput, pcbPicture } = await import('../src/lib/webmcp');
+  const { TOOLS, runTool, validateInput, pcbPicture, throughHoleIds } = await import('../src/lib/webmcp');
   const { connectivity } = await import('../src/lib/actions');
   const { buildBom, bomToJlcpcbCsv } = await import('../src/lib/schematic/bom');
   const { formatNetlist } = await import('../src/lib/schematic/netlist');
@@ -79,7 +79,7 @@ async function main() {
     renameSync(tmp, projectPath);
   };
 
-  const exportTo = (dir: string) => {
+  const exportTo = (dir: string, skip: ReadonlySet<string> = new Set()) => {
     const project = st().project;
     mkdirSync(dir, { recursive: true });
     const files: string[] = [];
@@ -87,12 +87,14 @@ async function main() {
       writeFileSync(join(dir, name), content);
       files.push(join(dir, name));
     };
-    const fab = fabricationFiles(project);
-    if (project.pcb?.placements.length) {
+    const fab = fabricationFiles(project, skip);
+    const hasBoard = !!project.pcb?.placements.length;
+    if (hasBoard) {
       write(`${fab.base}-gerbers.zip`, zip(fab.gerbers));
       write(`${fab.base}-CPL.csv`, fab.cpl);
     }
-    write(`${fab.base}-BOM.csv`, bomToJlcpcbCsv(buildBom(project.components)));
+    // With a board, the BOM lists what is placed on it (and assembled); otherwise the schematic.
+    write(`${fab.base}-BOM.csv`, hasBoard ? fab.bom : bomToJlcpcbCsv(buildBom(project.components)));
     write(`${fab.base}.net.txt`, formatNetlist(connectivity(project)));
     return files;
   };
@@ -104,11 +106,12 @@ async function main() {
       st().loadProject(emptyProject(input.name ? String(input.name) : st().project.name));
       return { ok: true, name: st().project.name };
     },
-    pcb_export: async () => {
+    pcb_export: async (input) => {
       const check = checkPcb(st().project);
       const errors = check.issues.filter((i) => i.severity === 'error').map((i) => i.message);
       const dir = join(dirname(projectPath), `${slug}-fab`);
-      return { files: exportTo(dir), drc_errors: errors };
+      const skip = input.hand_solder_through_hole ? throughHoleIds() : new Set<string>();
+      return { files: exportTo(dir, skip), drc_errors: errors, hand_soldered: st().project.components.filter((c) => skip.has(c.id)).map((c) => c.designator) };
     },
     pcb_render: async (input) => {
       const { svg, widthPx, heightPx } = pcbPicture(input);
@@ -124,7 +127,7 @@ async function main() {
   const cliDescriptions: Record<string, string> = {
     new_schematic: 'Replace the project with an empty one (optionally named). Nothing is asked; the old content is gone from this file.',
     pcb_export:
-      'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths and any DRC errors.',
+      'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths and any DRC errors. With hand_solder_through_hole, through-hole parts stay out of the BOM and CPL so JLCPCB does not charge for soldering them.',
     pcb_render:
       'Draw the board as a PNG in <project>-renders/ and return its path; open it with an image viewer (Claude Code’s Read tool shows it). Copper is top red, bottom blue, through-hole gold; pours, silkscreen, metal connector bodies (dashed orange), unrouted connections (dashed white), DRC markers (red errors, amber warnings) and millimetre rulers along the top and left edges are drawn too.',
   };

@@ -107,6 +107,9 @@ interface EditorState {
   amend: (fn: (doc: Doc) => Doc) => void;
   quickEditId: string | null;
   setQuickEdit: (id: string | null) => void;
+  /** The "Order from JLCPCB" sheet is open. */
+  orderOpen: boolean;
+  setOrderOpen: (open: boolean) => void;
 
   mode: 'schematic' | 'pcb';
   setMode: (mode: 'schematic' | 'pcb') => void;
@@ -224,6 +227,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   quickEditId: null,
   setQuickEdit: (quickEditId) => set({ quickEditId }),
+  orderOpen: false,
+  setOrderOpen: (orderOpen) => set({ orderOpen }),
 
   mode: (() => {
     try {

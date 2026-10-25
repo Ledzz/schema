@@ -456,20 +456,30 @@ export function checkPcb(project: Project = st().project) {
   return { issues: runDrc(board, pcb, conn), conn, board };
 }
 
-export function fabricationFiles(project: Project = st().project) {
+/** Through-hole parts (every pad plated through), which JLCPCB solders by hand at extra cost. */
+export function throughHoleParts(board: BoardModel): Component[] {
+  return board.parts.filter((p) => p.fp && p.fp.pads.length > 0 && p.fp.pads.every((pad) => pad.layer === 'through')).map((p) => p.component);
+}
+
+/**
+ * Gerbers, pick-and-place and BOM for the board. Components in `skip` (e.g. through-hole parts
+ * the user solders) stay on the board but out of the assembly files.
+ */
+export function fabricationFiles(project: Project = st().project, skip: ReadonlySet<string> = new Set()) {
   const { pcb, board } = boardModel(project);
   const base = safeFileName(project.name);
   const gerbers = generateGerbers(pcb, board, base);
   return {
     base,
     gerbers,
-    cpl: generateCpl(pcb, board),
-    bom: bomToJlcpcbCsv(buildBom(project.components.filter((c) => pcb.placements.some((p) => p.componentId === c.id)))),
+    cpl: generateCpl(pcb, board, skip),
+    bom: bomToJlcpcbCsv(buildBom(project.components.filter((c) => pcb.placements.some((p) => p.componentId === c.id) && !skip.has(c.id)))),
   };
 }
 
-export function exportFabrication(): { files: string[] } {
-  const { base, gerbers, cpl, bom } = fabricationFiles();
+/** Downloads the Gerber zip and, for assembly, the CPL and BOM. */
+export function exportFabrication(skip: ReadonlySet<string> = new Set(), withAssembly = true): { files: string[] } {
+  const { base, gerbers, cpl, bom } = fabricationFiles(st().project, skip);
   const archive = zip(gerbers);
   const url = URL.createObjectURL(new Blob([archive as BlobPart], { type: 'application/zip' }));
   const a = document.createElement('a');
@@ -477,6 +487,7 @@ export function exportFabrication(): { files: string[] } {
   a.download = `${base}-gerbers.zip`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if (!withAssembly) return { files: [`${base}-gerbers.zip`] };
   downloadText(`${base}-CPL.csv`, cpl, 'text/csv');
   downloadText(`${base}-BOM.csv`, bom, 'text/csv');
   return { files: [`${base}-gerbers.zip`, `${base}-CPL.csv`, `${base}-BOM.csv`] };
