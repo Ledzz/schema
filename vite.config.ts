@@ -13,8 +13,11 @@ function apiDevServer(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith('/api/')) return next();
         try {
-          const { api } = (await server.ssrLoadModule('/server/api.ts')) as { api: Hono };
-          await getRequestListener(api.fetch)(req, res);
+          // Design files are only reachable from the dev server.
+          const module = req.url.startsWith('/api/dev/designs')
+            ? ((await server.ssrLoadModule('/server/designs.ts')) as { designs: Hono }).designs
+            : ((await server.ssrLoadModule('/server/api.ts')) as { api: Hono }).api;
+          await getRequestListener(module.fetch)(req, res);
         } catch (err) {
           next(err);
         }

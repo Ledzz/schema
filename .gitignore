@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Fabrication output written next to designs by `pnpm schem`
+designs/*-fab/
+designs/*.tmp
+designs/.*.tmp

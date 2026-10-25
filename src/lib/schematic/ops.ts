@@ -85,6 +85,12 @@ export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: nu
   };
 }
 
+/** Updates one component (e.g. a new position or rotation) and keeps attached wires connected. */
+export function updateComponentItem(doc: Doc, id: string, patch: Partial<Component>, symbols: SymbolResolver): Doc {
+  const { components, wires } = transformComponents(doc, new Set([id]), symbols, (c) => ({ ...c, ...patch }));
+  return { ...doc, components, wires };
+}
+
 function selectionCenter(doc: Doc, ids: ReadonlySet<string>): Vec {
   const pts: Vec[] = [
     ...doc.components.filter(isSelected(ids)).map((c) => [c.x, c.y] as Vec),

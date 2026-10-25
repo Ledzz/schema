@@ -39,6 +39,7 @@ import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
 import { startPassive } from '../lib/passives';
+import { detachDesign, openDesign, saveDesign } from '../lib/designs';
 import { boardModel, enterPcb } from '../lib/pcb/actions';
 import { PASSIVES, type PassiveKind } from '../shared/passives';
 
@@ -65,6 +66,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
   const canUndo = useEditor((s) => s.past.length > 0);
   const canRedo = useEditor((s) => s.future.length > 0);
   const status = useWebMcp((s) => s.status);
+  const sourceFile = useEditor((s) => s.sourceFile);
   const fileInput = useRef<HTMLInputElement>(null);
   const s = useEditor.getState;
 
@@ -84,7 +86,14 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           items={[
             { label: 'New schematic', onSelect: () => (s().project.components.length === 0 || confirm('Discard the current schematic?')) && newProject() },
             { label: 'Open…', shortcut: `${mod}O`, onSelect: () => fileInput.current?.click() },
-            { label: 'Save to file', shortcut: `${mod}S`, onSelect: saveProjectFile },
+            ...(sourceFile
+              ? [
+                  { label: `Save to designs/${sourceFile}`, shortcut: `${mod}S`, onSelect: () => void saveDesign() },
+                  { label: `Reload designs/${sourceFile}`, onSelect: () => void openDesign(sourceFile) },
+                  { label: 'Download a copy', onSelect: saveProjectFile },
+                  { label: 'Stop syncing with file', onSelect: detachDesign },
+                ]
+              : [{ label: 'Save to file', shortcut: `${mod}S`, onSelect: saveProjectFile }]),
             {
               label: 'Export BOM (JLCPCB CSV)',
               separatorBefore: true,
@@ -156,7 +165,9 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           onChange={(e) => s().renameProject(e.target.value)}
           aria-label="Project name"
           className="w-56 truncate rounded-md bg-transparent px-2 py-1 text-center text-[13px] font-medium outline-none hover:bg-black/5 focus:bg-panel-2 focus:ring-2 focus:ring-indigo-500/30 dark:hover:bg-white/5"
+          title={sourceFile ? `Synced with designs/${sourceFile}` : undefined}
         />
+        {sourceFile && <span className="hidden font-mono text-[10px] text-muted xl:inline">designs/{sourceFile}</span>}
       </div>
       <div className="flex items-center gap-1">
         <IconButton label="Undo" shortcut={`${mod}Z`} onClick={() => s().undo()} disabled={!canUndo}>

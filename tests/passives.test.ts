@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PASSIVE_SYMBOLS, attributeMatches, formatSi, parsePassiveValue, searchKeyword } from '../src/shared/passives';
+import { PASSIVE_SYMBOLS, attributeMatches, formatSi, parsePassiveValue, sameColour, searchKeyword } from '../src/shared/passives';
 import { parseSymbol } from '../src/lib/easyeda/symbol';
 
 describe('passive values', () => {
@@ -59,6 +59,10 @@ describe('passive values', () => {
     expect(attributeMatches('capacitor', v, '1uF')).toBe(false);
     expect(attributeMatches('ferrite', parsePassiveValue('ferrite', '600R')!, '600Ω@100MHz')).toBe(true);
     expect(attributeMatches('led', parsePassiveValue('led', 'green')!, 'Emerald Green')).toBe(true);
+    expect(sameColour('Emerald Green', 'Green')).toBe(true);
+    expect(sameColour('Warm White', 'White')).toBe(true);
+    expect(sameColour('Yellow-Green', 'Green')).toBe(false);
+    expect(sameColour('Red/Green', 'Red')).toBe(false);
     expect(searchKeyword('led', parsePassiveValue('led', 'red')!)).toBe('LED');
   });
 
@@ -78,5 +82,9 @@ describe('built-in symbols', () => {
     }
     const diode = parseSymbol(PASSIVE_SYMBOLS.diode);
     expect(diode.units[0].pins.find((p) => p.number === '1')?.x).toBe(20);
+    // Diodes and LEDs can be wired by pin name: pin 1 is the cathode.
+    for (const kind of ['diode', 'led'] as const) {
+      expect(parseSymbol(PASSIVE_SYMBOLS[kind]).units[0].pins.map((p) => `${p.number}=${p.name}`).sort()).toEqual(['1=K', '2=A']);
+    }
   });
 });

@@ -14,22 +14,24 @@ import {
   connectPins,
   connectivity,
   designatorPrefix,
+  disconnectPin,
   findPin,
   markNoConnect,
   nextFreePosition,
+  pinGridOffset,
   placePartAt,
   replacePart,
 } from './actions';
 import { bomToJlcpcbCsv, buildBom } from './schematic/bom';
 import { worldPins } from './schematic/geometry';
 import { parseSymbol } from './easyeda/symbol';
-import { deleteItems } from './schematic/ops';
-import { symbolFor } from './schematic/symbols';
+import { deleteItems, updateComponentItem } from './schematic/ops';
+import { resolverFor, symbolFor } from './schematic/symbols';
 import type { Component, Rotation } from './schematic/types';
 import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
-import { assignPassive, placePassiveAt } from './passives';
+import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { addPours, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
 import { fitPcbView } from './pcb/view';
 import type { CopperLayer, Pcb, Pour } from './pcb/types';
@@ -91,6 +93,17 @@ const asRotation = (r: unknown): Rotation | undefined => {
   return n as Rotation;
 };
 
+/** Explains an extended pick for a generic passive and names sizes that have a no-fee part. */
+async function extendedNote(c: Component): Promise<string | undefined> {
+  if (c.partClass !== 'extended' || !c.generic) return undefined;
+  const { kind, size } = c.generic;
+  const others = await noFeeSizes(kind, c.value, size);
+  const alternatives = others.length
+    ? `Basic/preferred parts exist in ${others.map((o) => `${o.size} (${o.lcsc})`).join(', ')}; switch with set_passive.`
+    : 'Other sizes have none either.';
+  return `Extended part ($${EXTENDED_SETUP_FEE} setup fee): no basic or preferred ${c.value} is in stock in ${size}. ${alternatives}`;
+}
+
 export const TOOLS: ToolDefinition[] = [
   {
     name: 'search_parts',
@@ -117,7 +130,7 @@ export const TOOLS: ToolDefinition[] = [
     execute: async (input) => {
       const types = Array.isArray(input.part_types) ? (input.part_types as string[]).filter((t): t is PartClass => (PART_CLASSES as string[]).includes(t)) : [];
       const split = splitPackageQuery(String(input.query ?? ''));
-      const res = await fetchSearch({
+      const query = {
         q: split.keyword,
         types,
         inStock: input.in_stock_only !== false,
@@ -125,9 +138,19 @@ export const TOOLS: ToolDefinition[] = [
         packages: input.package ? [String(input.package)] : split.packages,
         page: 1,
         pageSize: Math.min(50, Math.max(1, Number(input.limit) || 10)),
-      });
+      };
+      const res = await fetchSearch(query);
       st().requestLibrary(String(input.query ?? ''));
+      // An empty filtered search doesn't say whether the words or the filter were wrong.
+      let hint: string | undefined;
+      if (res.total === 0) {
+        const unfiltered = types.length ? (await fetchSearch({ ...query, types: [], pageSize: 1 })).total : 0;
+        hint = unfiltered
+          ? `No ${types.join('/')} part matches these words, but ${unfiltered} other in-stock parts do; they are extended ($${EXTENDED_SETUP_FEE} setup fee each). The keyword search is literal, so a basic part may still exist under other words: try a common MPN family or the exact value and package.`
+          : 'Nothing matches. Use fewer or more common keywords, an MPN family, or drop the package filter (JLCPCB calls USB-C connectors "Type-C").';
+      }
       return {
+        hint,
         total: res.total,
         parts: res.parts.map((p) => ({
           lcsc: p.lcsc,
@@ -178,7 +201,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'place_part',
     title: 'Place part',
     description:
-      'Place an LCSC part on the schematic. Coordinates use a 10-unit grid (pins sit on multiples of 10, y grows downwards); omit x/y to place to the right of the existing drawing. Returns the designator and the absolute position of every pin.',
+      'Place an LCSC part on the schematic. Coordinates use a 10-unit grid (y grows downwards); the position is nudged by up to 5 units so every pin lands on a multiple of 10. Omit x/y to place to the right of the existing drawing. Returns the designator and the absolute position of every pin.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -228,7 +251,11 @@ export const TOOLS: ToolDefinition[] = [
       const at: [number, number] = input.x !== undefined && input.y !== undefined ? [Number(input.x), Number(input.y)] : nextFreePosition();
       const { component, match } = await placePassiveAt(kind, String(input.value), size, at, asRotation(input.rotation), input.designator ? String(input.designator) : undefined);
       st().setSelection([component.id]);
-      return { ...componentInfo(component), match_error: match?.error ?? (match?.candidates.length ? undefined : 'No in-stock JLCPCB part found; component left unassigned') };
+      return {
+        ...componentInfo(component),
+        match_error: match?.error ?? (match?.candidates.length ? undefined : 'No in-stock JLCPCB part found; component left unassigned'),
+        note: await extendedNote(component),
+      };
     },
   },
   {
@@ -252,7 +279,16 @@ export const TOOLS: ToolDefinition[] = [
         list.map((c) => c.id),
         { value: input.value === undefined ? undefined : String(input.value), size: input.size === undefined ? undefined : String(input.size) },
       );
-      return { components: list.map((c) => componentInfo(st().project.components.find((x) => x.id === c.id)!, false)) };
+      const updated = list.map((c) => st().project.components.find((x) => x.id === c.id)!);
+      const notes = (
+        await Promise.all(
+          updated.map(async (c) => {
+            const note = await extendedNote(c);
+            return note ? `${c.designator}: ${note}` : null;
+          }),
+        )
+      ).filter(Boolean);
+      return { components: updated.map((c) => componentInfo(c, false)), notes: notes.length ? notes : undefined };
     },
   },
   {
@@ -319,9 +355,22 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'disconnect_pin',
+    title: 'Disconnect pin',
+    description:
+      'Undo connections at a pin: removes every wire that ends on it (including whole wires made by connect_pins, which also frees the pin at the other end), no-connect markers on it, and labels or flags left dangling by that. Returns what was removed and the pin’s net afterwards.',
+    inputSchema: { type: 'object', properties: { pin: pinRefSchema('Pin to disconnect.') }, required: ['pin'] },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const removed = disconnectPin(String(input.pin));
+      const p = findPin(String(input.pin));
+      return { removed_wires: removed.wires, removed_labels: removed.labels, net: connectivity().pinNet.get(`${p.component.id}:${p.pin.id}`) ?? null };
+    },
+  },
+  {
     name: 'update_component',
     title: 'Update component',
-    description: 'Change a component’s value, designator, position or rotation.',
+    description: 'Change a component’s value, designator, position or rotation. Wires attached to its pins follow it, as when dragging in the editor; check the returned pin nets afterwards.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -342,14 +391,32 @@ export const TOOLS: ToolDefinition[] = [
       if (input.x !== undefined) patch.x = Number(input.x);
       if (input.y !== undefined) patch.y = Number(input.y);
       if (input.rotation !== undefined) patch.rotation = asRotation(input.rotation);
-      st().updateComponent(c.id, patch);
+      if (patch.x !== undefined || patch.y !== undefined || patch.rotation !== undefined) {
+        const [dx, dy] = pinGridOffset({ ...c, ...patch });
+        patch.x = (patch.x ?? c.x) + dx;
+        patch.y = (patch.y ?? c.y) + dy;
+      }
+      const project = st().project;
+      const symbols = resolverFor(project);
+      // Dragged wire ends can land on other wiring; refuse instead of silently joining nets.
+      const before = connectivity(project).pinNet;
+      const after = connectivity({ ...project, ...updateComponentItem(project, c.id, patch, symbols) });
+      for (const net of after.nets) {
+        const joined = new Set(net.members.map((m) => before.get(`${m.componentId}:${m.pinId}`)).filter(Boolean));
+        if (joined.size > 1)
+          throw new Error(
+            `Not changed: the wires attached to ${c.designator} would join ${[...joined].join(' and ')} there. Choose another position or rotation, or delete its wires first and reconnect afterwards.`,
+          );
+      }
+      st().commit((doc) => updateComponentItem(doc, c.id, patch, symbols));
       return componentInfo(st().project.components.find((x) => x.id === c.id)!);
     },
   },
   {
     name: 'replace_part',
     title: 'Replace part',
-    description: 'Swap the LCSC part used by a component (e.g. to move from an extended to a basic part). Keeps position and rotation; wires may need reconnecting if pinouts differ.',
+    description:
+      'Swap the LCSC part used by a component (e.g. to move from an extended to a basic part). Keeps the designator, position and rotation. Warns when the new symbol numbers or places its pins differently, since wiring may then be wrong or loose.',
     inputSchema: {
       type: 'object',
       properties: { designator: { type: 'string' }, lcsc: { type: 'string' } },
@@ -357,8 +424,24 @@ export const TOOLS: ToolDefinition[] = [
     },
     execute: async (input) => {
       const c = byDesignator(String(input.designator));
+      const wired = connectivity().pinNet;
+      const before = worldPins(c, symbolFor(st().project, c.symbolKey));
       const updated = await replacePart(c.id, String(input.lcsc));
-      return updated ? componentInfo(updated) : null;
+      if (!updated) return null;
+      const after = worldPins(updated, symbolFor(st().project, updated.symbolKey));
+      const named = (p: (typeof before)[number]) => p.pin.name && p.pin.name !== p.pin.number;
+      const renamed: string[] = [];
+      const loose: string[] = [];
+      for (const b of before) {
+        const a = after.find((p) => p.pin.number === b.pin.number);
+        if (a && named(a) && named(b) && a.pin.name !== b.pin.name) renamed.push(`${b.pin.number} was ${b.pin.name}, now ${a.pin.name}`);
+        if (wired.has(`${c.id}:${b.pin.id}`) && (!a || a.at[0] !== b.at[0] || a.at[1] !== b.at[1])) loose.push(b.pin.number);
+      }
+      const warnings = [
+        renamed.length && `Pin numbering differs from the old symbol (${renamed.join('; ')}); address pins by name and check the connections.`,
+        loose.length && `Wired pins ${loose.join(', ')} moved, so their wires no longer reach them; reconnect with disconnect_pin and the connect tools.`,
+      ].filter(Boolean);
+      return { ...componentInfo(updated), warnings: warnings.length ? warnings : undefined };
     },
   },
   {
@@ -402,7 +485,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'get_bom',
     title: 'Get BOM',
-    description: `Bill of materials grouped by LCSC part with JLCPCB part types, stock and an estimate of extended-part setup fees ($${EXTENDED_SETUP_FEE} per unique extended part).`,
+    description: `Bill of materials grouped by LCSC part with JLCPCB part types, stock and an estimate of extended-part setup fees ($${EXTENDED_SETUP_FEE} per unique extended part). parts_cost_usd is the total for all \`boards\` boards, not per board.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -486,15 +569,18 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'pcb_get_state',
     title: 'Get PCB state',
-    description: 'Board outline, design rules, every placed part (position in mm, rotation, side, footprint, bounding box), nets with unrouted connection counts, and track/via counts. y grows downwards; the board origin is its top-left corner.',
-    inputSchema: { type: 'object', properties: {} },
+    description:
+      'Board outline, design rules, the total area of the parts’ bounding boxes, every placed part (position in mm, rotation, side, footprint, bounding box), copper pours (areas = separate copper regions; unconnected islands are already removed), unrouted connection counts per net (`unrouted`), and track/via counts. y grows downwards; the board origin is its top-left corner. With include_pads, each part also lists its pads (number, net, x, y) — useful for placing decoupling capacitors next to the right pins.',
+    inputSchema: { type: 'object', properties: { include_pads: { type: 'boolean', description: 'List every pad with its net and position (default false).' } } },
     annotations: { readOnlyHint: true },
-    execute: async () => {
+    execute: async (input) => {
       const { pcb, board, conn } = boardModel();
       const round = (v: number) => Math.round(v * 1000) / 1000;
+      const partArea = board.parts.reduce((sum, p) => sum + (p.fp ? (p.box.x2 - p.box.x1) * (p.box.y2 - p.box.y1) : 0), 0);
       return {
         board: pcb.board,
         rules: pcb.rules,
+        part_area_mm2: Math.round(partArea),
         parts: board.parts.map((p) => ({
           designator: p.component.designator,
           x: round(p.placement.x),
@@ -503,6 +589,7 @@ export const TOOLS: ToolDefinition[] = [
           side: p.placement.side,
           footprint: pcb.footprints[pcb.footprintOf[p.component.id] ?? '']?.title ?? null,
           bbox: p.fp ? { x1: round(p.box.x1), y1: round(p.box.y1), x2: round(p.box.x2), y2: round(p.box.y2) } : null,
+          pads: input.include_pads ? p.pads.map((pad) => ({ number: pad.number, net: pad.net, x: round(pad.center[0]), y: round(pad.center[1]) })) : undefined,
         })),
         pours: board.fills.map((f) => ({
           net: f.pour.net,
@@ -682,10 +769,49 @@ function summarize(value: unknown): string {
   return text.length > 140 ? `${text.slice(0, 140)}…` : text;
 }
 
+const typeOf = (value: unknown) => (Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value);
+
+function checkValue(value: unknown, schema: JsonSchema): string | null {
+  const type = schema.type as string | undefined;
+  const wrongType =
+    type === 'integer' ? !Number.isInteger(value) : type === 'number' ? !Number.isFinite(value) : type !== undefined && typeOf(value) !== type;
+  if (wrongType) return `must be ${type === 'integer' || type === 'array' || type === 'object' ? 'an' : 'a'} ${type}, got ${JSON.stringify(value)}`;
+  const options = schema.enum as unknown[] | undefined;
+  if (options && !options.includes(value)) return `must be one of ${options.map((o) => JSON.stringify(o)).join(', ')}, got ${JSON.stringify(value)}`;
+  if (type === 'array' && schema.items) {
+    for (const item of value as unknown[]) {
+      const problem = checkValue(item, schema.items as JsonSchema);
+      if (problem) return `has an item that ${problem}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks input against the tool's schema (top-level fields and array items), so a misspelt or
+ * missing field fails with the list of valid ones instead of the tool acting on undefined.
+ */
+export function validateInput(tool: ToolDefinition, input: unknown): Record<string, unknown> {
+  const value = input ?? {};
+  if (typeOf(value) !== 'object') throw new Error(`${tool.name} expects a JSON object as input.`);
+  const fields = value as Record<string, unknown>;
+  const props = (tool.inputSchema.properties ?? {}) as Record<string, JsonSchema>;
+  const names = Object.keys(props);
+  const hint = names.length ? `Valid inputs: ${names.join(', ')}.` : `${tool.name} takes no input.`;
+  for (const key of Object.keys(fields)) if (!(key in props)) throw new Error(`Unknown input "${key}" for ${tool.name}. ${hint}`);
+  for (const key of (tool.inputSchema.required as string[] | undefined) ?? [])
+    if (fields[key] === undefined) throw new Error(`Missing required input "${key}" for ${tool.name}. ${hint}`);
+  for (const [key, field] of Object.entries(fields)) {
+    const problem = field === undefined ? null : checkValue(field, props[key]);
+    if (problem) throw new Error(`Input "${key}" of ${tool.name} ${problem}.`);
+  }
+  return fields;
+}
+
 /** Runs a tool with logging; used by WebMCP and the in-app tool console. */
 export async function runTool(tool: ToolDefinition, input: Record<string, unknown>): Promise<unknown> {
   try {
-    const result = await tool.execute(input ?? {});
+    const result = await tool.execute(validateInput(tool, input));
     st().logAgent({ tool: tool.name, input, ok: true, summary: summarize(result) });
     return result;
   } catch (err) {

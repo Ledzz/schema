@@ -55,7 +55,8 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - BOM grouped by part, with counts per part type and the extended setup fee.
   - "Find no-fee alternative" for extended parts, and stock refresh.
   - JLCPCB BOM CSV export.
-- **Files** — autosave in the browser, plus save/open project JSON, export SVG and netlist.
+- **Files** — autosave in the browser, plus save/open project JSON, export SVG and netlist. In
+  dev mode, designs in `designs/` open with `/?open=<file>.json` and save back to the same file.
 
 Schematic keys: `W` wire · `N` label · `P`/`G` power/ground · `Q` no-connect · `R` rotate ·
 `X` mirror · `Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate.
@@ -64,18 +65,20 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 30 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 31 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
 - **Schematic:**
-  - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`
+  - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
 - **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_export`
 
 Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
-other wiring, so an agent cannot short two nets by accident; when there is no room, the tool says so.
+other wiring, and `update_component` refuses a move whose dragged wires would join two nets, so an
+agent cannot short nets by accident; when there is no room, the tool says so. Inputs are checked
+against each tool's schema, and a misspelt or missing field fails with the list of valid ones.
 Read-only tools carry `readOnlyHint`. Destructive tools carry `consequentialHint`, and
 `new_schematic` also asks the user to confirm. Errors come back as `{error}` results, so the agent
 sees the reason. The **Agent** tab lists the tools, lets you run any of them by hand, and logs
@@ -83,6 +86,42 @@ every call an agent makes.
 
 To try it in Chrome, enable `chrome://flags/#enable-webmcp-testing`, or start Chrome with
 `--enable-features=WebMCP,WebMCPTesting`.
+
+## Claude Code skills and the `schem` CLI
+
+The same tools also run headless, so Claude Code or a script can build designs without a browser:
+
+```bash
+pnpm -s schem designs/blinky.schematic.json tools               # list tools; `tools <name>` shows one schema
+pnpm -s schem designs/blinky.schematic.json place_passive '{"kind":"resistor","value":"1k","size":"0603"}'
+pnpm -s schem designs/blinky.schematic.json batch steps.json    # [{"tool": "...", "input": {...}}, ...]
+pnpm -s schem designs/blinky.schematic.json summary             # parts, nets, checks, BOM, PCB and DRC
+pnpm -s schem designs/blinky.schematic.json export              # Gerbers, drill, BOM, CPL → designs/blinky-fab/
+```
+
+Each run loads the project file (creating it if needed), runs the tool or batch, prints JSON and
+saves the file. Errors print `{"error": "..."}` and exit with status 1. A batch stops at the
+first failing step unless you pass `--keep-going`.
+
+Two Claude Code skills in [.claude/skills](.claude/skills) drive the CLI:
+
+- **schematic-design** turns a plain-language description into a checked schematic with in-stock
+  JLCPCB parts, Basic first. It includes recipes for regulators, USB-C power, LEDs, I2C,
+  crystals and MCU minimum systems.
+- **pcb-layout** loads footprints, sizes the board, places parts, adds GND pours, routes, runs DRC
+  and writes the fabrication files.
+
+They load automatically when Claude Code runs in this repository. Ask for something like "design
+a USB-C board with a 3.3 V LDO and a status LED", then "make the PCB". To use them from any
+directory, link them into your personal skills (they still build designs in this repository):
+
+```bash
+ln -s "$PWD/.claude/skills/schematic-design" "$PWD/.claude/skills/pcb-layout" ~/.claude/skills/
+```
+
+To open a design in the app, run `pnpm dev` and visit `/?open=<file>.json` (add `&mode=pcb` for
+the board). In dev mode, ⌘S then writes your edits back to `designs/<file>.json`, so you and
+Claude can take turns on the same design.
 
 ## Architecture
 
@@ -92,6 +131,9 @@ server/            Hono API (runs inside Vite in dev, standalone in prod)
   easyeda.ts       EasyEDA device lookup, AES-GCM document decryption, bulk stock
   match.ts         passive value -> best JLCPCB part
   api.ts           /api/parts/search | facets | match | :code | stock
+  designs.ts       dev-only read/write of designs/*.json for the ?open= round trip
+scripts/schem.ts   headless CLI running the WebMCP tools on a project file
+.claude/skills/    schematic-design and pcb-layout skills for Claude Code
 src/
   shared/          types and passive value parsing shared by server and client
   lib/easyeda/     symbol and footprint parsers for EasyEDA Pro documents

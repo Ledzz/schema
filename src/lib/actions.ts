@@ -4,7 +4,7 @@
 import type { PartDetail, PartSummary } from '../shared/parts';
 import { useEditor, type Placing } from '../store/editor';
 import { fetchPartDetail, fetchStock } from './api';
-import { nextDesignator, splitDesignator } from './schematic/designators';
+import { nextDesignator } from './schematic/designators';
 import { boxContains, boxIntersects, componentBox, normBox, onSegment, samePoint, snap, worldPins, type WorldPin } from './schematic/geometry';
 import { portBox } from './schematic/hit';
 import { analyze } from './schematic/netlist';
@@ -111,6 +111,31 @@ export function nextFreePosition(): Vec {
   return [snap(Math.max(...xs) + 120, 10), snap(Math.min(...ys), 10)];
 }
 
+/**
+ * Shift that puts as many of a component's pins as possible on the 10-unit wiring grid. Library
+ * symbols with an even number of pins per side are centred between two pins, 5 units off it.
+ */
+export function pinGridOffset(c: Omit<Component, 'id' | 'designator'>, project: Project = state().project): Vec {
+  const pins = worldPins(c, symbolFor(project, c.symbolKey)).map((p) => p.at);
+  const fix = (v: number) => snap(v, 10) - v;
+  const onGrid = (p: Vec, d: Vec) => Math.abs(fix(p[0] + d[0])) < 0.01 && Math.abs(fix(p[1] + d[1])) < 0.01;
+  let best: Vec = [0, 0];
+  let most = pins.filter((p) => onGrid(p, best)).length;
+  for (const p of pins) {
+    const d: Vec = [fix(p[0]), fix(p[1])];
+    const n = pins.filter((q) => onGrid(q, d)).length;
+    if (n > most) [best, most] = [d, n];
+  }
+  return best;
+}
+
+/** Placement position (snapped) adjusted so the part's pins land on the 10-unit grid. */
+export function onPinGrid(placing: Placing, at: Vec, rotation: Rotation): Vec {
+  const probe = { ...placing.template, x: snap(at[0]), y: snap(at[1]), rotation, mirror: false };
+  const [dx, dy] = pinGridOffset(probe);
+  return [probe.x + dx, probe.y + dy];
+}
+
 export async function placePartAt(
   lcsc: string,
   opts: { x?: number; y?: number; rotation?: Rotation; designator?: string; value?: string } = {},
@@ -119,7 +144,8 @@ export async function placePartAt(
   const placing = placingFromDetail(detail, symbolKey);
   if (opts.value) placing.template.value = opts.value;
   const at: Vec = opts.x !== undefined && opts.y !== undefined ? [opts.x, opts.y] : nextFreePosition();
-  return placeComponent(placing, at, opts.rotation ?? 0, false, opts.designator);
+  const rotation = opts.rotation ?? 0;
+  return placeComponent(placing, onPinGrid(placing, at, rotation), rotation, false, opts.designator);
 }
 
 export function addPort(kind: PortKind, name: string, at: Vec, rotation: Rotation = 0): NetPort {
@@ -201,7 +227,15 @@ function flagLayouts(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>): Fl
   const out: Vec = [-pin.dir[0], -pin.dir[1]];
   const along = (k: number): Vec => [pin.at[0] + out[0] * k, pin.at[1] + out[1] * k];
   const straight = (len: number): FlagLayout => ({ points: [pin.at, along(len)], rotation: portRotationFor(kind, out) });
-  if (kind === 'label' || out[1] !== 0) return [20, 30, 40, 60, 80].map(straight);
+  // Turned to the side, for when the pin's own wire already leaves straight out.
+  const sides: Vec[] = out[1] !== 0 ? [[1, 0], [-1, 0]] : [[0, -1], [0, 1]];
+  const sideways = [10, 20].flatMap((len) =>
+    sides.map((s): FlagLayout => {
+      const e = along(len);
+      return { points: [pin.at, e, [e[0] + s[0] * 20, e[1] + s[1] * 20]], rotation: portRotationFor(kind, s) };
+    }),
+  );
+  if (kind === 'label' || out[1] !== 0) return [...[20, 30, 40, 60, 80].map(straight), ...sideways];
   // Power flags point up and ground flags down, so turn the stub vertical.
   const v = kind === 'power' ? -1 : 1;
   const elbow = (len: number, rise: number): FlagLayout => {
@@ -233,8 +267,14 @@ function createsContact(project: Project, points: Vec[], allowed: Vec[]): boolea
   return anchors.some((a) => segs.some(([p, q]) => onSegment(a, p, q)));
 }
 
+/** Wiring a new stub from this pin must not touch: everything except the pin's own net. */
+interface ContactScope {
+  project: Project;
+  allowed: Vec[];
+}
+
 /** Number of collisions between a flag layout and the drawing (0 = clear, Infinity = would short). */
-function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, self: Vec): number {
+function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, self: Vec, scope: ContactScope): number {
   const resolve = resolverFor(project);
   const flag = portBox(port);
   const compBoxes = project.components.map((c) => componentBox(c, resolve(c.symbolKey)));
@@ -259,11 +299,12 @@ function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, se
   for (const w of project.wires) {
     for (let i = 1; i < w.points.length; i++) {
       const seg = normBox(w.points[i - 1], w.points[i]);
-      if (boxIntersects(seg, flag) || stubBoxes.some((s) => boxIntersects(seg, s))) conflicts += 1;
+      if (boxIntersects(seg, flag)) conflicts += 2;
+      else if (stubBoxes.some((s) => boxIntersects(seg, s))) conflicts += 1;
     }
   }
-  // Any electrical contact with other wiring would short the new net to it: forbidden.
-  if (createsContact(project, layout.points, [self])) return Infinity;
+  // Any electrical contact with another net's wiring would short the two: forbidden.
+  if (createsContact(scope.project, layout.points, scope.allowed)) return Infinity;
   return conflicts;
 }
 
@@ -275,11 +316,20 @@ export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>,
     const end = l.points[l.points.length - 1];
     return { id: newId('n'), kind, name, x: end[0], y: end[1], rotation: l.rotation };
   };
+  // A pin that is already wired may share its net's wiring: touching that only names the net.
+  const conn = connectivity(project);
+  const net = conn.pinNet.get(`${pin.component.id}:${pin.pin.id}`);
+  const scope: ContactScope = net
+    ? {
+        project: { ...project, wires: project.wires.filter((w) => conn.itemNet.get(w.id) !== net), ports: project.ports.filter((p) => conn.itemNet.get(p.id) !== net) },
+        allowed: [pin.at, ...project.components.flatMap((c) => worldPins(c, symbolFor(project, c.symbolKey)).filter((p) => conn.pinNet.get(`${c.id}:${p.pin.id}`) === net).map((p) => p.at))],
+      }
+    : { project, allowed: [pin.at] };
   // First conflict-free layout, otherwise the least conflicting one.
   let layout = flagLayouts(pin, kind)[0];
   let best = Infinity;
   for (const l of flagLayouts(pin, kind)) {
-    const n = layoutConflicts(project, l, toPort(l), pin.at);
+    const n = layoutConflicts(project, l, toPort(l), pin.at, scope);
     if (n < best) {
       best = n;
       layout = l;
@@ -299,6 +349,27 @@ export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>,
   return port;
 }
 
+/**
+ * Removes the wiring that ends on a pin: wires with an end there, markers sitting on the pin, and
+ * labels or flags left dangling at the far end of a removed wire (the stubs attachPort makes).
+ */
+export function disconnectPin(pinRef: string): { wires: number; labels: string[] } {
+  const pin = findPin(pinRef);
+  const project = state().project;
+  const wires = project.wires.filter((w) => samePoint(w.points[0], pin.at) || samePoint(w.points[w.points.length - 1], pin.at));
+  const removed = new Set(wires.map((w) => w.id));
+  const kept = project.wires.filter((w) => !removed.has(w.id));
+  const touchesKept = (p: Vec) => kept.some((w) => w.points.some((q, i) => (i === 0 ? samePoint(p, q) : onSegment(p, w.points[i - 1], q))));
+  const farEnds = wires.flatMap((w) => [w.points[0], w.points[w.points.length - 1]]).filter((p) => !samePoint(p, pin.at));
+  const ports = project.ports.filter((p) => {
+    const at: Vec = [p.x, p.y];
+    return samePoint(at, pin.at) || (farEnds.some((e) => samePoint(e, at)) && !touchesKept(at));
+  });
+  for (const p of ports) removed.add(p.id);
+  if (removed.size) state().commit((doc) => ({ ...doc, wires: doc.wires.filter((w) => !removed.has(w.id)), ports: doc.ports.filter((p) => !removed.has(p.id)) }));
+  return { wires: wires.length, labels: ports.map((p) => p.name || p.kind) };
+}
+
 export function markNoConnect(pinRef: string): NetPort {
   const pin = findPin(pinRef);
   return addPort('noconnect', '', pin.at, 0);
@@ -312,15 +383,8 @@ export async function replacePart(componentId: string, lcsc: string): Promise<Co
     ...doc,
     components: doc.components.map((c) => {
       if (c.id !== componentId) return c;
-      const { prefix } = splitDesignator(c.designator);
-      const keepDesignator = prefix === placing.prefix;
-      updated = {
-        ...c,
-        ...placing.template,
-        rotation: c.rotation,
-        mirror: c.mirror,
-        designator: keepDesignator ? c.designator : nextDesignator(placing.prefix, doc.components),
-      };
+      // Keep the designator even when the library uses another prefix (LED1 for a D1, H1 for a J1).
+      updated = { ...c, ...placing.template, rotation: c.rotation, mirror: c.mirror, designator: c.designator };
       return updated;
     }),
   }));

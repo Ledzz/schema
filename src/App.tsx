@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useEditor } from './store/editor';
 import { useWebMcp } from './store/webmcp';
 import { ensureWebMcp } from './lib/webmcp';
+import { openFromUrl } from './lib/designs';
 import { useShortcuts } from './hooks/useShortcuts';
 import { SchematicCanvas } from './components/canvas/SchematicCanvas';
 import { LibraryPanel } from './components/library/LibraryPanel';
@@ -44,6 +45,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
   }, [theme]);
+
+  useEffect(() => {
+    openFromUrl();
+  }, []);
 
   useEffect(() => {
     ensureWebMcp().then((r) => useWebMcp.getState().set({ api: r.api, registered: r.registered, errors: r.errors }));

@@ -215,6 +215,19 @@ export function attributeMatches(kind: PassiveKind, parsed: ParsedValue, attrVal
   return Math.abs(v.si - parsed.si) <= Math.max(Math.abs(parsed.si) * 0.005, 1e-15);
 }
 
+const COLOUR_WORDS = new Set(['red', 'green', 'blue', 'yellow', 'white', 'orange', 'amber', 'pink', 'purple', 'violet', 'rgb', 'infrared', 'ultraviolet', 'uv', 'ir']);
+
+/**
+ * Whether an LED colour attribute names the wanted colour and no other: "Emerald Green" and
+ * "Warm White" count, "Yellow-Green" and "Red/Green" (bicolour) do not.
+ */
+export function sameColour(attrValue: string, wanted: string): boolean {
+  const words = (s: string) => s.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  const want = words(wanted);
+  const have = words(attrValue);
+  return want.every((w) => have.includes(w)) && have.every((w) => want.includes(w) || !COLOUR_WORDS.has(w));
+}
+
 export function sizeOf(kind: PassiveKind, label: string): PassiveSize | undefined {
   return PASSIVES[kind].sizes.find((s) => s.label === label);
 }
@@ -224,9 +237,9 @@ export function sizeOf(kind: PassiveKind, label: string): PassiveSize | undefine
  * the cathode, matching LCSC footprints.
  */
 const head = (name: string, bbox: number[]) => [`["DOCTYPE","SYMBOL","1.1"]`, `["PART","${name}.1",{"BBOX":${JSON.stringify(bbox)}}]`];
-const pin = (id: string, n: string, x: number, y: number, len: number, rot: number) => [
+const pin = (id: string, n: string, x: number, y: number, len: number, rot: number, name = n) => [
   `["PIN","${id}",1,null,${x},${y},${len},${rot},null,0,0,1]`,
-  `["ATTR","${id}n","${id}","NAME","${n}",false,false,0,0,0,"st1",0]`,
+  `["ATTR","${id}n","${id}","NAME","${name}",false,false,0,0,0,"st1",0]`,
   `["ATTR","${id}u","${id}","NUMBER","${n}",false,false,0,0,0,"st1",0]`,
 ];
 const poly = (id: string, pts: number[], closed = false) => `["POLY","${id}",${JSON.stringify(pts)},${closed ? 1 : 0},"st1",0]`;
@@ -244,7 +257,7 @@ export const PASSIVE_SYMBOLS: Record<PassiveKind, string> = {
     ...pin('p2', '2', 20, 0, 10, 180),
   ].join('\n'),
   ferrite: [...head('FB', [-20, 5, 20, -5]), poly('b', [-10, -2, -6, 4, 10, 2, 6, -4, -10, -2], true), ...pin('p1', '1', -20, 0, 10, 0), ...pin('p2', '2', 20, 0, 10, 180)].join('\n'),
-  diode: [...head('D', [-20, 5, 20, -5]), poly('t', [-5, 5, -5, -5, 5, 0, -5, 5], true), poly('k', [5, 5, 5, -5]), ...pin('p2', '2', -20, 0, 15, 0), ...pin('p1', '1', 20, 0, 15, 180)].join('\n'),
+  diode: [...head('D', [-20, 5, 20, -5]), poly('t', [-5, 5, -5, -5, 5, 0, -5, 5], true), poly('k', [5, 5, 5, -5]), ...pin('p2', '2', -20, 0, 15, 0, 'A'), ...pin('p1', '1', 20, 0, 15, 180, 'K')].join('\n'),
   led: [
     ...head('LED', [-20, 13, 20, -5]),
     poly('t', [-5, 5, -5, -5, 5, 0, -5, 5], true),
@@ -253,7 +266,7 @@ export const PASSIVE_SYMBOLS: Record<PassiveKind, string> = {
     poly('h1', [4, 10, 1.5, 9.5, 3.5, 7.5, 4, 10], true),
     poly('r2', [3.5, 4.5, 7.5, 8.5]),
     poly('h2', [7.5, 8.5, 5, 8, 7, 6, 7.5, 8.5], true),
-    ...pin('p2', '2', -20, 0, 15, 0),
-    ...pin('p1', '1', 20, 0, 15, 180),
+    ...pin('p2', '2', -20, 0, 15, 0, 'A'),
+    ...pin('p1', '1', 20, 0, 15, 180, 'K'),
   ].join('\n'),
 };

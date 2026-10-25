@@ -16,6 +16,7 @@ import {
 import { moveItems } from '../lib/schematic/ops';
 import { resolverFor } from '../lib/schematic/symbols';
 import { focusLibrarySearch } from '../lib/libraryFocus';
+import { saveDesign } from '../lib/designs';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
 import { deleteSelectedCopper, finishDraft, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
@@ -101,7 +102,7 @@ export function useShortcuts() {
           a: selectAll,
           c: copySelection,
           v: paste,
-          s: saveProjectFile,
+          s: () => (s.sourceFile ? void saveDesign() : saveProjectFile()),
           o: () => (document.querySelector('input[type=file]') as HTMLInputElement | null)?.click(),
         };
         const command = commands[key];

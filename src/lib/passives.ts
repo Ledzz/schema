@@ -5,7 +5,7 @@ import { useEditor, type Placing } from '../store/editor';
 import { PASSIVES, PASSIVE_SYMBOLS, parsePassiveValue, type PassiveKind } from '../shared/passives';
 import type { PartSummary } from '../shared/parts';
 import type { Component } from './schematic/types';
-import { placeComponent } from './actions';
+import { onPinGrid, placeComponent } from './actions';
 
 export interface PassiveMatch {
   canonical: string | null;
@@ -195,5 +195,17 @@ export async function placePassiveAt(kind: PassiveKind, value: string, size: str
   const placing = passivePlacing(kind, canonical(kind, value), size);
   const m = await fetchMatch(kind, placing.template.value, size).catch(() => null);
   if (m?.candidates[0]) placing.template = { ...placing.template, ...partFields(m.candidates[0], size) };
-  return { component: placeComponent(placing, at, rotation, false, designator), match: m };
+  return { component: placeComponent(placing, onPinGrid(placing, at, rotation), rotation, false, designator), match: m };
+}
+
+/** Other sizes in which a basic or preferred part exists for this value. */
+export async function noFeeSizes(kind: PassiveKind, value: string, except: string): Promise<{ size: string; lcsc: string }[]> {
+  const sizes = PASSIVES[kind].sizes.map((s) => s.label).filter((s) => s !== except);
+  const found = await Promise.all(
+    sizes.map(async (size) => {
+      const best = (await fetchMatch(kind, value, size).catch(() => null))?.candidates[0];
+      return best && best.partClass !== 'extended' ? { size, lcsc: best.lcsc } : null;
+    }),
+  );
+  return found.filter((f): f is { size: string; lcsc: string } => f !== null);
 }

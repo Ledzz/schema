@@ -1,5 +1,5 @@
 import type { PartClass, PartSummary } from '../src/shared/parts';
-import { PASSIVES, attributeMatches, parsePassiveValue, searchKeyword, sizeOf, type PassiveKind } from '../src/shared/passives';
+import { PASSIVES, attributeMatches, parsePassiveValue, sameColour, searchKeyword, sizeOf, type PassiveKind } from '../src/shared/passives';
 import { searchParts } from './jlcpcb';
 
 export interface PassiveMatch {
@@ -55,7 +55,7 @@ export async function matchPassive(kind: PassiveKind, value: string, size: strin
   });
   const exactness = (p: PartSummary) => {
     if (kind === 'diode') return Number(p.mpn.toUpperCase().startsWith(parsed.canonical));
-    if (kind === 'led') return Number(p.attributes.some((a) => spec.valueAttr?.test(a.name) && a.value.toLowerCase() === parsed.canonical.toLowerCase()));
+    if (kind === 'led') return Number(p.attributes.some((a) => spec.valueAttr?.test(a.name) && sameColour(a.value, parsed.canonical)));
     return 1;
   };
   matches.sort((a, b) => {

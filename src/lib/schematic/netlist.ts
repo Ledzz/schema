@@ -199,7 +199,10 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     members.sort((a, b) => naturalCompare(a.designator, b.designator) || naturalCompare(a.pinNumber, b.pinNumber));
     const names = [...(namesByRoot.get(root) ?? [])].sort((a, b) => (priority.get(a) ?? 9) - (priority.get(b) ?? 9) || naturalCompare(a, b));
     const name = names[0] ?? `Net-(${members[0].designator}-Pad${members[0].pinNumber})`;
-    if (names.length > 1) issues.push({ severity: 'warning', message: `Net has several names: ${names.join(', ')}` });
+    // Two power flags on one net (e.g. +3V3 and GND) is a short, not just an alias.
+    const flagNames = names.filter((n) => priority.get(n) === 0);
+    if (flagNames.length > 1) issues.push({ severity: 'error', message: `Power nets shorted together: ${flagNames.join(', ')}` });
+    else if (names.length > 1) issues.push({ severity: 'warning', message: `Net has several names: ${names.join(', ')}` });
     if (members.length === 1 && names.length === 0) {
       issues.push({ severity: 'warning', message: `${members[0].designator} pin ${members[0].pinNumber} is wired to nothing else`, itemId: members[0].componentId });
     }

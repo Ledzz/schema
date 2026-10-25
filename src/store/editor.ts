@@ -132,6 +132,8 @@ interface EditorState {
   setPcbIssues: (issues: DrcIssue[]) => void;
   showPours: boolean;
   setShowPours: (show: boolean) => void;
+  /** designs/<file> the project was opened from (dev only). */
+  sourceFile: string | null;
   beginTransient: () => void;
   updateTransient: (fn: (base: Doc) => Doc) => void;
   endTransient: () => void;
@@ -260,6 +262,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setPcbIssues: (pcbIssues) => set({ pcbIssues }),
   showPours: true,
   setShowPours: (showPours) => set({ showPours }),
+  sourceFile: null,
 
   beginTransient: () => set({ transientBase: docOf(get().project) }),
   updateTransient: (fn) => {
