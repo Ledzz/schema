@@ -95,8 +95,11 @@ export interface RouteOptions {
 export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions): RouteResult | null {
   const { board, rules, width } = opt;
   const margin = opt.margin ?? 8;
-  const x0 = Math.max(board.x, Math.min(from.point[0], to.point[0]) - margin);
-  const y0 = Math.max(board.y, Math.min(from.point[1], to.point[1]) - margin);
+  // Grid lines sit on absolute multiples of STEP, so fine-pitch pins of parts placed on round
+  // coordinates fall exactly on them and tracks run straight into the pins.
+  const onGrid = (v: number, round: (v: number) => number) => round(v / STEP - 1e-9) * STEP;
+  const x0 = Math.max(onGrid(board.x, Math.ceil), onGrid(Math.min(from.point[0], to.point[0]) - margin, Math.floor));
+  const y0 = Math.max(onGrid(board.y, Math.ceil), onGrid(Math.min(from.point[1], to.point[1]) - margin, Math.floor));
   const x1 = Math.min(board.x + board.width, Math.max(from.point[0], to.point[0]) + margin);
   const y1 = Math.min(board.y + board.height, Math.max(from.point[1], to.point[1]) + margin);
   const cols = Math.floor((x1 - x0) / STEP) + 1;

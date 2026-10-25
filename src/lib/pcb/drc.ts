@@ -156,11 +156,17 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
     }
   }
 
+  // Vias in SMD pads, one line per pad (a grid of thermal vias would otherwise flood the list).
   const smdPads = board.items.filter((it) => it.type === 'pad' && it.layers.length === 1);
+  const viasInPad = new Map<CopperItem, string[]>();
   for (const v of pcb.vias) {
     const via = board.items.find((it) => it.type === 'via' && it.ref === v.id)!;
     const pad = smdPads.find((p) => shapeDistance(p.shape, via.shape) === 0);
-    if (pad) issues.push({ severity: 'warning', message: `Via in SMD pad ${label(pad, board)} (solder can wick into the hole)`, at: [v.x, v.y], refs: [v.id] });
+    if (pad) viasInPad.set(pad, [...(viasInPad.get(pad) ?? []), v.id]);
+  }
+  for (const [pad, ids] of viasInPad) {
+    const what = ids.length > 1 ? `${ids.length} vias` : 'Via';
+    issues.push({ severity: 'warning', message: `${what} in SMD pad ${label(pad, board)} (solder can wick into the holes unless JLCPCB tents or fills them)`, at: center(pad), refs: ids });
   }
 
   const netsOnBoard = new Set(board.pads.map((p) => p.net).filter(Boolean));

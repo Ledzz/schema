@@ -4,6 +4,8 @@ import { placementToWorld, pointInPolygon, worldPads, shapeDistance, type Copper
 import { buildBoard, pcbConnectivity } from '../src/lib/pcb/board';
 import { runDrc, shellAreas } from '../src/lib/pcb/drc';
 import { renderPcbSvg } from '../src/lib/pcb/render';
+import { autoroute } from '../src/lib/pcb/actions';
+import { useEditor } from '../src/store/editor';
 import { routeConnection, type RouteEnd } from '../src/lib/pcb/router';
 import { generateCpl, generateDrill, generateGerbers } from '../src/lib/pcb/gerber';
 import { textStrokes } from '../src/lib/pcb/font';
@@ -27,6 +29,19 @@ describe('footprint parsing', () => {
     expect(fp.pads[1]).toMatchObject({ shape: 'oval', rotation: 90 });
     expect(fp.graphics[0].layer).toBe('silkTop');
     expect(fp.graphics[0].points[0][1]).toBeCloseTo(-50 * MIL);
+  });
+
+  it('reads POLY pads in footprint coordinates, ignoring the pad rotation', () => {
+    // A SOT-89-like tab: pad centre at x = -50 mil, keyhole drawn from -100 to +20 mil.
+    const fp = parsePcbFootprint('["PAD","t",0,"",1,"2",-50,0,90,["ROUND",0,0],["POLY",[-100,20,"L",20,20,20,-20,-100,-20,-100,20]],[],0,0,0,1,0]');
+    const [pad] = fp.pads;
+    expect(pad).toMatchObject({ shape: 'polygon', rotation: 0 });
+    expect(pad.w).toBeCloseTo(120 * MIL);
+    const [world] = worldPads({ componentId: 'c', x: 0, y: 0, rotation: 0, side: 'top' }, fp, 'U1', () => null);
+    const xs = world.outline.map((p) => p[0]);
+    expect(Math.min(...xs)).toBeCloseTo(-100 * MIL);
+    expect(Math.max(...xs)).toBeCloseTo(20 * MIL);
+    expect(pointInPolygon(world.center, world.outline)).toBe(true);
   });
 
   it('builds built-in chip footprints', () => {
@@ -205,6 +220,26 @@ describe('board picture', () => {
     expect(svg).toMatch(/<polyline points="5\.8,5 11\.2,5" fill="none" stroke="#ffffff"/);
     expect(svg).toContain('stroke="#f59e0b"');
     expect(svg).not.toMatch(/<text/);
+  });
+});
+
+describe('auto-routing widths', () => {
+  const widths = () => [...new Set(useEditor.getState().project.pcb!.tracks.map((t) => t.width))];
+
+  it('routes ordinary pads at the net width, or the width asked for', () => {
+    useEditor.getState().loadProject(fixture());
+    expect(autoroute('SIG').routed).toBe(1);
+    expect(widths()).toEqual([0.25]);
+    useEditor.getState().loadProject(fixture());
+    autoroute('SIG', 0.6);
+    expect(widths()).toEqual([0.6]);
+  });
+
+  it('necks down into pads narrower than the track', () => {
+    useEditor.getState().loadProject(fixture());
+    // 0.8 mm wide 0603 pads: a 1 mm track narrows to 0.8 at both ends and is 1 mm in between.
+    autoroute('SIG', 1);
+    expect(widths().sort()).toEqual([0.8, 1]);
   });
 });
 

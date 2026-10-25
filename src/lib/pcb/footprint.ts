@@ -150,7 +150,7 @@ export function parsePcbFootprint(dataStr: string): FootprintGeom {
         x,
         y,
         rotation: num(rec[8]),
-        shape: kind === 'OVAL' ? 'oval' : kind === 'ELLIPSE' ? (Math.abs(w - h) < 1e-6 ? 'circle' : 'oval') : kind === 'POLYGON' ? 'polygon' : 'rect',
+        shape: kind === 'OVAL' ? 'oval' : kind === 'ELLIPSE' ? (Math.abs(w - h) < 1e-6 ? 'circle' : 'oval') : kind === 'POLYGON' || kind === 'POLY' ? 'polygon' : 'rect',
         w,
         h,
         radius: kind === 'RECT' ? (Math.min(w, h) * num(shape[3])) / 200 : 0,
@@ -165,6 +165,12 @@ export function parsePcbFootprint(dataStr: string): FootprintGeom {
         const raw = Array.isArray(shape[1]) ? (shape[1] as unknown[]) : [];
         const poly = pathToPolyline(raw);
         pad.points = poly?.points ?? [];
+        // A "POLY" pad path (e.g. the SOT-89 tab keyhole) is drawn in footprint coordinates,
+        // already in its final orientation: make it relative to the pad and drop the rotation.
+        if (kind === 'POLY') {
+          pad.points = pad.points.map(([px, py]) => [px - x, py - y] as Vec);
+          pad.rotation = 0;
+        }
         if (pad.points.length < 3) pad.shape = 'rect';
         else {
           const xs = pad.points.map((p) => p[0]);
@@ -200,7 +206,12 @@ function footprintBox(pads: PadGeom[], graphics: Graphic[]) {
     b.y2 = Math.max(b.y2, y);
   };
   for (const p of pads) {
-    const r = Math.hypot(p.w, p.h) / 2;
+    // Polygon pads need not be centred on their anchor (the SOT-89 tab keyhole is not).
+    if (p.points.length && p.rotation === 0) {
+      for (const [qx, qy] of p.points) grow(p.x + qx, p.y + qy);
+      continue;
+    }
+    const r = p.points.length ? Math.max(...p.points.map(([qx, qy]) => Math.hypot(qx, qy))) : Math.hypot(p.w, p.h) / 2;
     grow(p.x - r, p.y - r);
     grow(p.x + r, p.y + r);
   }

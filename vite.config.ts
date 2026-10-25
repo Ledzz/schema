@@ -1,3 +1,4 @@
+import { basename, dirname, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
@@ -10,6 +11,17 @@ function apiDevServer(): Plugin {
   return {
     name: 'schematics-api',
     configureServer(server) {
+      // Tell open pages when a design file changes on disk (written by `pnpm schem` or an editor),
+      // so a page showing that design can reload it.
+      const designsDir = resolve(server.config.root, 'designs');
+      server.watcher.add(designsDir);
+      const designChanged = (file: string) => {
+        if (dirname(file) !== designsDir || !/^[\w.-]+\.json$/.test(basename(file))) return;
+        server.ws.send({ type: 'custom', event: 'schematics:design-changed', data: { name: basename(file) } });
+      };
+      server.watcher.on('change', designChanged);
+      server.watcher.on('add', designChanged);
+
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith('/api/')) return next();
         try {

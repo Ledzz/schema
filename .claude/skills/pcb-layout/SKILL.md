@@ -87,10 +87,22 @@ return path and makes most GND connections for free, which leaves the router far
 Pours keep 0.3 mm from other nets, join GND pads through thermal reliefs, and refill by
 themselves after every move or route, so add them once, before routing.
 
+Chips with an exposed thermal pad (QFN drivers such as the TMC2209, many regulators and
+amplifiers) shed their heat through it. Put thermal vias in that pad with `pcb_add_vias`
+(`"net": "GND"`, a grid at about 1 mm pitch that stays inside the pad) so the heat reaches the
+bottom pour. DRC then warns about vias in an SMD pad; that is expected for thermal vias — tell
+the user to choose via tenting or filling when ordering. The same tool places stitching vias
+that tie the top and bottom pours together where one of them is cut up.
+
 ### 5. Route
 
-`pcb_autoroute` routes the remaining connections, shortest first, with wider tracks for power
-nets. Check `failed` in the result and `unrouted` in `pcb_get_state`:
+`pcb_autoroute` routes the remaining connections, shortest first. Supply and ground nets (GND,
+VCC, VIN, VM, +5V, +3V3 …) get the 0.5 mm power width automatically; everything else gets
+0.25 mm, which is only good for a few hundred milliamps. So route the high-current nets first,
+one at a time with `"net"` and `"width"`: motor outputs, sense-resistor connections, LED strings,
+heater or relay drives — 0.5 mm carries about 1.5 A, 1 mm about 2.5 A on JLCPCB's 1 oz copper.
+Then run it once more without a net for the rest. Check `failed` in the result and `unrouted` in
+`pcb_get_state`:
 
 - If some connections fail, improve placement around them (move or rotate parts, give more
   room), then `pcb_clear_routing` (optionally for one net) and route again.
@@ -130,8 +142,9 @@ Then tell the user:
 - that through-hole parts (pin headers, most connectors) add a hand-soldering charge to JLCPCB
   assembly, or can be left out of the order and soldered by hand;
 - how to look at the board: run `pnpm dev` and open the local URL it prints (usually
-  `http://localhost:5173`) with `/?open=<slug>.schematic.json&mode=pcb` added. Edits saved there
-  (⌘S) go back to the same file, so re-read it with `summary` before changing anything.
+  `http://localhost:5173`) with `/?open=<slug>.schematic.json&mode=pcb` added. The open page
+  updates by itself whenever you change the file, and edits saved there (⌘S) go back to the
+  same file, so re-read it with `summary` before changing anything.
 
 ## Limits worth knowing
 

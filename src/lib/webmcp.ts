@@ -32,7 +32,7 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addPours, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
+import { addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
@@ -705,11 +705,42 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'pcb_autoroute',
     title: 'Auto-route PCB',
-    description: 'Route unrouted connections with the built-in two-layer grid router (shortest first; power nets use the wider power track width). Optionally limit to one net. Check the result with pcb_check.',
-    inputSchema: { type: 'object', properties: { net: { type: 'string' } } },
+    description:
+      'Route unrouted connections with the built-in two-layer grid router (shortest first). Supply and ground nets (GND, VCC, VIN, VM, +5V, +3V3 …) get the power track width, others the signal width. Optionally limit to one net, and set `width` to route a high-current net such as a motor output or sense-resistor connection wider. Check the result with pcb_check.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        net: { type: 'string', description: 'Only route this net.' },
+        width: { type: 'number', minimum: 0.15, maximum: 3, description: 'Track width in mm for this run (default by net: 0.5 mm power, 0.25 mm signal).' },
+      },
+    },
     execute: async (input) => {
-      const r = autoroute(input.net ? String(input.net) : undefined);
+      const r = autoroute(input.net ? String(input.net) : undefined, input.width === undefined ? undefined : Number(input.width));
       return { routed: r.routed, failed: r.failed.map((f) => f.net) };
+    },
+  },
+  {
+    name: 'pcb_add_vias',
+    title: 'Add vias',
+    description:
+      'Place vias of one net at the given points (mm), using the design-rule via size: thermal vias in a QFN exposed pad so the chip sheds heat into the bottom ground pour, or stitching vias that join the top and bottom pours. pcb_check warns about vias inside SMD pads; for thermal vias that is expected (ask JLCPCB to tent or fill them).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        net: { type: 'string', description: 'Net of the vias, e.g. "GND".' },
+        points: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 }, minItems: 1, description: 'Via centres as [x, y] in mm.' },
+      },
+      required: ['net', 'points'],
+    },
+    execute: async (input) => {
+      const net = String(input.net);
+      const { board, pcb } = boardModel();
+      if (!board.pads.some((p) => p.net === net)) throw new Error(`No pad is on net "${net}"`);
+      const points = (input.points as number[][]).map(([x, y]) => [x, y] as [number, number]);
+      const b = pcb.board;
+      const outside = points.filter(([x, y]) => x < b.x || y < b.y || x > b.x + b.width || y > b.y + b.height);
+      if (outside.length) throw new Error(`Points outside the board: ${outside.map((p) => p.join(',')).join('; ')}`);
+      return { added: addVias(points, net).length };
     },
   },
   {

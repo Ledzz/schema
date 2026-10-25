@@ -4,11 +4,13 @@
 import { useEditor } from '../../store/editor';
 import { fetchPartDetail } from '../api';
 import { downloadText, safeFileName } from '../actions';
+import { samePoint } from '../schematic/geometry';
 import { newId } from '../schematic/ops';
 import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
+import { pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } from './geometry';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
@@ -232,6 +234,14 @@ export function addVia(at: Vec, net: string | null): Via {
   return via;
 }
 
+/** Places several vias of one net in a single step (thermal or stitching vias). */
+export function addVias(points: Vec[], net: string): Via[] {
+  const { rules } = currentPcb();
+  const vias: Via[] = points.map(([x, y]) => ({ id: newId('v'), x, y, diameter: rules.viaDiameter, drill: rules.viaDrill, net }));
+  commitPcb((pcb) => ({ ...pcb, vias: [...pcb.vias, ...vias] }));
+  return vias;
+}
+
 /* ---------- copper pours ---------- */
 
 /** Adds a pour for `net` on each layer (replacing existing pours of that net there). */
@@ -260,7 +270,7 @@ export function boardNets(project: Project = st().project): string[] {
   return [...count].sort((a, b) => Number(/gnd/i.test(b[0])) - Number(/gnd/i.test(a[0])) || b[1] - a[1]).map(([n]) => n);
 }
 
-const POWER_NET =/^(gnd|agnd|pgnd|vcc|vdd|vin|vbus|vbat|\+?\d+v\d*|\+?\d+\.\d+v)$/i;
+const POWER_NET = /^(gnd|agnd|pgnd|vcc|vdd|vin|vbus|vbat|vm|vmot|vmotor|vs|vsys|\+?\d+v\d*|\+?\d+\.\d+v)$/i;
 
 export function trackWidthFor(net: string | null, pcb: Pcb = currentPcb()): number {
   return net && POWER_NET.test(net.replace(/^\+/, '+')) ? pcb.rules.powerTrackWidth : pcb.rules.trackWidth;
@@ -306,11 +316,75 @@ export interface AutorouteReport {
   failed: { net: string; a: Vec; b: Vec }[];
 }
 
-function routeOne(project: Project, aw: Airwire): { tracks: Track[]; vias: Via[] } | null {
+/** Distance from a fine-pitch pad within which a necked-down track stays narrow. */
+const NECK_LENGTH = 1;
+
+/**
+ * Widens a route found at the narrow width wherever it can: segments more than NECK_LENGTH from
+ * the fine-pitch end pads, and only where the wider copper still clears other nets. This is the
+ * usual neck-down into fine-pitch pins, with full-width copper everywhere else.
+ */
+function neckDown(
+  route: { layer: CopperLayer; points: Vec[] },
+  narrow: number,
+  wide: number,
+  finePads: WorldPad[],
+  others: CopperItem[],
+  clearance: number,
+): { width: number; points: Vec[] }[] {
+  // Break the first and last segments NECK_LENGTH away from a fine-pitch pad they start on.
+  const pts = [...route.points];
+  const near = (p: Vec) => finePads.some((pad) => pointShapeDistance(p, pad.shape) === 0);
+  const breakAt = (from: Vec, to: Vec): Vec | null => {
+    const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    if (len <= NECK_LENGTH + 0.2) return null;
+    const f = NECK_LENGTH / len;
+    return [from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f];
+  };
+  if (pts.length >= 2 && near(pts[0])) {
+    const b = breakAt(pts[0], pts[1]);
+    if (b) pts.splice(1, 0, b);
+  }
+  if (pts.length >= 2 && near(pts[pts.length - 1])) {
+    const b = breakAt(pts[pts.length - 1], pts[pts.length - 2]);
+    if (b) pts.splice(pts.length - 1, 0, b);
+  }
+  const widthOf = (a: Vec, b: Vec) => {
+    const seg = { kind: 'capsule' as const, a, b, r: wide / 2 };
+    const neck = finePads.some((pad) => shapeDistance({ ...seg, r: 0 }, pad.shape) < NECK_LENGTH - 1e-6);
+    const clear = others.every((it) => !it.layers.includes(route.layer) || shapeDistance(seg, it.shape) >= clearance - 1e-6);
+    return !neck && clear ? wide : narrow;
+  };
+  // Judge long segments in pieces of up to 1 mm, so a squeeze at one end doesn't keep the
+  // whole run narrow.
+  const pieces: [Vec, Vec][] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const [a, b] = [pts[i - 1], pts[i]];
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1])));
+    for (let k = 0; k < n; k++) pieces.push([lerp(a, b, k / n), lerp(a, b, (k + 1) / n)]);
+  }
+  const out: { width: number; points: Vec[] }[] = [];
+  for (const [a, b] of pieces) {
+    const w = widthOf(a, b);
+    const last = out[out.length - 1];
+    if (last && last.width === w) last.points.push(b);
+    else out.push({ width: w, points: [a, b] });
+  }
+  return out.map((t) => ({ ...t, points: simplifyPath(t.points) }));
+}
+
+const lerp = (a: Vec, b: Vec, t: number): Vec => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+
+function routeOne(project: Project, aw: Airwire, widthOverride?: number): { tracks: Track[]; vias: Via[] } | null {
   const pcb = currentPcb(project);
   const board = buildBoard(project, pcb);
   const conn = pcbConnectivity(board, pcb);
-  const width = trackWidthFor(aw.net, pcb);
+  // Route no wider than the narrow side of the pads it connects (a 0.5 mm track cannot enter a
+  // 0.25 mm QFN pin without crowding its neighbours), then widen away from those pads.
+  const wide = widthOverride ?? trackWidthFor(aw.net, pcb);
+  const endPads = board.pads.filter((p) => samePoint(p.center, aw.a) || samePoint(p.center, aw.b));
+  const finePads = endPads.filter((p) => Math.min(p.pad.w, p.pad.h) < wide);
+  const width = finePads.length ? Math.max(pcb.rules.minTrackWidth, Math.min(...finePads.map((p) => Math.min(p.pad.w, p.pad.h)))) : wide;
   const netOf = (it: (typeof board.items)[number]) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net));
   // Keep other nets out from under metal connector shells where possible.
   const avoid = shellAreas(board)
@@ -319,30 +393,48 @@ function routeOne(project: Project, aw: Airwire): { tracks: Track[]; vias: Via[]
   const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
+  const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];
+  const pieces = r.tracks.flatMap((t) =>
+    width < wide ? neckDown(t, width, wide, finePads, others, pcb.rules.clearance).map((p) => ({ layer: t.layer, ...p })) : [{ layer: t.layer, width, points: t.points }],
+  );
   return {
-    tracks: r.tracks.map((t) => ({ id: newId('t'), layer: t.layer, width, points: t.points, net: aw.net })),
+    tracks: pieces.map((t) => ({ id: newId('t'), layer: t.layer, width: t.width, points: t.points, net: aw.net })),
     vias: r.vias.map((v) => ({ id: newId('v'), x: v[0], y: v[1], diameter: pcb.rules.viaDiameter, drill: pcb.rules.viaDrill, net: aw.net })),
   };
 }
 
 /**
- * Routes unrouted connections one at a time (shortest first), optionally for one net only.
- * Everything is a single undo step.
+ * Routes unrouted connections one at a time (shortest first), optionally for one net only and
+ * with a given track width (default: by net, see trackWidthFor). Everything is a single undo step.
  */
-export function autoroute(net?: string): AutorouteReport {
+export function autoroute(net?: string, width?: number): AutorouteReport {
   const report: AutorouteReport = { routed: 0, failed: [] };
   let project = st().project;
   const skip = new Set<string>();
+  // A connection that comes back after being routed made no progress (its copper didn't join
+  // the pads), so it counts as failed instead of being routed again and again.
+  const tried = new Set<string>();
   for (let guard = 0; guard < 500; guard++) {
-    const { conn } = boardModel(project);
+    const { conn, board } = boardModel(project);
+    // Two pins of the same part joined directly (e.g. a driver's two supply pins) would run a
+    // track along its pin row and wall the other pins in; route those last, by which time they
+    // are usually joined through other parts anyway.
+    const partAt = (p: Vec) => board.pads.find((pad) => samePoint(pad.center, p))?.componentId;
+    const samePart = (a: Airwire) => {
+      const id = partAt(a.a);
+      return id !== undefined && id === partAt(a.b) ? 1 : 0;
+    };
+    const length = (a: Airwire) => Math.hypot(a.a[0] - a.b[0], a.a[1] - a.b[1]);
     const pending = conn.airwires
       .filter((a) => (!net || a.net === net) && !skip.has(`${a.net}|${a.a}|${a.b}`))
-      .sort((p, q) => Math.hypot(p.a[0] - p.b[0], p.a[1] - p.b[1]) - Math.hypot(q.a[0] - q.b[0], q.a[1] - q.b[1]));
+      .sort((p, q) => samePart(p) - samePart(q) || length(p) - length(q));
     const aw = pending[0];
     if (!aw) break;
-    const r = routeOne(project, aw);
+    const key = `${aw.net}|${aw.a}|${aw.b}`;
+    const r = tried.has(key) ? null : routeOne(project, aw, width);
+    tried.add(key);
     if (!r) {
-      skip.add(`${aw.net}|${aw.a}|${aw.b}`);
+      skip.add(key);
       report.failed.push({ net: aw.net, a: aw.a, b: aw.b });
       continue;
     }

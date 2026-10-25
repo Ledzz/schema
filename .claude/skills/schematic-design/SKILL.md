@@ -123,9 +123,9 @@ Tell the user, briefly:
   e.g. LED current or timer frequency);
 - the parts (designator, value, LCSC number, Basic/Preferred/Extended) and the setup fee;
 - how to look at it: run `pnpm dev` and open the local URL it prints (usually
-  `http://localhost:5173`) with `/?open=<slug>.schematic.json` added. Edits they save there (⌘S)
-  go back to the same file, so you can pick up from their changes — re-read it with `summary`
-  before changing anything.
+  `http://localhost:5173`) with `/?open=<slug>.schematic.json` added. The open page updates by
+  itself whenever you change the file, and edits they save there (⌘S) go back to the same file,
+  so you can pick up from their changes — re-read it with `summary` before changing anything.
 
 Offer the **pcb-layout** skill as the next step when they want a board.
 

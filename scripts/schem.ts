@@ -221,9 +221,9 @@ async function main() {
       }
     }
   }
-  process.stdout.write(JSON.stringify(output, null, 2) + '\n');
-  // Pending autosave timers in the store would otherwise keep the process alive.
-  process.exit(process.exitCode ?? 0);
+  // Exit only once the output is flushed (a pipe takes large outputs in chunks); exiting at all is
+  // needed because pending autosave timers in the store would otherwise keep the process alive.
+  process.stdout.write(JSON.stringify(output, null, 2) + '\n', () => process.exit(process.exitCode ?? 0));
 }
 
 main().catch((err) => fail(err instanceof Error ? err.message : String(err)));
