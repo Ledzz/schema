@@ -46,9 +46,9 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Sync from the schematic.** Loads each part's JLCPCB footprint, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
   - **Interactive routing** (`W`) with 45° corners on the top or bottom layer (`1` / `2`). Press `V` to drop a via and continue on the other layer. Power nets get wider tracks automatically.
-  - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance and never places vias in SMD pads.
+  - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance, never places vias in SMD pads and keeps other nets out from under metal connector shells where it can.
   - **Copper pours** (e.g. a GND fill on both layers). Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
-  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads.
+  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads, tracks or vias of other nets under a metal connector shell (USB, RJ45…).
   - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files.
 - **Design data**
   - Live netlist and a design check: unconnected pins, duplicate or unannotated designators, conflicting net names.
@@ -65,7 +65,7 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 31 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 32 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
@@ -73,7 +73,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
-- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_export`
+- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute`, `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_render` (board picture with mm rulers), `pcb_export`
 
 Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
 other wiring, and `update_component` refuses a move whose dragged wires would join two nets, so an
@@ -97,6 +97,7 @@ pnpm -s schem designs/blinky.schematic.json place_passive '{"kind":"resistor","v
 pnpm -s schem designs/blinky.schematic.json batch steps.json    # [{"tool": "...", "input": {...}}, ...]
 pnpm -s schem designs/blinky.schematic.json summary             # parts, nets, checks, BOM, PCB and DRC
 pnpm -s schem designs/blinky.schematic.json export              # Gerbers, drill, BOM, CPL → designs/blinky-fab/
+pnpm -s schem designs/blinky.schematic.json pcb_render '{}'     # PNG of the board → designs/blinky-renders/
 ```
 
 Each run loads the project file (creating it if needed), runs the tool or batch, prints JSON and

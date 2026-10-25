@@ -50,7 +50,7 @@ async function main() {
   }) as typeof fetch;
 
   const { useEditor, emptyProject } = await import('../src/store/editor');
-  const { TOOLS, runTool, validateInput } = await import('../src/lib/webmcp');
+  const { TOOLS, runTool, validateInput, pcbPicture } = await import('../src/lib/webmcp');
   const { connectivity } = await import('../src/lib/actions');
   const { buildBom, bomToJlcpcbCsv } = await import('../src/lib/schematic/bom');
   const { formatNetlist } = await import('../src/lib/schematic/netlist');
@@ -97,6 +97,7 @@ async function main() {
     return files;
   };
 
+  const slug = basename(projectPath).replace(/(\.schematic)?\.json$/i, '');
   // Tools that touch browser UI behave differently on the command line.
   const overrides: Record<string, (input: Json) => Promise<unknown>> = {
     new_schematic: async (input) => {
@@ -106,14 +107,26 @@ async function main() {
     pcb_export: async () => {
       const check = checkPcb(st().project);
       const errors = check.issues.filter((i) => i.severity === 'error').map((i) => i.message);
-      const dir = join(dirname(projectPath), `${basename(projectPath).replace(/(\.schematic)?\.json$/i, '')}-fab`);
+      const dir = join(dirname(projectPath), `${slug}-fab`);
       return { files: exportTo(dir), drc_errors: errors };
+    },
+    pcb_render: async (input) => {
+      const { svg, widthPx, heightPx } = pcbPicture(input);
+      const { Resvg } = await import('@resvg/resvg-js');
+      const dir = join(dirname(projectPath), `${slug}-renders`);
+      mkdirSync(dir, { recursive: true });
+      const net = input.highlight_net ? `-${String(input.highlight_net).replace(/[^\w]+/g, '_')}` : '';
+      const file = join(dir, `pcb-${input.layers ?? 'both'}${net}.png`);
+      writeFileSync(file, new Resvg(svg).render().asPng());
+      return { file, width_px: widthPx, height_px: heightPx };
     },
   };
   const cliDescriptions: Record<string, string> = {
     new_schematic: 'Replace the project with an empty one (optionally named). Nothing is asked; the old content is gone from this file.',
     pcb_export:
       'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths and any DRC errors.',
+    pcb_render:
+      'Draw the board as a PNG in <project>-renders/ and return its path; open it with an image viewer (Claude Code’s Read tool shows it). Copper is top red, bottom blue, through-hole gold; pours, silkscreen, metal connector bodies (dashed orange), unrouted connections (dashed white), DRC markers (red errors, amber warnings) and millimetre rulers along the top and left edges are drawn too.',
   };
   const describe = (tool: (typeof TOOLS)[number]) => cliDescriptions[tool.name] ?? tool.description;
   // First sentence for the tool list; "e.g." and "i.e." don't end one.
@@ -196,7 +209,7 @@ async function main() {
       break;
     }
     case 'export': {
-      const dir = resolve(rest[0] ?? join(dirname(projectPath), `${basename(projectPath).replace(/(\.schematic)?\.json$/i, '')}-fab`));
+      const dir = resolve(rest[0] ?? join(dirname(projectPath), `${slug}-fab`));
       output = { files: exportTo(dir) };
       break;
     }

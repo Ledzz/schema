@@ -33,6 +33,8 @@ import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, ty
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { addPours, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, updateBoard, updatePlacement } from './pcb/actions';
+import { runDrc, shellAreas } from './pcb/drc';
+import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
 import type { CopperLayer, Pcb, Pour } from './pcb/types';
 
@@ -92,6 +94,19 @@ const asRotation = (r: unknown): Rotation | undefined => {
   const n = ((Math.round(Number(r) / 90) * 90) % 360 + 360) % 360;
   return n as Rotation;
 };
+
+/** The board picture pcb_render draws, from the tool's input. */
+export function pcbPicture(input: Record<string, unknown>) {
+  const { pcb, board, conn } = boardModel();
+  if (!pcb.placements.length) throw new Error('The PCB is empty; run pcb_update first');
+  const net = input.highlight_net === undefined ? null : String(input.highlight_net);
+  if (net && !board.pads.some((p) => p.net === net)) throw new Error(`No pad is on net "${net}"`);
+  return renderPcbSvg(pcb, board, conn, runDrc(board, pcb, conn), {
+    layers: (input.layers as 'both' | 'top' | 'bottom' | undefined) ?? 'both',
+    highlightNet: net,
+    widthPx: input.width_px === undefined ? undefined : Number(input.width_px),
+  });
+}
 
 /** Explains an extended pick for a generic passive and names sizes that have a no-fee part. */
 async function extendedNote(c: Component): Promise<string | undefined> {
@@ -570,13 +585,21 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_get_state',
     title: 'Get PCB state',
     description:
-      'Board outline, design rules, the total area of the parts’ bounding boxes, every placed part (position in mm, rotation, side, footprint, bounding box), copper pours (areas = separate copper regions; unconnected islands are already removed), unrouted connection counts per net (`unrouted`), and track/via counts. y grows downwards; the board origin is its top-left corner. With include_pads, each part also lists its pads (number, net, x, y) — useful for placing decoupling capacitors next to the right pins.',
-    inputSchema: { type: 'object', properties: { include_pads: { type: 'boolean', description: 'List every pad with its net and position (default false).' } } },
+      'Board outline, design rules, the total area of the parts’ bounding boxes, every placed part (position in mm, rotation, side, footprint, bounding box, metal_shell for connectors whose body must not cover other nets’ tracks), copper pours (areas = separate copper regions; unconnected islands are already removed), unrouted connection counts per net (`unrouted`), and track/via counts. y grows downwards; the board origin is its top-left corner. With include_pads, each part also lists its pads (number, net, x, y) — useful for placing decoupling capacitors next to the right pins. With include_tracks, `routing` lists every track (net, layer, width, length, corner points) and via, so you can see where the router went.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_pads: { type: 'boolean', description: 'List every pad with its net and position (default false).' },
+        include_tracks: { type: 'boolean', description: 'List every track and via with net and coordinates (default false).' },
+      },
+    },
     annotations: { readOnlyHint: true },
     execute: async (input) => {
       const { pcb, board, conn } = boardModel();
       const round = (v: number) => Math.round(v * 1000) / 1000;
       const partArea = board.parts.reduce((sum, p) => sum + (p.fp ? (p.box.x2 - p.box.x1) * (p.box.y2 - p.box.y1) : 0), 0);
+      const shelled = new Set(shellAreas(board).map((a) => a.part.component.id));
+      const length = (points: [number, number][]) => points.slice(1).reduce((sum, q, i) => sum + Math.hypot(q[0] - points[i][0], q[1] - points[i][1]), 0);
       return {
         board: pcb.board,
         rules: pcb.rules,
@@ -589,6 +612,7 @@ export const TOOLS: ToolDefinition[] = [
           side: p.placement.side,
           footprint: pcb.footprints[pcb.footprintOf[p.component.id] ?? '']?.title ?? null,
           bbox: p.fp ? { x1: round(p.box.x1), y1: round(p.box.y1), x2: round(p.box.x2), y2: round(p.box.y2) } : null,
+          metal_shell: shelled.has(p.component.id) || undefined,
           pads: input.include_pads ? p.pads.map((pad) => ({ number: pad.number, net: pad.net, x: round(pad.center[0]), y: round(pad.center[1]) })) : undefined,
         })),
         pours: board.fills.map((f) => ({
@@ -602,7 +626,38 @@ export const TOOLS: ToolDefinition[] = [
         unrouted: Object.fromEntries([...conn.unrouted].filter(([, n]) => n > 0)),
         tracks: pcb.tracks.length,
         vias: pcb.vias.length,
+        routing: input.include_tracks
+          ? {
+              tracks: pcb.tracks.map((t) => ({
+                net: conn.itemNet.get(t.id) ?? t.net,
+                layer: t.layer,
+                width: t.width,
+                length_mm: round(length(t.points)),
+                points: t.points.map(([x, y]) => [round(x), round(y)]).filter((p, i, all) => i === 0 || p[0] !== all[i - 1][0] || p[1] !== all[i - 1][1]),
+              })),
+              vias: pcb.vias.map((v) => ({ net: conn.itemNet.get(v.id) ?? v.net, x: round(v.x), y: round(v.y) })),
+            }
+          : undefined,
       };
+    },
+  },
+  {
+    name: 'pcb_render',
+    title: 'Render PCB',
+    description:
+      'Draw the board as a picture: copper (top red, bottom blue, through-hole gold), pours, silkscreen, metal connector bodies (dashed orange), unrouted connections (dashed white), DRC markers (red errors, amber warnings) and millimetre rulers along the top and left edges. Use it to check placement and routing by eye. Returns SVG markup here; the command line writes a PNG file instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        layers: { type: 'string', enum: ['both', 'top', 'bottom'], description: 'Copper layers to draw (default both, top over bottom).' },
+        highlight_net: { type: 'string', description: 'Draw this net in white and fade the rest.' },
+        width_px: { type: 'integer', minimum: 300, maximum: 4000, description: 'Picture width in pixels (default 1400).' },
+      },
+    },
+    annotations: { readOnlyHint: true },
+    execute: async (input) => {
+      const { svg, widthPx, heightPx } = pcbPicture(input);
+      return { svg, width_px: widthPx, height_px: heightPx };
     },
   },
   {

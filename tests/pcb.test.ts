@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { builtinFootprintDoc, parsePcbFootprint, arcPoints, MIL } from '../src/lib/pcb/footprint';
-import { placementToWorld, worldPads, shapeDistance, type CopperShape } from '../src/lib/pcb/geometry';
+import { placementToWorld, pointInPolygon, worldPads, shapeDistance, type CopperShape } from '../src/lib/pcb/geometry';
 import { buildBoard, pcbConnectivity } from '../src/lib/pcb/board';
-import { runDrc } from '../src/lib/pcb/drc';
-import { routeConnection } from '../src/lib/pcb/router';
+import { runDrc, shellAreas } from '../src/lib/pcb/drc';
+import { renderPcbSvg } from '../src/lib/pcb/render';
+import { routeConnection, type RouteEnd } from '../src/lib/pcb/router';
 import { generateCpl, generateDrill, generateGerbers } from '../src/lib/pcb/gerber';
 import { textStrokes } from '../src/lib/pcb/font';
 import { emptyPcb, type Pcb } from '../src/lib/pcb/types';
@@ -125,6 +126,85 @@ describe('connectivity and DRC', () => {
     const b = buildBoard(bad, bad.pcb!);
     const issues = runDrc(b, bad.pcb!, pcbConnectivity(b, bad.pcb!));
     expect(issues.some((i) => i.severity === 'error' && /touches|Clearance/.test(i.message))).toBe(true);
+  });
+});
+
+/** A connector with a metal body: two signal pads, slotted shell tabs and a body outline. */
+const SHELLED = [
+  '["PAD","p1",0,"",1,"1",-20,-60,0,null,["RECT",20,40,0],[],0,0,0,1,0]',
+  '["PAD","p2",0,"",1,"2",20,-60,0,null,["RECT",20,40,0],[],0,0,0,1,0]',
+  ...[-1, 1].flatMap((sx) => [-1, 1].map((sy) => `["PAD","s${sx}${sy}",0,"",12,"7",${sx * 100},${sy * 50},0,["SLOT",50,25],["OVAL",45,75],[],0,0,0,1,0]`)),
+  '["POLY","o",0,"",48,4,[-120,-80,"L",120,-80,"L",120,80,"L",-120,80,"L",-120,-80],0]',
+].join('\n');
+
+/** The R1/R2 fixture plus a connector; with `header`, its tabs become numbered round-hole pins. */
+function withConnector(designator: string, tracks: Pcb['tracks'], header = false): Project {
+  const project = fixture({ board: { x: 0, y: 0, width: 30, height: 14, cornerRadius: 0 }, tracks });
+  const pcb = project.pcb!;
+  let pin = 2;
+  const doc = header ? SHELLED.replaceAll('["SLOT",50,25]', '["ROUND",30,30]').replace(/,12,"7",/g, () => `,12,"${++pin}",`) : SHELLED;
+  return {
+    ...project,
+    components: [...project.components, { id: 'j', symbolKey: 'r', unit: 0, designator, value: 'USB', x: 200, y: 0, rotation: 0, mirror: false, attrs: {} }],
+    pcb: {
+      ...pcb,
+      footprints: { ...pcb.footprints, conn: { title: 'conn', dataStr: doc, source: 'easyeda' } },
+      footprintOf: { ...pcb.footprintOf, j: 'conn' },
+      placements: [...pcb.placements, { componentId: 'j', x: 22, y: 7, rotation: 0, side: 'top' }],
+    },
+  };
+}
+
+describe('connectors with a metal shell', () => {
+  // Straight through the body of a connector at x = 22 (body ±3 mm, ±2 mm).
+  const under = [{ id: 't', layer: 'top' as const, width: 0.25, points: [[18, 7], [26, 7]] as [number, number][], net: 'SIG' }];
+  const warnings = (p: Project) => {
+    const b = buildBoard(p, p.pcb!);
+    return runDrc(b, p.pcb!, pcbConnectivity(b, p.pcb!)).filter((i) => /metal shell/.test(i.message));
+  };
+
+  it('warns about other nets running under the shell', () => {
+    const issues = warnings(withConnector('J1', under));
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toMatch(/^SIG track runs [\d.]+ mm under J1's metal shell/);
+  });
+
+  it('leaves pin headers and non-connectors alone', () => {
+    expect(warnings(withConnector('J1', under, true))).toEqual([]);
+    expect(warnings(withConnector('U1', under))).toEqual([]);
+    expect(warnings(withConnector('J1', [{ ...under[0], layer: 'bottom' }]))).toEqual([]);
+  });
+
+  it('routes around the body when it can', () => {
+    const project = withConnector('J1', []);
+    const board = buildBoard(project, project.pcb!);
+    const body = shellAreas(board)[0];
+    expect(body.part.component.designator).toBe('J1');
+    const opts = { net: 'X', width: 0.25, rules: project.pcb!.rules, board: project.pcb!.board, items: [], netOf: () => null };
+    const ends: RouteEnd[] = [{ point: [17, 7], layers: ['top'] }, { point: [27, 7], layers: ['top'] }];
+    const crosses = (r: ReturnType<typeof routeConnection>) =>
+      r!.tracks.some((t) => t.points.some((p, i) => i > 0 && [0.25, 0.5, 0.75].some((f) => pointInPolygon([t.points[i - 1][0] + (p[0] - t.points[i - 1][0]) * f, t.points[i - 1][1] + (p[1] - t.points[i - 1][1]) * f], body.outlines[0]))));
+    expect(crosses(routeConnection(ends[0], ends[1], opts))).toBe(true);
+    const avoiding = routeConnection(ends[0], ends[1], { ...opts, avoid: [{ layer: 'top', outlines: body.outlines }] });
+    expect(avoiding).not.toBeNull();
+    expect(crosses(avoiding)).toBe(false);
+  });
+});
+
+describe('board picture', () => {
+  it('draws copper, rulers, highlights and DRC markers as plain SVG', () => {
+    const project = fixture({ tracks: [{ id: 't', layer: 'top', width: 0.25, points: [[5.8, 5], [11.2, 5]], net: 'SIG' }] });
+    const board = buildBoard(project, project.pcb!);
+    const conn = pcbConnectivity(board, project.pcb!);
+    const issue = { severity: 'warning' as const, message: 'x', at: [5, 5] as [number, number], refs: [] };
+    const { svg, widthPx, heightPx } = renderPcbSvg(project.pcb!, board, conn, [issue], { highlightNet: 'SIG', widthPx: 560 });
+    expect(svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" width="560"')).toBe(true);
+    expect(heightPx).toBe(Math.round((560 * 18) / 28));
+    expect(widthPx).toBe(560);
+    expect(svg).toContain('viewBox="-4 -4 28 18"');
+    expect(svg).toMatch(/<polyline points="5\.8,5 11\.2,5" fill="none" stroke="#ffffff"/);
+    expect(svg).toContain('stroke="#f59e0b"');
+    expect(svg).not.toMatch(/<text/);
   });
 });
 

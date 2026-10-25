@@ -30,6 +30,14 @@ PCB coordinates are millimetres with the board's top-left corner at (0, 0) and y
 downward. A part's x/y is its footprint origin, which is normally the body centre. Rotation is
 in degrees counter-clockwise as seen on screen.
 
+**Look at the board.** `pcb_render` writes a PNG of the board (to `designs/<slug>-renders/`) and
+returns its path; open it with the Read tool to see it. It has millimetre rulers along the top
+and left edges, so what you see maps straight to coordinates. Top copper is red, bottom blue,
+through-hole gold, unrouted connections dashed white, metal connector bodies dashed orange, and
+DRC problems circled (red errors, amber warnings). Add `"highlight_net": "+5V"` to follow one
+net, or `"layers": "bottom"` to see one side. Render after placing and after every routing round:
+a picture shows crossings, crowding and odd detours that the numbers don't.
+
 ## Before you start
 
 The schematic must be finished: `check_design` without errors, and every part placed from the
@@ -56,7 +64,8 @@ harder to route; leave more room when there are many connections.
 
 Read the board with `pcb_get_state` and `"include_pads": true` (pad positions and nets), plan the
 positions, then apply them with `pcb_move_part` in one batch. Pads move with the part, so read
-the state again after moving instead of working out rotated pad offsets by hand.
+the state again after moving instead of working out rotated pad offsets by hand, and render the
+board to check the result.
 
 - Connectors that mate at the edge (USB-C, barrel jacks) sit with their opening flush with the
   board edge: put that side of the `bbox` on the edge line. The opening is the side away from the
@@ -88,14 +97,19 @@ nets. Check `failed` in the result and `unrouted` in `pcb_get_state`:
 - Two or three placement/route rounds are normal. If a dense board (fine-pitch ICs, more than ~40
   parts) still fails, tell the user which nets remain. They can finish those by hand in the
   app's PCB tab (press W to route, V to change layers).
-- The router may run a track under a part body — for example between a USB-C receptacle's pads
-  and its metal shell. That passes DRC, but mention it so the user can look at it in the app.
+- Render the routed board and look at it. `pcb_get_state` with `"include_tracks": true` lists
+  every track (net, layer, width, length, corner points) and via when you need exact positions,
+  for example to find a long detour worth fixing by moving a part.
+- The router keeps other nets out from under metal connector shells (`metal_shell` parts in
+  `pcb_get_state`) where it can. When it can't, DRC warns that a track runs under the shell; move
+  the connector or the parts next to it, clear that net and route again.
 
 ### 6. Design rule check
 
 `pcb_check` must report no errors before you export. Read the warnings too: a pad with fewer
-than two thermal spokes may solder poorly or lose its GND connection. Overlapping parts and vias
-in pads are worth fixing.
+than two thermal spokes may solder poorly or lose its GND connection, and a track under a metal
+shell is only insulated by solder mask. Overlapping parts and vias in pads are worth fixing.
+The render circles each problem, which makes it easy to see what to move.
 
 ### 7. Export and hand off
 
@@ -108,8 +122,8 @@ in pads are worth fixing.
 
 Then tell the user:
 
-- board size, layer count, part count, that DRC passed, and anything worth a look (tracks under
-  connector bodies, nets you could not route);
+- board size, layer count, part count, that DRC passed, and anything worth a look (DRC warnings
+  you accepted, nets you could not route); show the final render's path so they can open it;
 - where the files are and what each one is for;
 - to check the Gerbers in JLCPCB's viewer after uploading, and the part rotations in their
   assembly preview (CPL rotations follow the design and occasionally need a fix there);
@@ -123,6 +137,5 @@ Then tell the user:
 
 - The auto-router is a simple grid router meant for small boards. Good placement matters more
   than anything else.
-- Pours always cover the whole board. There are no keepout areas, custom pour outlines,
-  stitching vias or differential pairs yet, and no picture of the board for you to check: the
-  user sees it in the app.
+- Pours always cover the whole board. There are no user-drawn keepout areas, custom pour
+  outlines, stitching vias or differential pairs yet.

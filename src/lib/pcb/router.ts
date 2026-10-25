@@ -3,7 +3,7 @@
  * keeps `clearance + width / 2` from copper of other nets and may change layer through a via.
  */
 import type { Vec } from '../schematic/types';
-import { pointShapeDistance, type CopperItem } from './geometry';
+import { pointInPolygon, pointShapeDistance, type CopperItem } from './geometry';
 import type { Board, CopperLayer, DesignRules } from './types';
 
 export interface RouteEnd {
@@ -85,6 +85,11 @@ export interface RouteOptions {
   netOf: (it: CopperItem) => string | null;
   /** Extra search margin around the connection, mm. */
   margin?: number;
+  /**
+   * Areas to stay out of unless there is no other way, e.g. under a connector's metal shell:
+   * every step inside costs extra and no via may be placed there.
+   */
+  avoid?: { layer: CopperLayer; outlines: Vec[][] }[];
 }
 
 export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions): RouteResult | null {
@@ -143,6 +148,25 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     }
   }
 
+  const avoided = [new Uint8Array(cells), new Uint8Array(cells)];
+  for (const area of opt.avoid ?? []) {
+    const l = area.layer === 'top' ? 0 : 1;
+    for (const outline of area.outlines) {
+      const xs = outline.map((p) => p[0]);
+      const ys = outline.map((p) => p[1]);
+      const ix0 = Math.max(0, Math.floor((Math.min(...xs) - x0) / STEP));
+      const ix1 = Math.min(cols - 1, Math.ceil((Math.max(...xs) - x0) / STEP));
+      const iy0 = Math.max(0, Math.floor((Math.min(...ys) - y0) / STEP));
+      const iy1 = Math.min(rows - 1, Math.ceil((Math.max(...ys) - y0) / STEP));
+      for (let iy = iy0; iy <= iy1; iy++)
+        for (let ix = ix0; ix <= ix1; ix++) {
+          if (!pointInPolygon([x0 + ix * STEP, y0 + iy * STEP], outline)) continue;
+          avoided[l][iy * cols + ix] = 1;
+          viaBlocked[iy * cols + ix] = 1;
+        }
+    }
+  }
+
   const cellOf = (p: Vec) => {
     const ix = Math.min(cols - 1, Math.max(0, Math.round((p[0] - x0) / STEP)));
     const iy = Math.min(rows - 1, Math.max(0, Math.round((p[1] - y0) / STEP)));
@@ -160,6 +184,8 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   const SQRT2 = Math.SQRT2;
   const BEND = 0.4;
   const VIA = 12;
+  /** Extra cost per step inside an avoided area (a step costs 1). */
+  const AVOID = 4;
   const N = cells * 2 * 8;
   const cost = new Float32Array(N).fill(Infinity);
   const prev = new Int32Array(N).fill(-1);
@@ -204,7 +230,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       if (blocked[l][nc]) continue;
       const diagonal = nd % 2 === 1;
       if (diagonal && (blocked[l][iy * cols + nx] || blocked[l][ny * cols + ix])) continue;
-      const step = (diagonal ? SQRT2 : 1) + (nd !== d ? BEND * (Math.min(Math.abs(nd - d), 8 - Math.abs(nd - d)) / 1) : 0);
+      const step = (diagonal ? SQRT2 : 1) + (nd !== d ? BEND * (Math.min(Math.abs(nd - d), 8 - Math.abs(nd - d)) / 1) : 0) + (avoided[l][nc] ? AVOID : 0);
       const ns = state(nc, l, nd);
       if (base + step < cost[ns]) {
         cost[ns] = base + step;

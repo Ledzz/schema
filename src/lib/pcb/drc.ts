@@ -1,7 +1,7 @@
 import type { Vec } from '../schematic/types';
-import type { BoardModel, PcbConnectivity } from './board';
-import { shapeDistance, type CopperItem } from './geometry';
-import type { Pcb } from './types';
+import type { BoardModel, BoardPart, PcbConnectivity } from './board';
+import { pointInPolygon, pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } from './geometry';
+import type { CopperLayer, Pcb } from './types';
 
 export interface DrcIssue {
   severity: 'error' | 'warning';
@@ -27,6 +27,86 @@ const label = (it: CopperItem, board: BoardModel) => {
   }
   return it.type;
 };
+
+/**
+ * Soldered shell tabs of a connector with a metal body (USB, RJ45, card sockets): slotted holes,
+ * or one pad number used several times. Pin headers have neither.
+ */
+export function shellPads(part: BoardPart): WorldPad[] {
+  if (!/^(J|CN|CON|USB|X)\d/i.test(part.component.designator)) return [];
+  const uses = new Map<string, number>();
+  for (const p of part.pads) uses.set(p.number, (uses.get(p.number) ?? 0) + 1);
+  return part.pads.filter((p) => (p.hole && Math.abs(p.hole.w - p.hole.h) > 1e-6) || (uses.get(p.number) ?? 0) > 1);
+}
+
+/** Closed component-outline polygons of a part, or its bounding box when it has none. */
+function bodyOutlines(part: BoardPart): Vec[][] {
+  const closed = part.graphics.filter((g) => g.layer === 'outline' && g.points.length > 3 && Math.hypot(g.points[0][0] - g.points.at(-1)![0], g.points[0][1] - g.points.at(-1)![1]) < 1e-3);
+  if (closed.length) return closed.map((g) => g.points);
+  const b = part.box;
+  return [[[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]]];
+}
+
+export interface ShellArea {
+  part: BoardPart;
+  layer: CopperLayer;
+  outlines: Vec[][];
+  /** Nets of the shell tabs; their copper may run under the body. */
+  nets: Set<string | null>;
+}
+
+/** Board areas under metal-shelled connectors, which other nets' copper should stay out of. */
+export function shellAreas(board: BoardModel): ShellArea[] {
+  return board.parts.flatMap((part) => {
+    const shell = shellPads(part);
+    return shell.length ? [{ part, layer: part.placement.side, outlines: bodyOutlines(part), nets: new Set(shell.map((p) => p.net)) }] : [];
+  });
+}
+
+/**
+ * Tracks and vias of other nets under a metal-shelled connector, where only solder mask separates
+ * them from the shell. Copper within 0.5 mm of its own net's pads on the part is how a track
+ * reaches them, so it doesn't count.
+ */
+function copperUnderShells(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcIssue[] {
+  const issues: DrcIssue[] = [];
+  const step = 0.1;
+  for (const { part, outlines, nets: shellNets } of shellAreas(board)) {
+    const inside = (p: Vec) => outlines.some((b) => pointInPolygon(p, b));
+    const name = part.component.designator;
+    for (const t of pcb.tracks) {
+      const net = conn.itemNet.get(t.id) ?? t.net;
+      if (t.layer !== part.placement.side || shellNets.has(net)) continue;
+      const own = part.pads.filter((p) => p.net !== null && p.net === net);
+      let length = 0;
+      let first: Vec | null = null;
+      for (let i = 1; i < t.points.length; i++) {
+        const [a, b] = [t.points[i - 1], t.points[i]];
+        const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+        for (let k = 0; k < n; k++) {
+          const p: Vec = [a[0] + ((b[0] - a[0]) * (k + 0.5)) / n, a[1] + ((b[1] - a[1]) * (k + 0.5)) / n];
+          if (!inside(p) || own.some((pad) => pointShapeDistance(p, pad.shape) <= 0.5)) continue;
+          length += Math.hypot(b[0] - a[0], b[1] - a[1]) / n;
+          first ??= p;
+        }
+      }
+      if (length >= 0.3) {
+        issues.push({
+          severity: 'warning',
+          message: `${net ?? 'Unconnected'} track runs ${length.toFixed(1)} mm under ${name}'s metal shell, insulated only by solder mask; route it outside the connector body`,
+          at: first,
+          refs: [t.id, part.component.id],
+        });
+      }
+    }
+    for (const v of pcb.vias) {
+      const net = conn.itemNet.get(v.id) ?? v.net;
+      if (shellNets.has(net) || !inside([v.x, v.y])) continue;
+      issues.push({ severity: 'warning', message: `${net ?? 'Unconnected'} via under ${name}'s metal shell; move it outside the connector body`, at: [v.x, v.y], refs: [v.id, part.component.id] });
+    }
+  }
+  return issues;
+}
 
 export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcIssue[] {
   const issues: DrcIssue[] = [];
@@ -98,6 +178,7 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
     if (t.width < pcb.rules.minTrackWidth) issues.push({ severity: 'warning', message: `Track narrower than ${pcb.rules.minTrackWidth} mm`, at: t.points[0], refs: [t.id] });
   }
   for (const c of board.missingFootprints) issues.push({ severity: 'warning', message: `${c.designator} has no footprint`, at: null, refs: [c.id] });
+  issues.push(...copperUnderShells(board, pcb, conn));
 
   // Overlapping parts (by footprint bounding box).
   const parts = board.parts.filter((p) => p.fp);

@@ -7,3 +7,4 @@ dist/
 designs/*-fab/
 designs/*.tmp
 designs/.*.tmp
+designs/*-renders/

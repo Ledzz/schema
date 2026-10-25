@@ -9,7 +9,7 @@ import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
-import { runDrc } from './drc';
+import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
 import { routeConnection, simplifyPath } from './router';
@@ -312,7 +312,11 @@ function routeOne(project: Project, aw: Airwire): { tracks: Track[]; vias: Via[]
   const conn = pcbConnectivity(board, pcb);
   const width = trackWidthFor(aw.net, pcb);
   const netOf = (it: (typeof board.items)[number]) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net));
-  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf };
+  // Keep other nets out from under metal connector shells where possible.
+  const avoid = shellAreas(board)
+    .filter((a) => !a.nets.has(aw.net))
+    .map(({ layer, outlines }) => ({ layer, outlines }));
+  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
   return {
