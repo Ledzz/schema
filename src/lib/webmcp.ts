@@ -32,11 +32,12 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePours, syncPcb, throughHoleParts, updateBoard, updatePlacement } from './pcb/actions';
+import { addCutout, addKeepout, addMountingHoles, addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updatePlacement } from './pcb/actions';
+import { boardEdges, circlePolygon, cornerHolePositions, edgeDistance, insideBoard, rectOutline, selfIntersects } from './pcb/outline';
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
-import type { CopperLayer, Pcb, Pour } from './pcb/types';
+import { DEFAULT_HOLE, type CopperLayer, type Pcb, type Pour } from './pcb/types';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -112,6 +113,34 @@ export function pcbPicture(input: Record<string, unknown>) {
     widthPx: input.width_px === undefined ? undefined : Number(input.width_px),
   });
 }
+
+const pointSchema = { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 };
+const outlineSchema = (description: string) => ({ type: 'array', items: pointSchema, minItems: 3, description: `${description} Closed polygon as [x, y] points in mm (the last point joins the first).` });
+const rectSchema = (description: string) => ({ type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4, description: `${description} Rectangle as [x1, y1, x2, y2] in mm.` });
+
+/** A polygon from an `outline` or `rect` input (one of them), checked for shape. */
+function areaInput(input: Record<string, unknown>, what: string, required = true): [number, number][] | null {
+  if (input.outline !== undefined && input.rect !== undefined) throw new Error(`Give either outline or rect for the ${what}, not both`);
+  if (input.rect !== undefined) {
+    const r = input.rect as number[];
+    if (r.length !== 4) throw new Error('rect must be [x1, y1, x2, y2]');
+    if (Math.abs(r[2] - r[0]) < 0.1 || Math.abs(r[3] - r[1]) < 0.1) throw new Error(`The ${what} rectangle has no area`);
+    return rectOutline(r[0], r[1], r[2], r[3]);
+  }
+  if (input.outline !== undefined) {
+    const pts = (input.outline as number[][]).map((p) => {
+      if (p.length !== 2) throw new Error(`Each outline point must be [x, y], got ${JSON.stringify(p)}`);
+      return [p[0], p[1]] as [number, number];
+    });
+    if (pts.length < 3) throw new Error(`The ${what} outline needs at least 3 points`);
+    if (selfIntersects(pts)) throw new Error(`The ${what} outline crosses itself; list the corners in order around the shape`);
+    return pts;
+  }
+  if (required) throw new Error(`Give the ${what} as outline (points) or rect ([x1, y1, x2, y2])`);
+  return null;
+}
+
+const roundPts = (pts: [number, number][]) => pts.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]);
 
 /** Explains an extended pick for a generic passive and names sizes that have a no-fee part. */
 async function extendedNote(c: Component): Promise<string | undefined> {
@@ -590,7 +619,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_get_state',
     title: 'Get PCB state',
     description:
-      'Board outline, design rules, the total area of the parts’ bounding boxes, every placed part (position in mm, rotation, side, footprint, bounding box, metal_shell for connectors whose body must not cover other nets’ tracks), copper pours (areas = separate copper regions; unconnected islands are already removed), unrouted connection counts per net (`unrouted`), and track/via counts. y grows downwards; the board origin is its top-left corner. With include_pads, each part also lists its pads (number, net, x, y) — useful for placing decoupling capacitors next to the right pins. With include_tracks, `routing` lists every track (net, layer, width, length, corner points) and via, so you can see where the router went.',
+      'Board outline (with `outline` and `cutouts` when the shape is custom), mounting holes, keepout areas, design rules, the total area of the parts’ bounding boxes, every placed part (position in mm, rotation, side, footprint, bounding box, metal_shell for connectors whose body must not cover other nets’ tracks), copper pours (id, zone outline when not the whole board, areas = separate copper regions; unconnected islands are already removed), unrouted connection counts per net (`unrouted`), and track/via counts. y grows downwards; the board origin is its top-left corner. With include_pads, each part also lists its pads (number, net, x, y) — useful for placing decoupling capacitors next to the right pins. With include_tracks, `routing` lists every track (net, layer, width, length, corner points) and via, so you can see where the router went.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -620,8 +649,12 @@ export const TOOLS: ToolDefinition[] = [
           metal_shell: shelled.has(p.component.id) || undefined,
           pads: input.include_pads ? p.pads.map((pad) => ({ number: pad.number, net: pad.net, x: round(pad.center[0]), y: round(pad.center[1]) })) : undefined,
         })),
+        holes: pcb.holes?.length ? pcb.holes : undefined,
+        keepouts: pcb.keepouts?.length ? pcb.keepouts : undefined,
         pours: board.fills.map((f) => ({
+          id: f.pour.id,
           net: f.pour.net,
+          zone: f.pour.outline ? roundPts(f.pour.outline as [number, number][]) : undefined,
           layer: f.pour.layer,
           clearance: f.pour.clearance,
           connection: f.pour.connection,
@@ -667,19 +700,127 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: 'pcb_set_board',
-    title: 'Set board size',
-    description: 'Set the board outline size in millimetres (and optional corner radius).',
+    title: 'Set board shape',
+    description:
+      'Set the board size in millimetres (a rectangle with optional corner radius), or give `outline` for a custom shape (an L, a notched or angled board, one that fits an enclosure); the corner radius rounds its corners too. Width/height go back to a rectangle. Parts outside the new shape show up in pcb_check.',
     inputSchema: {
       type: 'object',
-      properties: { width: { type: 'number', minimum: 5 }, height: { type: 'number', minimum: 5 }, corner_radius: { type: 'number', minimum: 0 } },
+      properties: {
+        width: { type: 'number', minimum: 5 },
+        height: { type: 'number', minimum: 5 },
+        corner_radius: { type: 'number', minimum: 0 },
+        outline: outlineSchema('Custom board shape.'),
+      },
     },
     execute: async (input) => {
+      if (input.outline !== undefined && (input.width !== undefined || input.height !== undefined)) throw new Error('Give either outline or width/height, not both');
+      if (input.outline !== undefined) setBoardOutline(areaInput(input, 'board'));
       const patch: Partial<Pcb['board']> = {};
+      if (input.width !== undefined || input.height !== undefined) patch.outline = undefined;
       if (input.width !== undefined) patch.width = Number(input.width);
       if (input.height !== undefined) patch.height = Number(input.height);
       if (input.corner_radius !== undefined) patch.cornerRadius = Number(input.corner_radius);
-      updateBoard(patch);
+      if (Object.keys(patch).length) updateBoard(patch);
       return { board: currentPcb().board };
+    },
+  },
+  {
+    name: 'pcb_add_mounting_holes',
+    title: 'Add mounting holes',
+    description:
+      'Drill non-plated mounting holes (default 3.2 mm for M3 screws) at the given points, or one in each corner with `corners`. Each hole has a copper-free ring (`keepout` diameter, default 6.4 mm for the screw head): no tracks, vias, pours or parts inside it, which the router and pcb_check respect. Place holes before routing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        points: { type: 'array', items: pointSchema, minItems: 1, description: 'Hole centres as [x, y] in mm.' },
+        corners: { type: 'boolean', description: 'One hole in each corner of the board’s bounding box.' },
+        inset: { type: 'number', minimum: 1, description: 'With corners: distance from the edges to the hole centre (default keepout radius + 0.5 mm).' },
+        diameter: { type: 'number', minimum: 0.5, maximum: 10, description: `Drill diameter in mm (default ${DEFAULT_HOLE.diameter}).` },
+        keepout: { type: 'number', minimum: 0, maximum: 20, description: `Diameter of the copper-free ring in mm (default ${DEFAULT_HOLE.keepout}).` },
+      },
+    },
+    execute: async (input) => {
+      const diameter = input.diameter === undefined ? DEFAULT_HOLE.diameter : Number(input.diameter);
+      const keepout = Math.max(diameter, input.keepout === undefined ? DEFAULT_HOLE.keepout : Number(input.keepout));
+      const pcb = currentPcb();
+      const inset = input.inset === undefined ? keepout / 2 + 0.5 : Number(input.inset);
+      const points = [...((input.points as number[][] | undefined) ?? []).map(([x, y]) => [x, y] as [number, number]), ...(input.corners ? cornerHolePositions(pcb.board, inset) : [])];
+      if (!points.length) throw new Error('Give points, or corners: true');
+      const edges = boardEdges(pcb);
+      const bad = points.filter((p) => !insideBoard(p, edges) || edgeDistance(p, edges) < diameter / 2 + 0.3);
+      if (bad.length) throw new Error(`These holes would not fit inside the board (${diameter / 2 + 0.3} mm from every edge): ${bad.map((p) => `[${p.join(', ')}]`).join(', ')}`);
+      const holes = addMountingHoles(points, diameter, keepout);
+      const { issues } = checkPcb();
+      const ids = new Set(holes.map((h) => h.id));
+      const blocked = issues.filter((i) => i.refs?.some((r) => ids.has(r))).map((i) => i.message);
+      return { holes, conflicts: blocked.length ? blocked : undefined };
+    },
+  },
+  {
+    name: 'pcb_add_keepout',
+    title: 'Add keepout area',
+    description:
+      'Mark an area where copper must not go: under an antenna, a heat sink or a screw head, or a strip kept free along an edge. By default it keeps out tracks, vias and pours on both layers; set `parts` to keep parts out too. The router routes around it, pours leave it empty and pcb_check reports anything inside. Existing tracks are not moved: clear and re-route the nets that cross it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        outline: outlineSchema('Keepout shape.'),
+        rect: rectSchema('Keepout shape.'),
+        layers: { type: 'array', items: { type: 'string', enum: ['top', 'bottom'] }, description: 'Default both.' },
+        tracks: { type: 'boolean', description: 'Keep tracks out (default true).' },
+        vias: { type: 'boolean', description: 'Keep vias out (default true).' },
+        pours: { type: 'boolean', description: 'Keep copper pours out (default true).' },
+        parts: { type: 'boolean', description: 'Keep parts out (default false).' },
+      },
+    },
+    execute: async (input) => {
+      const outline = areaInput(input, 'keepout')!;
+      const flags: Record<string, boolean> = {};
+      for (const k of ['tracks', 'vias', 'pours', 'parts'] as const) if (input[k] !== undefined) flags[k] = Boolean(input[k]);
+      const layers = Array.isArray(input.layers) && input.layers.length ? (input.layers as CopperLayer[]) : undefined;
+      const keepout = addKeepout(outline, { ...flags, ...(layers ? { layers } : {}) });
+      const { issues } = checkPcb();
+      const inside = issues.filter((i) => i.refs?.includes(keepout.id)).map((i) => i.message);
+      return { keepout, conflicts: inside.length ? inside : undefined };
+    },
+  },
+  {
+    name: 'pcb_add_cutout',
+    title: 'Add board cutout',
+    description:
+      'Mill an opening through the board (a slot for a cable or connector, a window for a sensor, a large round hole) given as outline, rect or circle. It goes on the outline (Edge_Cuts) layer; copper keeps the edge clearance from it. For screw holes use pcb_add_mounting_holes, which are drilled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        outline: outlineSchema('Opening shape.'),
+        rect: rectSchema('Opening shape.'),
+        circle: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Round opening as [x, y, diameter] in mm.' },
+      },
+    },
+    execute: async (input) => {
+      let outline = areaInput(input, 'cutout', input.circle === undefined);
+      if (input.circle !== undefined) {
+        if (outline) throw new Error('Give one of outline, rect or circle');
+        const [x, y, d] = input.circle as number[];
+        if (!(d > 0.5)) throw new Error('The circle diameter must be over 0.5 mm');
+        outline = circlePolygon([x, y], d / 2, 48).slice(0, -1) as [number, number][];
+      }
+      const edges = boardEdges(currentPcb());
+      if (!outline!.every((p) => insideBoard(p, edges))) throw new Error('The cutout must lie inside the board outline; change the outline with pcb_set_board for a notch at the edge');
+      return { cutout: { ...addCutout(outline!), outline: roundPts(outline!) } };
+    },
+  },
+  {
+    name: 'pcb_remove_features',
+    title: 'Remove holes, keepouts, cutouts or pours',
+    description: 'Remove mounting holes, keepout areas, cutouts or copper pours by id (ids are in pcb_get_state).',
+    inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' }, minItems: 1 } }, required: ['ids'] },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const ids = new Set((input.ids as string[]).map(String));
+      const removed = removePcbItems(ids);
+      if (!removed) throw new Error('None of those ids is a mounting hole, keepout, cutout or pour; see pcb_get_state');
+      return { removed };
     },
   },
   {
@@ -742,8 +883,8 @@ export const TOOLS: ToolDefinition[] = [
       const { board, pcb } = boardModel();
       if (!board.pads.some((p) => p.net === net)) throw new Error(`No pad is on net "${net}"`);
       const points = (input.points as number[][]).map(([x, y]) => [x, y] as [number, number]);
-      const b = pcb.board;
-      const outside = points.filter(([x, y]) => x < b.x || y < b.y || x > b.x + b.width || y > b.y + b.height);
+      const edges = boardEdges(pcb);
+      const outside = points.filter((p) => !insideBoard(p, edges));
       if (outside.length) throw new Error(`Points outside the board: ${outside.map((p) => p.join(',')).join('; ')}`);
       return { added: addVias(points, net).length };
     },
@@ -766,7 +907,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_add_pour',
     title: 'Add copper pour',
     description:
-      'Fill the board with copper on a net (usually GND) on one or both layers, keeping the clearance to other nets. Same-net pads join through thermal reliefs (or solidly). Replaces existing pours of that net on those layers. Pours count as connections for the ratsnest, so run pcb_get_state afterwards to see what is still unrouted.',
+      'Fill the board with copper on a net (usually GND) on one or both layers, keeping the clearance to other nets. Same-net pads join through thermal reliefs (or solidly). Replaces existing whole-board pours of that net on those layers. With `outline` or `rect` it pours only that area (a zone): zones add to the existing pours and take priority over whole-board pours of other nets, which flow around them. Pours count as connections for the ratsnest, so run pcb_get_state afterwards to see what is still unrouted.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -774,21 +915,25 @@ export const TOOLS: ToolDefinition[] = [
         layers: { type: 'array', items: { type: 'string', enum: ['top', 'bottom'] }, description: 'Default both.' },
         clearance: { type: 'number', minimum: 0.1, description: 'Gap to other nets in mm (default 0.3).' },
         connection: { type: 'string', enum: ['thermal', 'solid'] },
+        outline: outlineSchema('Pour only this area (a zone), e.g. a power plane under a regulator.'),
+        rect: rectSchema('Pour only this area (a zone).'),
       },
     },
     execute: async (input) => {
       const net = input.net ? String(input.net) : 'GND';
+      const zone = areaInput(input, 'pour zone', false);
       if (!boardNets().includes(net)) throw new Error(`No pad on the PCB is on net ${net}. Nets: ${boardNets().join(', ')}`);
       const layers = Array.isArray(input.layers) && input.layers.length ? (input.layers as CopperLayer[]) : (['top', 'bottom'] as CopperLayer[]);
       const settings: Partial<Pour> = {};
       if (input.clearance !== undefined) settings.clearance = Number(input.clearance);
       if (input.connection === 'thermal' || input.connection === 'solid') settings.connection = input.connection;
+      if (zone) settings.outline = zone;
       const pours = addPours(net, layers, settings);
       const { board, conn } = boardModel();
       return {
         pours: pours.map((p) => {
           const f = board.fills.find((x) => x.pour.id === p.id);
-          return { layer: p.layer, areas: f?.areas.length ?? 0, weak_thermals: f?.thermals.filter((t) => t.spokes < 2).length ?? 0 };
+          return { id: p.id, layer: p.layer, areas: f?.areas.length ?? 0, weak_thermals: f?.thermals.filter((t) => t.spokes < 2).length ?? 0 };
         }),
         unrouted: Object.fromEntries([...conn.unrouted].filter(([, n]) => n > 0)),
       };

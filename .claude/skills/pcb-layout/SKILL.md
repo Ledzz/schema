@@ -33,8 +33,9 @@ in degrees counter-clockwise as seen on screen.
 **Look at the board.** `pcb_render` writes a PNG of the board (to `designs/<slug>-renders/`) and
 returns its path; open it with the Read tool to see it. It has millimetre rulers along the top
 and left edges, so what you see maps straight to coordinates. Top copper is red, bottom blue,
-through-hole gold, unrouted connections dashed white, metal connector bodies dashed orange, and
-DRC problems circled (red errors, amber warnings). Add `"highlight_net": "+5V"` to follow one
+through-hole gold, unrouted connections dashed white, metal connector bodies dashed orange,
+keepouts and mounting-hole rings dashed red, and DRC problems circled (red errors, amber
+warnings). Add `"highlight_net": "+5V"` to follow one
 net, or `"layers": "bottom"` to see one side. Render after placing and after every routing round:
 a picture shows crossings, crowding and odd detours that the numbers don't.
 
@@ -60,6 +61,19 @@ Otherwise aim for 2.5–3 times `part_area_mm2` from `pcb_get_state`, rounded to
 with `pcb_set_board` (a 1 mm `corner_radius` looks finished). Smaller boards are cheaper but
 harder to route; leave more room when there are many connections.
 
+Add the mechanical features now, before placing, because they take board space:
+
+- **Shape:** `pcb_set_board` with `outline` (corner points in order) when the board must fit an
+  enclosure or needs a notch or chamfer; corners are rounded by `corner_radius`.
+- **Mounting holes:** if the user wants the board screwed down (or it goes in an enclosure),
+  `pcb_add_mounting_holes` with `"corners": true` puts M3 holes (3.2 mm, 6.4 mm copper-free
+  ring) in each corner. Allow about 7 mm × 7 mm per corner for them when sizing the board.
+- **Keepouts:** `pcb_add_keepout` (a `rect` or `outline`) under an antenna, a heat sink or anything
+  that must stay copper-free; add `"parts": true` to keep parts out too.
+- **Cutouts:** `pcb_add_cutout` for slots and windows milled through the board.
+
+`pcb_get_state` lists their ids; `pcb_remove_features` removes them.
+
 ### 3. Place parts — this decides whether routing succeeds
 
 Read the board with `pcb_get_state` and `"include_pads": true` (pad positions and nets), plan the
@@ -82,7 +96,9 @@ board to check the result.
 
 ### 4. Ground pours
 
-`pcb_add_pour` with `"net": "GND"` on both layers. A ground plane gives every signal a short
+`pcb_add_pour` with `"net": "GND"` on both layers. For a local plane of another net (say a wide
+VM area under a motor driver), add a zone with `rect` or `outline`: zones take priority and the
+GND pour flows around them. A ground plane gives every signal a short
 return path and makes most GND connections for free, which leaves the router far less to do.
 Pours keep 0.3 mm from other nets, join GND pads through thermal reliefs, and refill by
 themselves after every move or route, so add them once, before routing.
@@ -127,7 +143,8 @@ The render circles each problem, which makes it easy to see what to move.
 
 `pcb_export` writes `designs/<slug>-fab/`:
 
-- `<slug>-gerbers.zip`: Gerbers and drill file, uploaded to JLCPCB as is;
+- `<slug>-gerbers.zip`: Gerbers and drill files (a separate non-plated one when the board has
+  mounting holes), uploaded to JLCPCB as is;
 - `<slug>-BOM.csv` and `<slug>-CPL.csv`: bill of materials and pick-and-place for JLCPCB
   assembly (CPL y is measured up from the bottom edge, as JLCPCB expects);
 - `<slug>.net.txt`: the netlist, for reference.
@@ -154,5 +171,7 @@ Then tell the user:
 
 - The auto-router is a simple grid router meant for small boards. Good placement matters more
   than anything else.
-- Pours always cover the whole board. There are no user-drawn keepout areas, custom pour
-  outlines, stitching vias or differential pairs yet.
+- Outlines are straight-sided polygons (rounded corners, no arcs). There are no differential
+  pairs or length tuning yet.
+- Keepouts don't move existing tracks: after adding one over routed copper, clear the nets
+  `pcb_check` names and route them again.

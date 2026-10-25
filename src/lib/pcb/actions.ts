@@ -14,8 +14,9 @@ import { pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } fro
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
-import { routeConnection, simplifyPath } from './router';
-import { DEFAULT_POUR, emptyPcb, type CopperLayer, type Pcb, type Placement, type Pour, type StoredFootprint, type Track, type Via } from './types';
+import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from './outline';
+import { edgeField, routeConnection, simplifyPath } from './router';
+import { DEFAULT_HOLE, DEFAULT_POUR, emptyPcb, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type StoredFootprint, type Track, type Via } from './types';
 import { fitPcbView } from './view';
 
 const st = () => useEditor.getState();
@@ -178,8 +179,121 @@ export function pcbOutOfDate(project: Project): boolean {
 
 /* ---------- editing ---------- */
 
+/** Moves selected parts, mounting holes, keepouts and cutouts. */
 export function movePlacements(pcb: Pcb, ids: ReadonlySet<string>, dx: number, dy: number): Pcb {
-  return { ...pcb, placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, x: p.x + dx, y: p.y + dy } : p)) };
+  const shift = (outline: Vec[]) => outline.map(([x, y]) => [x + dx, y + dy] as Vec);
+  const cutouts = pcb.board.cutouts?.map((c) => (ids.has(c.id) ? { ...c, outline: shift(c.outline) } : c));
+  return {
+    ...pcb,
+    placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, x: p.x + dx, y: p.y + dy } : p)),
+    holes: pcb.holes?.map((h) => (ids.has(h.id) ? { ...h, x: h.x + dx, y: h.y + dy } : h)),
+    keepouts: pcb.keepouts?.map((k) => (ids.has(k.id) ? { ...k, outline: shift(k.outline) } : k)),
+    pours: pcb.pours?.map((z) => (ids.has(z.id) && z.outline ? { ...z, outline: shift(z.outline) } : z)),
+    board: cutouts ? { ...pcb.board, cutouts } : pcb.board,
+  };
+}
+
+/** Ids that move with movePlacements: parts, mounting holes, keepouts, cutouts and zones. */
+export function movableIds(pcb: Pcb, ids: Iterable<string>): Set<string> {
+  const movable = new Set([
+    ...pcb.placements.map((p) => p.componentId),
+    ...(pcb.holes ?? []).map((h) => h.id),
+    ...(pcb.keepouts ?? []).map((k) => k.id),
+    ...(pcb.board.cutouts ?? []).map((c) => c.id),
+    ...(pcb.pours ?? []).filter((z) => z.outline).map((z) => z.id),
+  ]);
+  return new Set([...ids].filter((id) => movable.has(id)));
+}
+
+/** Drops repeated and closing points; null when fewer than three corners remain. */
+function cleanShape(points: Vec[]): Vec[] | null {
+  const out = points.filter((p, i) => i === 0 || !samePoint(p, points[i - 1]));
+  if (out.length > 1 && samePoint(out[0], out[out.length - 1])) out.pop();
+  return out.length >= 3 ? out : null;
+}
+
+/**
+ * Turns a shape drawn with an area tool into a keepout, cutout, pour zone or the board outline,
+ * selects it and returns to the select tool.
+ */
+export function finishShape(points: Vec[]) {
+  const s = st();
+  const tool = s.pcbTool;
+  const shape = cleanShape(points);
+  s.setShapeDraft(null);
+  if (!shape) return s.notify('An area needs at least three corners');
+  let id: string | null = null;
+  if (tool === 'outline') {
+    setBoardOutline(shape);
+    s.notify('Board outline changed; parts and copper outside it show up in the design check');
+  } else if (tool === 'keepout') id = addKeepout(shape).id;
+  else if (tool === 'cutout') id = addCutout(shape).id;
+  else if (tool === 'zone') {
+    const net = s.pcbHighlightNet ?? boardNets()[0];
+    if (!net) return s.notify('Add parts to the board before drawing a pour zone', 'error');
+    id = addPours(net, [s.activeLayer], { outline: shape })[0].id;
+    s.notify(`Pour zone on ${net} (${s.activeLayer}); change its net in the panel on the right`);
+  }
+  s.setPcbTool('select');
+  if (id) s.setPcbSelection([id]);
+}
+
+/** Places one mounting hole with the default size, if it fits on the board. */
+export function placeMountingHole(at: Vec) {
+  const pcb = currentPcb();
+  const edges = boardEdges(pcb);
+  if (!insideBoard(at, edges) || edgeDistance(at, edges) < DEFAULT_HOLE.diameter / 2 + 0.3) return st().notify('A mounting hole must sit inside the board, clear of its edges', 'error');
+  const [hole] = addMountingHoles([at]);
+  st().setPcbSelection([hole.id]);
+}
+
+/** Sets a custom board outline (closed polygon), or goes back to the rectangle with null. */
+export function setBoardOutline(outline: Vec[] | null) {
+  commitPcb((pcb) => ({ ...pcb, board: withOutline(pcb.board, outline) }));
+}
+
+export function addCutout(outline: Vec[]): Cutout {
+  const cutout: Cutout = { id: newId('cut'), outline };
+  commitPcb((pcb) => ({ ...pcb, board: { ...pcb.board, cutouts: [...(pcb.board.cutouts ?? []), cutout] } }));
+  return cutout;
+}
+
+export function addMountingHoles(points: Vec[], diameter = DEFAULT_HOLE.diameter, keepout = DEFAULT_HOLE.keepout): MountingHole[] {
+  const holes = points.map(([x, y]): MountingHole => ({ id: newId('hole'), x, y, diameter, keepout: Math.max(keepout, diameter) }));
+  commitPcb((pcb) => ({ ...pcb, holes: [...(pcb.holes ?? []), ...holes] }));
+  return holes;
+}
+
+export function addKeepout(outline: Vec[], opts: Partial<Omit<Keepout, 'id' | 'outline'>> = {}): Keepout {
+  const keepout: Keepout = { id: newId('keep'), outline, layers: ['top', 'bottom'], tracks: true, vias: true, pours: true, parts: false, ...opts };
+  commitPcb((pcb) => ({ ...pcb, keepouts: [...(pcb.keepouts ?? []), keepout] }));
+  return keepout;
+}
+
+export function updateMechanical(id: string, patch: Partial<MountingHole> & Partial<Keepout>) {
+  commitPcb((pcb) => ({
+    ...pcb,
+    holes: pcb.holes?.map((h) => (h.id === id ? { ...h, ...(patch as Partial<MountingHole>) } : h)),
+    keepouts: pcb.keepouts?.map((k) => (k.id === id ? { ...k, ...(patch as Partial<Keepout>) } : k)),
+  }));
+}
+
+/** Removes mounting holes, keepouts, cutouts, pours, tracks or vias by id; returns how many went. */
+export function removePcbItems(ids: ReadonlySet<string>): number {
+  const pcb = currentPcb();
+  const count = [pcb.holes ?? [], pcb.keepouts ?? [], pcb.board.cutouts ?? [], pcb.pours ?? [], pcb.tracks, pcb.vias].flat().filter((x) => ids.has(x.id)).length;
+  if (count) {
+    commitPcb((p) => ({
+      ...p,
+      tracks: p.tracks.filter((t) => !ids.has(t.id)),
+      vias: p.vias.filter((v) => !ids.has(v.id)),
+      pours: (p.pours ?? []).filter((z) => !ids.has(z.id)),
+      holes: (p.holes ?? []).filter((h) => !ids.has(h.id)),
+      keepouts: (p.keepouts ?? []).filter((k) => !ids.has(k.id)),
+      board: { ...p.board, cutouts: (p.board.cutouts ?? []).filter((c) => !ids.has(c.id)) },
+    }));
+  }
+  return count;
 }
 
 export function rotateSelected(step = 90) {
@@ -192,14 +306,10 @@ export function flipSelected() {
   commitPcb((pcb) => ({ ...pcb, placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, side: p.side === 'top' ? 'bottom' : 'top' } : p)) }));
 }
 
+/** Deletes the selected tracks, vias, pours, mounting holes, keepouts and cutouts (not parts). */
 export function deleteSelectedCopper() {
   const ids = new Set(st().pcbSelection);
-  commitPcb((pcb) => ({
-    ...pcb,
-    tracks: pcb.tracks.filter((t) => !ids.has(t.id)),
-    vias: pcb.vias.filter((v) => !ids.has(v.id)),
-    pours: (pcb.pours ?? []).filter((z) => !ids.has(z.id)),
-  }));
+  removePcbItems(ids);
   st().setPcbSelection(st().pcbSelection.filter((id) => !ids.has(id) || st().project.components.some((c) => c.id === id)));
 }
 
@@ -249,7 +359,8 @@ export function addPours(net: string, layers: CopperLayer[] = ['top', 'bottom'],
   const pours: Pour[] = layers.map((layer) => ({ ...DEFAULT_POUR, ...settings, id: newId('z'), net, layer }));
   commitPcb((pcb) => ({
     ...pcb,
-    pours: [...(pcb.pours ?? []).filter((p) => !(p.net === net && layers.includes(p.layer))), ...pours],
+    // A whole-board pour replaces the net's whole-board pours on those layers; zones add up.
+    pours: [...(pcb.pours ?? []).filter((p) => settings.outline || p.outline || !(p.net === net && layers.includes(p.layer))), ...pours],
   }));
   return pours;
 }
@@ -390,7 +501,7 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
   const avoid = shellAreas(board)
     .filter((a) => !a.nets.has(aw.net))
     .map(({ layer, outlines }) => ({ layer, outlines }));
-  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid };
+  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb) };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
   const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];

@@ -4,7 +4,8 @@
  */
 import type { Vec } from '../schematic/types';
 import type { BoardModel } from './board';
-import { boardOutline, padOutline, rotateDeg, type WorldPad } from './geometry';
+import { padOutline, rotateDeg, type WorldPad } from './geometry';
+import { boardEdges } from './outline';
 import { textStrokes } from './font';
 import type { Board, CopperLayer, Pcb } from './types';
 
@@ -161,12 +162,35 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     copper('top').circle(v.diameter, [v.x, v.y]);
     copper('bottom').circle(v.diameter, [v.x, v.y]);
   }
-  layers['Edge_Cuts.gm1'].stroke(0.1, boardOutline(b));
+  // Outline and milled cutouts on the profile layer; mounting holes are drilled (NPTH file).
+  const edges = boardEdges(pcb);
+  for (const poly of [edges.outline, ...edges.cutouts]) layers['Edge_Cuts.gm1'].stroke(0.1, poly);
+  for (const h of pcb.holes ?? []) {
+    for (const mask of ['F_Mask.gts', 'B_Mask.gbs']) layers[mask].circle(h.diameter + 2 * pcb.rules.maskExpansion, [h.x, h.y]);
+  }
 
   return [
     ...Object.entries(layers).map(([suffix, g]) => ({ name: `${baseName}-${suffix}`, content: g.toString() })),
     { name: `${baseName}.drl`, content: generateDrill(pcb, board) },
+    ...(pcb.holes?.length ? [{ name: `${baseName}-NPTH.drl`, content: generateNpthDrill(pcb) }] : []),
   ];
+}
+
+/** Excellon file for the non-plated mounting holes. */
+export function generateNpthDrill(pcb: Pcb): string {
+  const b = pcb.board;
+  const xy = (x: number, y: number) => `X${(x - b.x).toFixed(3)}Y${(b.y + b.height - y).toFixed(3)}`;
+  const holes = pcb.holes ?? [];
+  const tools = [...new Set(holes.map((h) => h.diameter.toFixed(3)))].sort((a, c) => Number(a) - Number(c));
+  const lines = ['M48', '; DRILL file {Schematics} non-plated holes', '; #@! TF.FileFunction,NonPlated,1,2,NPTH', 'FMAT,2', 'METRIC,TZ'];
+  tools.forEach((d, i) => lines.push(`T${i + 1}C${d}`));
+  lines.push('%', 'G90', 'G05');
+  tools.forEach((d, i) => {
+    lines.push(`T${i + 1}`);
+    for (const h of holes.filter((x) => x.diameter.toFixed(3) === d)) lines.push(xy(h.x, h.y));
+  });
+  lines.push('T0', 'M30', '');
+  return lines.join('\n');
 }
 
 export function generateDrill(pcb: Pcb, board: BoardModel): string {

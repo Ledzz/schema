@@ -1,6 +1,7 @@
 import type { Vec } from '../schematic/types';
 import type { BoardModel, BoardPart, PcbConnectivity } from './board';
 import { pointInPolygon, pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } from './geometry';
+import { boardEdges, insideBoard, keepoutAreas, shapeEdgeDistance } from './outline';
 import type { CopperLayer, Pcb } from './types';
 
 export interface DrcIssue {
@@ -19,13 +20,14 @@ function effectiveNet(it: CopperItem, conn: PcbConnectivity): string {
   return conn.itemNet.get(it.ref) ?? it.net ?? `${it.type}:${it.ref}`;
 }
 
-const label = (it: CopperItem, board: BoardModel) => {
+const label = (it: CopperItem, board: BoardModel, conn?: PcbConnectivity) => {
   if (it.type === 'pad') {
     const [cid, idx] = it.ref.split(':');
     const pad = board.pads.find((p) => p.componentId === cid && p.index === Number(idx));
     return pad ? `${pad.designator}.${pad.number}` : 'pad';
   }
-  return it.type;
+  const net = conn?.itemNet.get(it.ref) ?? it.net;
+  return net ? `${net} ${it.type}` : it.type;
 };
 
 /**
@@ -108,6 +110,40 @@ function copperUnderShells(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): 
   return issues;
 }
 
+/** Tracks, vias and parts inside keepout areas (mounting-hole rings included), per its switches. */
+function keepoutViolations(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcIssue[] {
+  const issues: DrcIssue[] = [];
+  const holeIds = new Set((pcb.holes ?? []).map((h) => h.id));
+  for (const k of keepoutAreas(pcb)) {
+    if (k.outline.length < 3) continue;
+    const area = { kind: 'poly' as const, points: k.outline };
+    const where = holeIds.has(k.id) ? 'the mounting hole ring' : 'a keepout area';
+    if (k.tracks) {
+      for (const t of pcb.tracks) {
+        if (!k.layers.includes(t.layer)) continue;
+        const hit = t.points.slice(1).find((p, i) => shapeDistance({ kind: 'capsule', a: t.points[i], b: p, r: t.width / 2 }, area) === 0);
+        if (hit) issues.push({ severity: 'error', message: `${conn.itemNet.get(t.id) ?? t.net ?? 'Unconnected'} track crosses ${where}`, at: hit, refs: [t.id, k.id] });
+      }
+    }
+    if (k.vias) {
+      for (const v of pcb.vias) {
+        if (shapeDistance({ kind: 'capsule', a: [v.x, v.y], b: [v.x, v.y], r: v.diameter / 2 }, area) === 0) {
+          issues.push({ severity: 'error', message: `${conn.itemNet.get(v.id) ?? v.net ?? 'Unconnected'} via inside ${where}`, at: [v.x, v.y], refs: [v.id, k.id] });
+        }
+      }
+    }
+    if (k.parts) {
+      for (const part of board.parts) {
+        if (!part.fp || !k.layers.includes(part.placement.side)) continue;
+        const b = part.box;
+        const body = { kind: 'poly' as const, points: [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]] as Vec[] };
+        if (shapeDistance(body, area) === 0) issues.push({ severity: 'error', message: `${part.component.designator} is inside ${where}`, at: [part.placement.x, part.placement.y], refs: [part.component.id, k.id] });
+      }
+    }
+  }
+  return issues;
+}
+
 export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcIssue[] {
   const issues: DrcIssue[] = [];
   const { clearance } = pcb.rules;
@@ -134,7 +170,7 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
         seen.add(pair);
         issues.push({
           severity: 'error',
-          message: d === 0 ? `${label(a, board)} touches ${label(b, board)} (different nets)` : `Clearance ${d.toFixed(3)} mm between ${label(a, board)} and ${label(b, board)} (min ${clearance} mm)`,
+          message: d === 0 ? `${label(a, board, conn)} touches ${label(b, board, conn)} (different nets)` : `Clearance ${d.toFixed(3)} mm between ${label(a, board, conn)} and ${label(b, board, conn)} (min ${clearance} mm)`,
           at: center(a),
           refs: [a.ref.split(':')[0], b.ref.split(':')[0]],
         });
@@ -148,13 +184,15 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
     if (n > 0) issues.push({ severity: 'error', message: `${net}: ${n} unrouted connection${n > 1 ? 's' : ''}`, at: null, refs: [] });
   }
 
-  const { board: b } = pcb;
+  // Copper must sit on the board and keep clear of every edge: outline, cutouts, hole walls.
+  const edges = boardEdges(pcb);
   const edge = 0.2;
   for (const it of board.items) {
-    if (it.box.x1 < b.x + edge || it.box.y1 < b.y + edge || it.box.x2 > b.x + b.width - edge || it.box.y2 > b.y + b.height - edge) {
-      issues.push({ severity: 'error', message: `${label(it, board)} is outside the board or closer than ${edge} mm to the edge`, at: center(it), refs: [it.ref.split(':')[0]] });
+    if (!insideBoard(center(it), edges) || shapeEdgeDistance(it.shape, edges) < edge) {
+      issues.push({ severity: 'error', message: `${label(it, board, conn)} is outside the board or closer than ${edge} mm to an edge`, at: center(it), refs: [it.ref.split(':')[0]] });
     }
   }
+  issues.push(...keepoutViolations(board, pcb, conn));
 
   // Vias in SMD pads, one line per pad (a grid of thermal vias would otherwise flood the list).
   const smdPads = board.items.filter((it) => it.type === 'pad' && it.layers.length === 1);

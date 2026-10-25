@@ -3,9 +3,9 @@ import { resolverFor, symbolFor } from '../schematic/symbols';
 import { unitOf } from '../schematic/geometry';
 import type { Component, Project, Vec } from '../schematic/types';
 import { parsePcbFootprint, type FootprintGeom, type Graphic } from './footprint';
+import { boardEdges, keepoutAreas } from './outline';
 import { fillPour, pointInArea, type PourFill } from './pour';
 import {
-  boardOutline,
   padItem,
   placementBox,
   pointInPolygon,
@@ -95,8 +95,16 @@ export function buildBoard(project: Project, pcb: Pcb): BoardModel {
   }
   const pads = parts.flatMap((p) => p.pads);
   const items = [...pads.map(padItem), ...pcb.tracks.flatMap(trackItems), ...pcb.vias.map(viaItem)];
-  const outline = boardOutline(pcb.board);
-  const fills = (pcb.pours ?? []).map((pour) => fillPour(pour, { pcb, boardOutline: outline, items, pads }));
+  const edges = boardEdges(pcb);
+  const keepouts = keepoutAreas(pcb);
+  // Zones (pours with an outline) fill first and take priority over whole-board pours.
+  const pours = pcb.pours ?? [];
+  const done = new Map<string, PourFill>();
+  for (const pour of [...pours].sort((a, b) => Number(!a.outline) - Number(!b.outline))) {
+    const blocked = [...done.values()].filter((f) => f.pour.layer === pour.layer && f.pour.net !== pour.net).flatMap((f) => f.areas);
+    done.set(pour.id, fillPour(pour, { pcb, edges, keepouts, items, pads, blocked }));
+  }
+  const fills = pours.map((p) => done.get(p.id)!);
   return { parts, pads, items, fills, pinNets, missingFootprints };
 }
 

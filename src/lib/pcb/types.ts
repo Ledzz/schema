@@ -57,12 +57,47 @@ export const DEFAULT_POUR: Omit<Pour, 'id' | 'net' | 'layer'> = {
 };
 
 export interface Board {
+  /** Bounding box of the board (the board itself without a custom outline). */
   x: number;
   y: number;
   width: number;
   height: number;
+  /** Rounds the rectangle's corners, or every corner of a custom outline. */
   cornerRadius: number;
+  /** Custom outline, a closed polygon in mm; x/y/width/height are then its bounding box. */
+  outline?: Vec[];
+  /** Openings milled through the board. */
+  cutouts?: Cutout[];
 }
+
+export interface Cutout {
+  id: string;
+  outline: Vec[];
+}
+
+/** Non-plated mounting hole with a ring kept free of copper and parts (screw head, standoff). */
+export interface MountingHole {
+  id: string;
+  x: number;
+  y: number;
+  diameter: number;
+  /** Diameter of the copper- and part-free ring around it. */
+  keepout: number;
+}
+
+/** Area that tracks, vias, pours or parts must stay out of, on one or both copper layers. */
+export interface Keepout {
+  id: string;
+  outline: Vec[];
+  layers: CopperLayer[];
+  tracks: boolean;
+  vias: boolean;
+  pours: boolean;
+  parts: boolean;
+}
+
+/** M3 screw: 3.2 mm hole, 6.4 mm free ring for the head or a standoff. */
+export const DEFAULT_HOLE = { diameter: 3.2, keepout: 6.4 };
 
 export interface DesignRules {
   clearance: number;
@@ -88,6 +123,8 @@ export interface Pcb {
   tracks: Track[];
   vias: Via[];
   pours?: Pour[];
+  holes?: MountingHole[];
+  keepouts?: Keepout[];
   /** Footprint documents keyed like "lcsc:C25804" or "builtin:0603". */
   footprints: Record<string, StoredFootprint>;
   /** componentId -> footprint key (null: no footprint available). */

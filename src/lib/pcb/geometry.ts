@@ -277,8 +277,52 @@ export function padItem(p: WorldPad): CopperItem {
 
 export const boxesOverlap = (a: Box, b: Box, pad = 0) => a.x1 - pad <= b.x2 && a.x2 + pad >= b.x1 && a.y1 - pad <= b.y2 && a.y2 + pad >= b.y1;
 
+/**
+ * Rounds every corner of a polygon with radius r (limited so neighbouring arcs don't overlap),
+ * returning a closed ring. Works for convex and concave corners.
+ */
+export function filletPolygon(points: Vec[], r: number, segments = 8): Vec[] {
+  const ring = points.length > 1 && points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1] ? points.slice(0, -1) : points;
+  if (r <= 0 || ring.length < 3) return [...ring, ring[0]];
+  const out: Vec[] = [];
+  for (let i = 0; i < ring.length; i++) {
+    const prev = ring[(i + ring.length - 1) % ring.length];
+    const cur = ring[i];
+    const next = ring[(i + 1) % ring.length];
+    const l1 = Math.hypot(prev[0] - cur[0], prev[1] - cur[1]);
+    const l2 = Math.hypot(next[0] - cur[0], next[1] - cur[1]);
+    if (l1 < 1e-9 || l2 < 1e-9) continue;
+    const v1: Vec = [(prev[0] - cur[0]) / l1, (prev[1] - cur[1]) / l1];
+    const v2: Vec = [(next[0] - cur[0]) / l2, (next[1] - cur[1]) / l2];
+    const angle = Math.acos(Math.max(-1, Math.min(1, v1[0] * v2[0] + v1[1] * v2[1])));
+    if (angle > Math.PI - 1e-3) {
+      out.push(cur);
+      continue;
+    }
+    // Distance from the corner to the tangent points, capped at half of each edge.
+    const t = Math.min(r / Math.tan(angle / 2), l1 / 2, l2 / 2);
+    const radius = t * Math.tan(angle / 2);
+    const bis: Vec = [v1[0] + v2[0], v1[1] + v2[1]];
+    const bl = Math.hypot(bis[0], bis[1]);
+    const c: Vec = [cur[0] + (bis[0] / bl) * (radius / Math.sin(angle / 2)), cur[1] + (bis[1] / bl) * (radius / Math.sin(angle / 2))];
+    const p1: Vec = [cur[0] + v1[0] * t, cur[1] + v1[1] * t];
+    const p2: Vec = [cur[0] + v2[0] * t, cur[1] + v2[1] * t];
+    const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]);
+    let sweep = Math.atan2(p2[1] - c[1], p2[0] - c[0]) - a1;
+    if (sweep > Math.PI) sweep -= 2 * Math.PI;
+    if (sweep < -Math.PI) sweep += 2 * Math.PI;
+    for (let k = 0; k <= segments; k++) {
+      const a = a1 + (sweep * k) / segments;
+      out.push([c[0] + radius * Math.cos(a), c[1] + radius * Math.sin(a)]);
+    }
+  }
+  out.push(out[0]);
+  return out;
+}
+
 /** Board outline polygon (rounded corners approximated), closed. */
 export function boardOutline(b: Board): Vec[] {
+  if (b.outline && b.outline.length >= 3) return filletPolygon(b.outline, b.cornerRadius);
   const r = Math.min(b.cornerRadius, b.width / 2, b.height / 2);
   if (r <= 0) {
     return [

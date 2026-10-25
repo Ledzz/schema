@@ -1,8 +1,8 @@
 /*
  * Copper pour filling with Clipper (integer coordinates, 0.1 µm per unit).
  *
- * fill = (zone outline ∩ board inset by the edge clearance)
- *        − other-net copper and drill holes grown by the pour clearance
+ * fill = (zone outline ∩ board inset by the edge clearance − cutouts, holes, keepouts)
+ *        − other-net copper, drill holes and other-net zone fills grown by the pour clearance
  *        − same-net pads grown by the thermal gap        (thermal connection)
  *        ∪ thermal spokes (kept clear of other-net copper)
  * then copper narrower than minWidth is removed (shrink + grow) and islands that touch no
@@ -11,7 +11,8 @@
 import * as ClipperNS from 'clipper-lib';
 import type { Vec } from '../schematic/types';
 import { pointInPolygon, rotateDeg, type CopperItem, type CopperShape, type WorldPad } from './geometry';
-import type { CopperLayer, Pcb, Pour } from './types';
+import { circlePolygon, type BoardEdges } from './outline';
+import type { CopperLayer, Keepout, Pcb, Pour } from './types';
 
 // CommonJS module: Node exposes it as `default`, bundlers as the namespace itself.
 const ClipperLib: typeof ClipperNS = (ClipperNS as unknown as { default?: typeof ClipperNS }).default ?? ClipperNS;
@@ -112,19 +113,29 @@ export function pointInArea(p: Vec, a: FillArea): boolean {
 
 export interface PourInput {
   pcb: Pcb;
-  /** Board outline polygon (mm). */
-  boardOutline: Vec[];
+  /** Board outline, cutouts and mounting holes. */
+  edges: BoardEdges;
+  /** Keepout areas (those with `pours` set keep the fill out). */
+  keepouts: Keepout[];
   items: CopperItem[];
   pads: WorldPad[];
+  /** Fills of higher-priority pours (zones) of other nets on this layer, kept clear like copper. */
+  blocked?: FillArea[];
 }
 
 export function fillPour(pour: Pour, input: PourInput): PourFill {
-  const { pcb, items, pads } = input;
+  const { pcb, items, pads, edges } = input;
   const clearance = Math.max(pour.clearance, pcb.rules.clearance);
   const layer: CopperLayer = pour.layer;
 
-  let area = offset([toPath(input.boardOutline)], -POUR_EDGE_CLEARANCE, ClipperLib.EndType.etClosedPolygon);
-  if (pour.outline && pour.outline.length >= 3) area = intersect([toPath(pour.outline)], area);
+  let area = offset([toPath(edges.outline)], -POUR_EDGE_CLEARANCE, ClipperLib.EndType.etClosedPolygon);
+  // Milled and drilled openings keep the same clearance as the outer edge.
+  const openings = [...edges.cutouts, ...edges.holes.map((h) => circlePolygon(h.center, h.r))].map(toPath);
+  if (openings.length) area = difference(area, offset(openings, POUR_EDGE_CLEARANCE, ClipperLib.EndType.etClosedPolygon));
+  const kept = input.keepouts.filter((k) => k.pours && k.layers.includes(layer) && k.outline.length >= 3).map((k) => toPath(k.outline));
+  if (kept.length) area = difference(area, union(kept));
+  const zone = pour.outline && pour.outline.length >= 3 ? pour.outline : null;
+  if (zone) area = intersect([toPath(zone)], area);
 
   const foreign: Paths = [];
   const thermalCut: Paths = [];
@@ -138,7 +149,8 @@ export function fillPour(pour: Pour, input: PourInput): PourFill {
       if (it.type === 'pad') {
         const pad = padByRef.get(it.ref);
         if (pad) anchors.push(pad.center);
-        if (pad && pour.connection === 'thermal') {
+        // A zone only reports thermals for the pads it covers.
+        if (pad && pour.connection === 'thermal' && (!zone || pointInPolygon(pad.center, zone))) {
           thermalPads.push(pad);
           thermalCut.push(...grownShape(it.shape, pour.thermalGap));
         }
@@ -146,6 +158,10 @@ export function fillPour(pour: Pour, input: PourInput): PourFill {
       continue;
     }
     foreign.push(...grownShape(it.shape, clearance));
+  }
+  for (const a of input.blocked ?? []) {
+    const copper = difference([toPath(a.outer)], a.holes.map(toPath));
+    foreign.push(...offset(copper, clearance, ClipperLib.EndType.etClosedPolygon));
   }
   // Drilled holes need clearance from the pour whatever their copper.
   for (const pad of pads) {

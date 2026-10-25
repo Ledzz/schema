@@ -6,16 +6,20 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Custom board outlines, mounting holes, keepouts and pour zones** — almost every real board
-   needs one of them; the data model already allows a custom pour outline.
-2. **Silkscreen text and logos, movable designators.**
-3. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
-4. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
-5. **STEP export of the assembled board** — the 3D view already has the models; enclosure
+1. **Silkscreen text and logos, movable designators.**
+2. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
+3. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
+4. **STEP export of the assembled board** — the 3D view already has the models; enclosure
    design needs the board as a STEP file.
+5. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
 
 ## Done
 
+- **Custom board outlines, mounting holes, keepouts and pour zones** (2026-10-25): polygon
+  outlines with rounded corners, milled cutouts, NPTH mounting holes with a copper-free ring,
+  keepouts for tracks, vias, pours or parts per layer, and drawn pour zones that take priority
+  over whole-board pours. Drawn in the editor or placed by agent tools; the router, pours, DRC,
+  Gerbers (Edge_Cuts, NPTH drill, mask openings) and 3D view follow them.
 - **3D board view** (2026-10-25): EasyEDA's part models on a textured board with real drill
   holes; parts without a model show as blocks.
 
@@ -41,8 +45,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## PCB: board and placement
 
-- ★ Custom board outlines (arcs, cutouts, slots), mounting holes, DXF outline import (only a
-  rounded rectangle today).
+- Arcs in board outlines and DXF outline import (outlines are straight-sided polygons with
+  rounded corners today).
 - ★ More than 2 layers: 4/6-layer stackups, layer stack manager, JLC impedance calculator,
   blind and buried vias.
 - Align and distribute, part locking, rooms, measure tool, dimension lines, grid setting.
@@ -57,8 +61,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## PCB: copper, rules, checks
 
-- ★ Custom copper zones with priorities and cutouts; keepout areas for tracks, vias, pours or
-  parts (pours always cover the whole board today).
+- Zone priorities beyond "zones before whole-board pours", and cutouts inside a single zone.
 - Per-net and net-class rules, rule areas.
 - Per-pad thermal settings; stitching-via arrays in the UI (an agent tool only today).
 - More DRC: silkscreen over pads, annular ring, drill-to-copper, courtyard overlap (approximated

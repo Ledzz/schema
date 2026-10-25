@@ -1,14 +1,14 @@
 import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { CircuitBoard, RefreshCcw } from 'lucide-react';
-import { useEditor } from '../../store/editor';
+import { SHAPE_TOOLS, useEditor } from '../../store/editor';
 import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
 import { pointInPolygon, pointSegDist, type WorldPad } from '../../lib/pcb/geometry';
 import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
 import { textStrokes } from '../../lib/pcb/font';
 import { designatorAnchor } from '../../lib/pcb/gerber';
-import { boardOutline } from '../../lib/pcb/geometry';
-import { addVia, finishDraft, movePlacements, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
+import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
+import { addVia, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
 import { emptyPcb, type CopperLayer, type Pcb } from '../../lib/pcb/types';
 import { Kbd } from '../ui';
@@ -17,7 +17,8 @@ const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', bottom
 const other = (l: CopperLayer): CopperLayer => (l === 'top' ? 'bottom' : 'top');
 const pts = (p: Vec[]) => p.map((q) => `${q[0]},${q[1]}`).join(' ');
 
-type Hit = { kind: 'part'; id: string } | { kind: 'track'; id: string } | { kind: 'via'; id: string } | { kind: 'pour'; id: string } | null;
+type Hit = { kind: 'part' | 'track' | 'via' | 'pour' | 'hole' | 'keepout' | 'cutout'; id: string } | null;
+const KEEPOUT_COLOR = '#ef4444';
 
 function padAt(board: BoardModel, p: Vec, layer?: CopperLayer): WorldPad | null {
   for (const pad of board.pads) {
@@ -34,6 +35,7 @@ export function PcbCanvas() {
   const activeLayer = useEditor((s) => s.activeLayer);
   const selection = useEditor((s) => s.pcbSelection);
   const draft = useEditor((s) => s.routeDraft);
+  const shapeDraft = useEditor((s) => s.shapeDraft);
   const highlightNet = useEditor((s) => s.pcbHighlightNet);
   const showPours = useEditor((s) => s.showPours);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -41,7 +43,9 @@ export function PcbCanvas() {
   const [pointer, setPointer] = useState<Vec>([0, 0]);
   const [box, setBox] = useState<{ a: Vec; b: Vec } | null>(null);
   const [hoverPad, setHoverPad] = useState<WorldPad | null>(null);
-  const interaction = useRef<{ mode: 'none' } | { mode: 'pan'; start: Vec; view: { x: number; y: number } } | { mode: 'drag'; start: Vec; ids: Set<string>; delta: Vec } | { mode: 'box'; start: Vec }>({ mode: 'none' });
+  const interaction = useRef<
+    { mode: 'none' } | { mode: 'pan'; start: Vec; view: { x: number; y: number } } | { mode: 'drag'; start: Vec; ids: Set<string>; delta: Vec } | { mode: 'box'; start: Vec } | { mode: 'shape'; start: Vec }
+  >({ mode: 'none' });
   const spaceDown = useRef(false);
 
   const pcb: Pcb = useMemo(() => project.pcb ?? emptyPcb(), [project.pcb]);
@@ -104,9 +108,16 @@ export function PcbCanvas() {
     for (const v of pcb.vias) if (Math.hypot(v.x - p[0], v.y - p[1]) <= v.diameter / 2 + tol) return { kind: 'via', id: v.id };
     const tracks = [...pcb.tracks].sort((a) => (a.layer === activeLayer ? -1 : 1));
     for (const t of tracks) for (let i = 1; i < t.points.length; i++) if (pointSegDist(p, t.points[i - 1], t.points[i]) <= t.width / 2 + tol) return { kind: 'track', id: t.id };
+    const holes = pcb.holes ?? [];
+    for (const h of holes) if (Math.hypot(h.x - p[0], h.y - p[1]) <= h.diameter / 2 + tol) return { kind: 'hole', id: h.id };
     const parts = [...model.board.parts].sort((a) => (a.placement.side === activeLayer ? -1 : 1));
     for (const part of parts) if (p[0] >= part.box.x1 && p[0] <= part.box.x2 && p[1] >= part.box.y1 && p[1] <= part.box.y2) return { kind: 'part', id: part.component.id };
+    for (const k of pcb.keepouts ?? []) if (pointInPolygon(p, k.outline)) return { kind: 'keepout', id: k.id };
+    for (const c of pcb.board.cutouts ?? []) if (pointInPolygon(p, c.outline)) return { kind: 'cutout', id: c.id };
+    for (const h of holes) if (Math.hypot(h.x - p[0], h.y - p[1]) <= h.keepout / 2) return { kind: 'hole', id: h.id };
     if (useEditor.getState().showPours) {
+      const zones = (pcb.pours ?? []).filter((z) => z.outline && z.outline.length >= 3).sort((a) => (a.layer === activeLayer ? -1 : 1));
+      for (const z of zones) if (pointInPolygon(p, z.outline!)) return { kind: 'pour', id: z.id };
       const fills = [...model.board.fills].sort((a) => (a.pour.layer === activeLayer ? -1 : 1));
       for (const f of fills) if (f.areas.some((a) => pointInArea(p, a))) return { kind: 'pour', id: f.pour.id };
     }
@@ -145,19 +156,35 @@ export function PcbCanvas() {
         s.setPcbSelection(selected.has(hit.id) ? selection.filter((x) => x !== hit.id) : [...selection, hit.id]);
         return;
       }
-      if (hit.kind === 'pour') {
-        // Clicking a pour selects it; dragging from it still box-selects.
+      const zoneSelected = hit.kind === 'pour' && selected.has(hit.id) && pcb.pours?.some((z) => z.id === hit.id && z.outline);
+      if (hit.kind === 'pour' && !zoneSelected) {
+        // Clicking a pour selects it; dragging from it still box-selects (a selected zone drags).
         s.setPcbSelection([hit.id]);
         interaction.current = { mode: 'box', start: w };
         setBox({ a: w, b: w });
         return;
       }
       if (!selected.has(hit.id)) s.setPcbSelection([hit.id]);
-      if (hit.kind === 'part') {
-        const ids = new Set((selected.has(hit.id) ? selection : [hit.id]).filter((id) => project.components.some((c) => c.id === id)));
+      const ids = movableIds(pcb, selected.has(hit.id) ? selection : [hit.id]);
+      if (ids.has(hit.id)) {
         s.beginTransient();
         interaction.current = { mode: 'drag', start: snap(w), ids, delta: [0, 0] };
       }
+      return;
+    }
+    if (SHAPE_TOOLS.includes(s.pcbTool)) {
+      const at = snap(w);
+      const corners = s.shapeDraft;
+      if (!corners) {
+        interaction.current = { mode: 'shape', start: at };
+        setBox({ a: at, b: at });
+      } else if (corners.length >= 3 && Math.hypot(at[0] - corners[0][0], at[1] - corners[0][1]) <= 6 / s.pcbView.zoom) finishShape(corners);
+      else if (e.detail >= 2) finishShape(corners);
+      else s.setShapeDraft([...corners, at]);
+      return;
+    }
+    if (s.pcbTool === 'hole') {
+      placeMountingHole(snap(w));
       return;
     }
     if (s.pcbTool === 'via') {
@@ -208,6 +235,7 @@ export function PcbCanvas() {
         s.updateTransient((base) => ({ ...base, pcb: movePlacements(base.pcb ?? emptyPcb(), it.ids, delta[0], delta[1]) }));
       }
     } else if (it.mode === 'box') setBox({ a: it.start, b: w });
+    else if (it.mode === 'shape') setBox({ a: it.start, b: snap(w) });
   };
 
   const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -216,6 +244,14 @@ export function PcbCanvas() {
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
     if (it.mode === 'drag') s.endTransient();
+    if (it.mode === 'shape') {
+      setBox(null);
+      const b = snap(toWorld(e.clientX, e.clientY));
+      // A drag draws a rectangle; a click starts a polygon at that corner.
+      if (Math.abs(b[0] - it.start[0]) >= 0.5 && Math.abs(b[1] - it.start[1]) >= 0.5) finishShape(rectOutline(it.start[0], it.start[1], b[0], b[1]));
+      else s.setShapeDraft([it.start]);
+      return;
+    }
     if (it.mode === 'box') {
       setBox(null);
       const w = toWorld(e.clientX, e.clientY);
@@ -226,6 +262,11 @@ export function PcbCanvas() {
         ...model.board.parts.filter((p) => p.box.x1 <= x2 && p.box.x2 >= x1 && p.box.y1 <= y2 && p.box.y2 >= y1).map((p) => p.component.id),
         ...pcb.tracks.filter((t) => t.points.some((q) => q[0] >= x1 && q[0] <= x2 && q[1] >= y1 && q[1] <= y2)).map((t) => t.id),
         ...pcb.vias.filter((v) => v.x >= x1 && v.x <= x2 && v.y >= y1 && v.y <= y2).map((v) => v.id),
+        ...(pcb.holes ?? []).filter((h) => h.x >= x1 && h.x <= x2 && h.y >= y1 && h.y <= y2).map((h) => h.id),
+        // Areas only when the box encloses them, so selecting parts doesn't pick up a large keepout.
+        ...[...(pcb.keepouts ?? []), ...(pcb.board.cutouts ?? []), ...(pcb.pours ?? []).filter((z) => z.outline)]
+          .filter((a) => a.outline!.every((q) => q[0] >= x1 && q[0] <= x2 && q[1] >= y1 && q[1] <= y2))
+          .map((a) => a.id),
       ];
       s.setPcbSelection(e.shiftKey ? [...new Set([...selection, ...ids])] : ids);
     }
@@ -235,7 +276,10 @@ export function PcbCanvas() {
     e.preventDefault();
     const s = useEditor.getState();
     if (s.routeDraft) finishDraft();
-    else if (s.pcbTool !== 'select') s.setPcbTool('select');
+    else if (s.shapeDraft) {
+      if (s.shapeDraft.length >= 3) finishShape(s.shapeDraft);
+      else s.setShapeDraft(null);
+    } else if (s.pcbTool !== 'select') s.setPcbTool('select');
   };
 
   const preview: Vec[] | null = draft ? [...draft.points, ...posture(draft.points[draft.points.length - 1], routeTarget(pointer).at)] : null;
@@ -256,11 +300,18 @@ export function PcbCanvas() {
         onPointerUp={onPointerUp}
         onPointerLeave={() => setHoverPad(null)}
         onContextMenu={onContextMenu}
-        onDoubleClick={() => useEditor.getState().routeDraft && finishDraft()}
+        onDoubleClick={() => {
+          const s = useEditor.getState();
+          if (s.routeDraft) finishDraft();
+          else if (s.shapeDraft && s.shapeDraft.length >= 3) finishShape(s.shapeDraft);
+        }}
       >
         <defs>
           <pattern id="pcb-grid" width={view.zoom} height={view.zoom} patternUnits="userSpaceOnUse" x={view.x} y={view.y}>
             <circle cx={0.6} cy={0.6} r={0.6} fill="var(--grid-dot)" />
+          </pattern>
+          <pattern id="pcb-keepout-hatch" width={0.6} height={0.6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1={0} y1={0} x2={0} y2={0.6} stroke={KEEPOUT_COLOR} strokeWidth={0.08} />
           </pattern>
           <pattern id="pcb-grid-5" width={view.zoom * 5} height={view.zoom * 5} patternUnits="userSpaceOnUse" x={view.x} y={view.y}>
             <circle cx={0.9} cy={0.9} r={0.9} fill="var(--grid-major)" />
@@ -270,8 +321,9 @@ export function PcbCanvas() {
         <rect width="100%" height="100%" fill="url(#pcb-grid-5)" />
 
         <g data-layer="world" transform={`translate(${view.x} ${view.y}) scale(${view.zoom})`}>
-          <polygon points={pts(boardOutline(pcb.board))} fill="var(--pcb-board)" stroke="var(--pcb-edge)" strokeWidth={0.1} />
+          <path d={boardSvgPath(pcb)} fillRule="evenodd" fill="var(--pcb-board)" stroke="var(--pcb-edge)" strokeWidth={0.1} />
           <BoardLayers board={model.board} conn={model.conn} pcb={pcb} activeLayer={activeLayer} selected={selected} highlightNet={highlightNet} showPours={showPours} />
+          <Mechanical pcb={pcb} activeLayer={activeLayer} selected={selected} zoom={view.zoom} showPours={showPours} />
           {/* ratsnest */}
           <g stroke="var(--pcb-ratsnest)" strokeWidth={1 / view.zoom} opacity={0.85}>
             {model.conn.airwires.map((a, i) => (
@@ -279,6 +331,14 @@ export function PcbCanvas() {
             ))}
           </g>
           {issuesShown && <DrcMarkers zoom={view.zoom} />}
+          {shapeDraft && (
+            <g fill="none" stroke="var(--select)" strokeWidth={1.5 / view.zoom}>
+              <polyline points={pts([...shapeDraft, snap(pointer)])} strokeDasharray={`${4 / view.zoom} ${3 / view.zoom}`} />
+              {shapeDraft.map((q, i) => (
+                <circle key={i} cx={q[0]} cy={q[1]} r={(i === 0 ? 4 : 2.5) / view.zoom} fill={i === 0 ? 'var(--select)' : 'none'} />
+              ))}
+            </g>
+          )}
           {preview && draft && (
             <polyline points={pts(preview)} fill="none" stroke={LAYER_COLOR[draft.layer]} strokeWidth={draft.width} strokeLinecap="round" strokeLinejoin="round" opacity={0.75} />
           )}
@@ -445,6 +505,52 @@ const BoardLayers = memo(function BoardLayers({
         );
       })}
     </>
+  );
+});
+
+/** Mounting holes, keepout areas, cutout outlines and pour zone borders. */
+const Mechanical = memo(function Mechanical({ pcb, activeLayer, selected, zoom, showPours }: { pcb: Pcb; activeLayer: CopperLayer; selected: Set<string>; zoom: number; showPours: boolean }) {
+  const line = 1.5 / zoom;
+  const dash = `${4 / zoom} ${3 / zoom}`;
+  return (
+    <g>
+      {showPours &&
+        (pcb.pours ?? [])
+          .filter((z) => z.outline && z.outline.length >= 3)
+          .map((z) => (
+            <polygon
+              key={z.id}
+              points={pts(z.outline!)}
+              fill="none"
+              stroke={selected.has(z.id) ? 'var(--select)' : LAYER_COLOR[z.layer]}
+              strokeWidth={line}
+              strokeDasharray={dash}
+              opacity={z.layer === activeLayer || selected.has(z.id) ? 1 : 0.45}
+            />
+          ))}
+      {(pcb.keepouts ?? []).map((k) => (
+        <polygon
+          key={k.id}
+          points={pts(k.outline)}
+          fill="url(#pcb-keepout-hatch)"
+          stroke={selected.has(k.id) ? 'var(--select)' : KEEPOUT_COLOR}
+          strokeWidth={line}
+          strokeDasharray={dash}
+          opacity={k.layers.includes(activeLayer) ? 0.9 : 0.4}
+        />
+      ))}
+      {(pcb.board.cutouts ?? [])
+        .filter((c) => selected.has(c.id))
+        .map((c) => (
+          <polygon key={c.id} points={pts(c.outline)} fill="var(--select)" fillOpacity={0.12} stroke="var(--select)" strokeWidth={line} />
+        ))}
+      {(pcb.holes ?? []).map((h) => (
+        <g key={h.id}>
+          <circle cx={h.x} cy={h.y} r={h.keepout / 2} fill="none" stroke={selected.has(h.id) ? 'var(--select)' : KEEPOUT_COLOR} strokeWidth={line} strokeDasharray={dash} opacity={0.8} />
+          <circle cx={h.x} cy={h.y} r={h.diameter / 2} fill="var(--pcb-hole)" stroke={selected.has(h.id) ? 'var(--select)' : 'var(--pcb-edge)'} strokeWidth={0.1} />
+        </g>
+      ))}
+    </g>
   );
 });
 

@@ -6,7 +6,9 @@ import type { CopperLayer } from '../lib/pcb/types';
 import type { DrcIssue } from '../lib/pcb/drc';
 
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
-export type PcbTool = 'select' | 'route' | 'via';
+export type PcbTool = 'select' | 'route' | 'via' | 'hole' | 'keepout' | 'cutout' | 'zone' | 'outline';
+/** PCB tools that draw an area: drag a rectangle, or click corners and close the shape. */
+export const SHAPE_TOOLS: readonly PcbTool[] = ['keepout', 'cutout', 'zone', 'outline'];
 
 export interface RouteDraft {
   net: string | null;
@@ -126,6 +128,9 @@ interface EditorState {
   setPcbSelection: (ids: string[]) => void;
   routeDraft: RouteDraft | null;
   setRouteDraft: (draft: RouteDraft | null) => void;
+  /** Corners clicked so far with an area tool (keepout, cutout, zone, outline). */
+  shapeDraft: Vec[] | null;
+  setShapeDraft: (points: Vec[] | null) => void;
   pcbHighlightNet: string | null;
   setPcbHighlightNet: (net: string | null) => void;
   pcbCursor: Vec;
@@ -248,18 +253,20 @@ export const useEditor = create<EditorState>()((set, get) => ({
     } catch {
       /* ignore */
     }
-    set({ mode, routeDraft: null, quickEditId: null });
+    set({ mode, routeDraft: null, shapeDraft: null, quickEditId: null });
   },
   pcbView: { x: 120, y: 80, zoom: 12 },
   setPcbView: (pcbView) => set({ pcbView }),
   pcbTool: 'select',
-  setPcbTool: (pcbTool) => set({ pcbTool, routeDraft: null }),
+  setPcbTool: (pcbTool) => set({ pcbTool, routeDraft: null, shapeDraft: null }),
   activeLayer: 'top',
   setActiveLayer: (activeLayer) => set({ activeLayer }),
   pcbSelection: [],
   setPcbSelection: (pcbSelection) => set({ pcbSelection }),
   routeDraft: null,
   setRouteDraft: (routeDraft) => set({ routeDraft }),
+  shapeDraft: null,
+  setShapeDraft: (shapeDraft) => set({ shapeDraft }),
   pcbHighlightNet: null,
   setPcbHighlightNet: (pcbHighlightNet) => set({ pcbHighlightNet }),
   pcbCursor: [0, 0],
@@ -320,7 +327,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   addSymbols: (symbols) => set({ project: { ...get().project, symbols: { ...get().project.symbols, ...symbols } } }),
 
-  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null }),
+  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null }),
   renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
 
   setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null }),

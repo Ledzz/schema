@@ -4,7 +4,8 @@
  */
 import type { Vec } from '../schematic/types';
 import { pointInPolygon, pointShapeDistance, type CopperItem } from './geometry';
-import type { Board, CopperLayer, DesignRules } from './types';
+import { boardEdges, edgeDistance, insideBoard } from './outline';
+import type { Board, CopperLayer, DesignRules, Keepout, Pcb } from './types';
 
 export interface RouteEnd {
   point: Vec;
@@ -90,6 +91,54 @@ export interface RouteOptions {
    * every step inside costs extra and no via may be placed there.
    */
   avoid?: { layer: CopperLayer; outlines: Vec[][] }[];
+  /** Distance to the board's edges (see edgeField); without it the board is its bounding box. */
+  edges?: EdgeField;
+  /** Areas tracks or vias must not enter. */
+  keepouts?: Pick<Keepout, 'outline' | 'layers' | 'tracks' | 'vias'>[];
+}
+
+export interface EdgeField {
+  x0: number;
+  y0: number;
+  cols: number;
+  rows: number;
+  /** Distance from each grid point to the nearest board edge; negative outside the board. */
+  dist: Float32Array;
+}
+
+const fieldCache = new Map<string, EdgeField>();
+
+/**
+ * Distance-to-edge for every grid point of the board (outline, cutouts, mounting holes), on the
+ * same absolute grid the router uses. Computed once per board shape.
+ */
+export function edgeField(pcb: Pick<Pcb, 'board' | 'holes'>): EdgeField {
+  const key = JSON.stringify([pcb.board, (pcb.holes ?? []).map((h) => [h.x, h.y, h.diameter])]);
+  const hit = fieldCache.get(key);
+  if (hit) return hit;
+  const edges = boardEdges(pcb);
+  const b = pcb.board;
+  const x0 = Math.floor(b.x / STEP) * STEP;
+  const y0 = Math.floor(b.y / STEP) * STEP;
+  const cols = Math.ceil((b.x + b.width - x0) / STEP) + 1;
+  const rows = Math.ceil((b.y + b.height - y0) / STEP) + 1;
+  const dist = new Float32Array(cols * rows);
+  for (let iy = 0; iy < rows; iy++)
+    for (let ix = 0; ix < cols; ix++) {
+      const p: Vec = [x0 + ix * STEP, y0 + iy * STEP];
+      const d = edgeDistance(p, edges);
+      dist[iy * cols + ix] = insideBoard(p, edges) ? d : -d;
+    }
+  const field = { x0, y0, cols, rows, dist };
+  if (fieldCache.size > 8) fieldCache.clear();
+  fieldCache.set(key, field);
+  return field;
+}
+
+function fieldAt(f: EdgeField, x: number, y: number): number {
+  const ix = Math.round((x - f.x0) / STEP);
+  const iy = Math.round((y - f.y0) / STEP);
+  return ix < 0 || iy < 0 || ix >= f.cols || iy >= f.rows ? -1 : f.dist[iy * f.cols + ix];
 }
 
 export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions): RouteResult | null {
@@ -119,9 +168,27 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   for (let i = 0; i < cells; i++) {
     const x = cx(i);
     const y = cy(i);
-    const de = Math.min(x - board.x, y - board.y, board.x + board.width - x, board.y + board.height - y);
+    const de = opt.edges ? fieldAt(opt.edges, x, y) : Math.min(x - board.x, y - board.y, board.x + board.width - x, board.y + board.height - y);
     if (de < edge) blocked[0][i] = blocked[1][i] = 1;
     if (de < rules.viaDiameter / 2 + 0.25) viaBlocked[i] = 1;
+  }
+  for (const k of opt.keepouts ?? []) {
+    if (k.outline.length < 3 || (!k.tracks && !k.vias)) continue;
+    const area = { kind: 'poly' as const, points: k.outline };
+    const reach = Math.max(width / 2, rules.viaDiameter / 2) + 0.05;
+    const xs = k.outline.map((p) => p[0]);
+    const ys = k.outline.map((p) => p[1]);
+    const ix0 = Math.max(0, Math.floor((Math.min(...xs) - reach - x0) / STEP));
+    const ix1 = Math.min(cols - 1, Math.ceil((Math.max(...xs) + reach - x0) / STEP));
+    const iy0 = Math.max(0, Math.floor((Math.min(...ys) - reach - y0) / STEP));
+    const iy1 = Math.min(rows - 1, Math.ceil((Math.max(...ys) + reach - y0) / STEP));
+    for (let iy = iy0; iy <= iy1; iy++)
+      for (let ix = ix0; ix <= ix1; ix++) {
+        const i = iy * cols + ix;
+        const d = pointShapeDistance([x0 + ix * STEP, y0 + iy * STEP], area);
+        if (k.tracks && d < width / 2 + 0.05) for (const l of k.layers) blocked[l === 'top' ? 0 : 1][i] = 1;
+        if (k.vias && d < rules.viaDiameter / 2 + 0.05) viaBlocked[i] = 1;
+      }
   }
   // No vias in SMD pads of any net: solder would wick into the hole during assembly.
   const viaPadKeepout = rules.viaDiameter / 2 + 0.05;

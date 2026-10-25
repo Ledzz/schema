@@ -47,9 +47,10 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
   - **Interactive routing** (`W`) with 45° corners on the top or bottom layer (`1` / `2`). Press `V` to drop a via and continue on the other layer. Power nets get wider tracks automatically.
   - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses a two-layer A* grid router that keeps clearance, never places vias in SMD pads and keeps other nets out from under metal connector shells where it can. Supply nets get wide tracks, and any net can be routed at a chosen width; wide tracks neck down to the pad width only where they enter fine-pitch pins.
-  - **Copper pours** (e.g. a GND fill on both layers). Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
-  - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads, tracks or vias of other nets under a metal connector shell (USB, RJ45…).
-  - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files; through-hole parts can be left out of them to solder by hand.
+  - **Board shape and mechanics.** Draw a custom outline (an L, a notch, a chamfer; corners are rounded by the corner radius), milled cutouts, non-plated mounting holes with a copper-free ring (one click puts M3 holes in all four corners), and keepout areas that keep tracks, vias, pours or parts out on one or both layers. Drag a rectangle or click the corners of a polygon; holes, keepouts, cutouts and zones move by dragging and delete with `Del`. The router, pours, DRC, Gerbers and the 3D view all follow the real shape.
+  - **Copper pours** (e.g. a GND fill on both layers), whole-board or as a drawn zone; a zone takes priority over whole-board pours of other nets. Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
+  - **DRC**: copper clearance, shorts, unrouted nets, clearance to the outline, cutouts and hole walls, copper or parts in keepouts and hole rings, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads, tracks or vias of other nets under a metal connector shell (USB, RJ45…).
+  - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline and cutouts) and Excellon drill files (plated with slots, and a separate non-plated file for mounting holes) come zipped. The pick-and-place CPL and BOM are CSV files; through-hole parts can be left out of them to solder by hand.
   - **3D view** (`3`, or the cube in the PCB tool rail). The board is extruded 1.6 mm with its drill holes and textured with the finished faces (mask, HASL pads, silkscreen); parts use the 3D models EasyEDA assigns to them, placed by EasyEDA's model transform, and parts without one show as blocks. Orbit, pan and zoom, with top, bottom and angled views. three.js loads only when the view opens.
   - **Order from JLCPCB** (PCB panel or File menu). The sheet checks the board (DRC errors block the order), shows the board size, the parts JLCPCB would assemble, their Basic/Extended split, setup fee and estimated cost for the chosen quantity. One click downloads the files and opens JLCPCB's quote page, and the sheet lists the settings to pick there. JLCPCB has no public ordering API, so dropping the files on their page and checking out stay manual.
 - **Design data**
@@ -67,7 +68,7 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 33 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 37 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
@@ -75,7 +76,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
-- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour`, `pcb_remove_pours`, `pcb_check`, `pcb_render` (board picture with mm rulers), `pcb_export` (optionally without through-hole parts in the assembly files)
+- **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board` (size or custom outline), `pcb_add_mounting_holes`, `pcb_add_keepout`, `pcb_add_cutout`, `pcb_remove_features`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour` (whole board or a zone), `pcb_remove_pours`, `pcb_check`, `pcb_render` (board picture with mm rulers), `pcb_export` (optionally without through-hole parts in the assembly files)
 
 Pins are addressed as `R1.2` or `U1.VIN`. Wires, labels and flags that the tools add never touch
 other wiring, and `update_component` refuses a move whose dragged wires would join two nets, so an
@@ -153,7 +154,7 @@ src/
 
 ## Limitations
 
-- **Missing PCB features.** Pours always cover the whole board; there's no tool yet to draw a custom zone outline (the data model supports one). No keepouts, no differential pairs or length tuning, no 3D view. There is also no multi-sheet schematic hierarchy and no simulation.
+- **Missing PCB features.** Only 2 layers; outlines are straight-sided polygons (no arcs or DXF import); no differential pairs, length tuning, silkscreen text or push-and-shove routing. There is also no multi-sheet schematic hierarchy and no simulation. See [docs/roadmap.md](docs/roadmap.md).
 - **Auto-router.** It is a simple grid router meant for small boards. Expect to clean up dense layouts by hand.
 - **Gerber output.** Covered by unit tests and a structural check. Look at it in JLCPCB's Gerber viewer before ordering.
 - **CPL rotations.** These are the design's own rotations. JLCPCB sometimes needs per-part rotation fixes, which you confirm in their placement preview.

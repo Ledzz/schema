@@ -4,10 +4,12 @@ import { placementToWorld, pointInPolygon, worldPads, shapeDistance, type Copper
 import { buildBoard, pcbConnectivity } from '../src/lib/pcb/board';
 import { runDrc, shellAreas } from '../src/lib/pcb/drc';
 import { renderBoardFace, renderPcbSvg } from '../src/lib/pcb/render';
-import { autoroute, fabricationFiles, throughHoleParts } from '../src/lib/pcb/actions';
+import { addPours, autoroute, fabricationFiles, movePlacements, removePcbItems, throughHoleParts } from '../src/lib/pcb/actions';
 import { useEditor } from '../src/store/editor';
-import { routeConnection, type RouteEnd } from '../src/lib/pcb/router';
-import { generateCpl, generateDrill, generateGerbers } from '../src/lib/pcb/gerber';
+import { edgeField, routeConnection, type RouteEnd } from '../src/lib/pcb/router';
+import { generateCpl, generateDrill, generateGerbers, generateNpthDrill } from '../src/lib/pcb/gerber';
+import { keepoutAreas, withOutline } from '../src/lib/pcb/outline';
+import { pointInArea } from '../src/lib/pcb/pour';
 import { textStrokes } from '../src/lib/pcb/font';
 import { emptyPcb, type Pcb } from '../src/lib/pcb/types';
 import { zip } from '../src/lib/zip';
@@ -338,5 +340,144 @@ describe('fabrication output', () => {
     const s = textStrokes('R1', [0, 0], 1);
     expect(s.length).toBe(4);
     expect(s.flat().every(([x, y]) => Math.abs(x) <= 1 && Math.abs(y) <= 0.5 + 1e-9)).toBe(true);
+  });
+});
+
+describe('board shape, mounting holes and keepouts', () => {
+  const sigPads = (project: Project) => buildBoard(project, project.pcb!).pads.filter((p) => p.net === 'SIG');
+  const drc = (project: Project) => {
+    const board = buildBoard(project, project.pcb!);
+    return runDrc(board, project.pcb!, pcbConnectivity(board, project.pcb!)).map((i) => i.message);
+  };
+  // A strip across the board between the two resistors, open only at the top.
+  const wall = { id: 'k', outline: [[8, 3], [9, 3], [9, 10], [8, 10]] as [number, number][], layers: ['top', 'bottom'] as const, tracks: true, vias: true, pours: true, parts: false };
+
+  it('reports copper outside a custom outline', () => {
+    // An L that leaves out the right half below y = 3, where R2 sits.
+    const board = withOutline(fixture().pcb!.board, [[0, 0], [20, 0], [20, 3], [10, 3], [10, 10], [0, 10]]);
+    const messages = drc(fixture({ board }));
+    expect(messages.some((m) => /^R2\.\d is outside the board/.test(m))).toBe(true);
+    expect(messages.some((m) => m.startsWith('R1.'))).toBe(false);
+  });
+
+  it('reports tracks, vias and parts inside keepouts and hole rings', () => {
+    const [p, q] = sigPads(fixture());
+    const messages = drc(
+      fixture({
+        keepouts: [{ ...wall, layers: ['top', 'bottom'] }],
+        tracks: [{ id: 't', layer: 'top', width: 0.25, points: [p.center, q.center], net: 'SIG' }],
+        vias: [{ id: 'v', x: 8.5, y: 8, diameter: 0.6, drill: 0.3, net: 'SIG' }],
+        holes: [{ id: 'h', x: 14.5, y: 5, diameter: 2, keepout: 4 }],
+      }),
+    );
+    expect(messages).toContain('SIG track crosses a keepout area');
+    expect(messages).toContain('SIG via inside a keepout area');
+    expect(messages).toContain('R2 is inside the mounting hole ring');
+  });
+
+  it('routes around a keepout', () => {
+    const project = fixture({ keepouts: [{ ...wall, layers: ['top', 'bottom'] }] });
+    const pcb = project.pcb!;
+    const board = buildBoard(project, pcb);
+    const [p, q] = sigPads(project);
+    const r = routeConnection({ point: p.center, layers: ['top'] }, { point: q.center, layers: ['top'] }, {
+      net: 'SIG',
+      width: 0.25,
+      rules: pcb.rules,
+      board: pcb.board,
+      items: board.items,
+      netOf: (it) => it.net,
+      edges: edgeField(pcb),
+      keepouts: keepoutAreas(pcb),
+    });
+    expect(r).not.toBeNull();
+    const area = { kind: 'poly' as const, points: wall.outline };
+    for (const t of r!.tracks) for (let i = 1; i < t.points.length; i++) expect(shapeDistance({ kind: 'capsule', a: t.points[i - 1], b: t.points[i], r: 0.125 }, area)).toBeGreaterThan(0);
+    for (const v of r!.vias) expect(shapeDistance({ kind: 'capsule', a: v, b: v, r: 0.3 }, area)).toBeGreaterThan(0);
+  });
+
+  it('keeps pours out of keepouts, cutouts and hole rings', () => {
+    const project = fixture({
+      keepouts: [{ ...wall, layers: ['top'] }],
+      holes: [{ id: 'h', x: 17, y: 2.5, diameter: 2, keepout: 3 }],
+      board: { x: 0, y: 0, width: 20, height: 10, cornerRadius: 0, cutouts: [{ id: 'c', outline: [[1, 1], [3, 1], [3, 3], [1, 3]] }] },
+      pours: [
+        { id: 'top', net: 'SIG', layer: 'top', outline: null, clearance: 0.3, connection: 'solid', thermalGap: 0.3, spokeWidth: 0.35, minWidth: 0.2 },
+        { id: 'bot', net: 'SIG', layer: 'bottom', outline: null, clearance: 0.3, connection: 'solid', thermalGap: 0.3, spokeWidth: 0.35, minWidth: 0.2 },
+      ],
+    });
+    // SIG pads are on top only, so the bottom pour has no anchor; use the top one.
+    const fill = buildBoard(project, project.pcb!).fills.find((f) => f.pour.id === 'top')!;
+    const filled = (pt: [number, number]) => fill.areas.some((a) => pointInArea(pt, a));
+    expect(filled([8.5, 6])).toBe(false);
+    expect(filled([2, 2])).toBe(false);
+    expect(filled([17, 2.5])).toBe(false);
+    expect(filled([5, 8.5])).toBe(true);
+  });
+
+  it('lets a zone take priority over a whole-board pour of another net', () => {
+    const pour = { clearance: 0.3, connection: 'solid' as const, thermalGap: 0.3, spokeWidth: 0.35, minWidth: 0.2, layer: 'top' as const };
+    const project = fixture({
+      // A PWR track anchors the zone in the top-right corner.
+      tracks: [{ id: 'pwr', layer: 'top', width: 0.25, points: [[15, 1.5], [16, 1.5]], net: 'PWR' }],
+      pours: [
+        { ...pour, id: 'all', net: 'SIG', outline: null },
+        { ...pour, id: 'zone', net: 'PWR', outline: [[14, 0.5], [19.5, 0.5], [19.5, 3.5], [14, 3.5]] },
+      ],
+    });
+    const fills = buildBoard(project, project.pcb!).fills;
+    const at = (id: string, pt: [number, number]) => fills.find((f) => f.pour.id === id)!.areas.some((a) => pointInArea(pt, a));
+    expect(at('zone', [18.5, 3])).toBe(true);
+    expect(at('all', [18.5, 3])).toBe(false);
+    expect(at('all', [18.5, 6])).toBe(true);
+  });
+
+  it('moves and removes holes, keepouts, cutouts and zones', () => {
+    const pcb = fixture({
+      holes: [{ id: 'h', x: 2, y: 2, diameter: 3.2, keepout: 6.4 }],
+      keepouts: [{ ...wall, layers: ['top'] }],
+      board: { x: 0, y: 0, width: 20, height: 10, cornerRadius: 0, cutouts: [{ id: 'c', outline: [[1, 1], [3, 1], [3, 3]] }] },
+      pours: [{ id: 'z', net: 'SIG', layer: 'top', outline: [[0, 0], [1, 0], [1, 1]], clearance: 0.3, connection: 'solid', thermalGap: 0.3, spokeWidth: 0.35, minWidth: 0.2 }],
+    }).pcb!;
+    const moved = movePlacements(pcb, new Set(['h', 'k', 'c', 'z']), 1, 2);
+    expect(moved.holes![0]).toMatchObject({ x: 3, y: 4 });
+    expect(moved.keepouts![0].outline[0]).toEqual([9, 5]);
+    expect(moved.board.cutouts![0].outline[0]).toEqual([2, 3]);
+    expect(moved.pours![0].outline![0]).toEqual([1, 2]);
+
+    useEditor.getState().loadProject(fixture({ ...pcb }));
+    expect(removePcbItems(new Set(['h', 'c', 'nope']))).toBe(2);
+    const after = useEditor.getState().project.pcb!;
+    expect(after.holes).toEqual([]);
+    expect(after.board.cutouts).toEqual([]);
+    expect(after.keepouts).toHaveLength(1);
+  });
+
+  it('adds zones next to whole-board pours instead of replacing them', () => {
+    useEditor.getState().loadProject(fixture());
+    addPours('SIG', ['top']);
+    addPours('SIG', ['top'], { outline: [[0, 0], [4, 0], [4, 4]] });
+    expect(useEditor.getState().project.pcb!.pours).toHaveLength(2);
+    addPours('SIG', ['top']);
+    const pours = useEditor.getState().project.pcb!.pours!;
+    expect(pours.map((p) => Boolean(p.outline)).sort()).toEqual([false, true]);
+  });
+
+  it('drills mounting holes in a separate NPTH file and mills cutouts on the outline layer', () => {
+    const project = fixture({
+      holes: [{ id: 'h', x: 3, y: 3, diameter: 3.2, keepout: 6.4 }],
+      board: { x: 0, y: 0, width: 20, height: 10, cornerRadius: 0, cutouts: [{ id: 'c', outline: [[14, 6], [18, 6], [18, 9], [14, 9]] }] },
+    });
+    const files = generateGerbers(project.pcb!, buildBoard(project, project.pcb!), 'demo');
+    expect(files.map((f) => f.name)).toContain('demo-NPTH.drl');
+    const npth = generateNpthDrill(project.pcb!);
+    expect(npth).toContain('NonPlated');
+    expect(npth).toContain('T1C3.200');
+    expect(npth).toContain('X3.000Y7.000');
+    const edge = files.find((f) => f.name.endsWith('Edge_Cuts.gm1'))!.content;
+    expect(edge).toContain('X14000000Y4000000D02*');
+    expect(edge).toContain('X18000000Y1000000D01*');
+    // The plated drill file has no mounting hole.
+    expect(files.find((f) => f.name === 'demo.drl')!.content).not.toContain('3.200');
   });
 });

@@ -19,7 +19,7 @@ import { focusLibrarySearch } from '../lib/libraryFocus';
 import { saveDesign } from '../lib/designs';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
-import { deleteSelectedCopper, finishDraft, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
+import { deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
 
 const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
@@ -39,6 +39,7 @@ function pcbKey(key: string, e: KeyboardEvent): boolean {
       return true;
     case 'escape':
       if (draft) finishDraft();
+      else if (s.shapeDraft) s.setShapeDraft(null);
       else if (s.pcbTool !== 'select') s.setPcbTool('select');
       else {
         s.setPcbSelection([]);
@@ -65,7 +66,15 @@ function pcbKey(key: string, e: KeyboardEvent): boolean {
     case 'x':
       flipSelected();
       return true;
+    case 'enter':
+      if (!s.shapeDraft) return false;
+      finishShape(s.shapeDraft);
+      return true;
     case 'backspace':
+      if (s.shapeDraft) {
+        s.setShapeDraft(s.shapeDraft.length > 1 ? s.shapeDraft.slice(0, -1) : null);
+        return true;
+      }
       if (draft) {
         if (draft.points.length > 1) s.setRouteDraft({ ...draft, points: draft.points.slice(0, -1) });
         else s.setRouteDraft(null);

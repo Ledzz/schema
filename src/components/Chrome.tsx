@@ -311,7 +311,17 @@ function PcbStatusBar() {
   const tool = useEditor((s) => s.pcbTool);
   const project = useEditor((s) => s.project);
   const unrouted = useMemo(() => [...boardModel(project).conn.unrouted.values()].reduce((a, b) => a + b, 0), [project]);
-  const hint = { select: 'Click to select · drag parts to move · R rotate · X flip side', route: 'Click a pad to start · click to add corners · V via · Esc finish', via: 'Click to place a via' }[tool];
+  const area = 'drag a rectangle, or click corners and click the first one (or Enter) to close · Esc cancels';
+  const hint = {
+    select: 'Click to select · drag parts to move · R rotate · X flip side',
+    route: 'Click a pad to start · click to add corners · V via · Esc finish',
+    via: 'Click to place a via',
+    hole: 'Click to drill a 3.2 mm mounting hole with a copper-free ring',
+    keepout: `Keepout: ${area}`,
+    cutout: `Cutout: ${area}`,
+    zone: `Pour zone on the active layer: ${area}`,
+    outline: `Board outline: ${area}`,
+  }[tool];
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-panel px-3 text-[11px] text-muted">
       <span className="tabular w-36">

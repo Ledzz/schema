@@ -8,7 +8,7 @@ import type { BoardModel, PcbConnectivity } from './board';
 import type { DrcIssue } from './drc';
 import { shellAreas } from './drc';
 import { textStrokes } from './font';
-import { boardOutline } from './geometry';
+import { boardSvgPath } from './outline';
 import { designatorAnchor } from './gerber';
 import { areasToSvgPath } from './pour';
 import type { CopperLayer, Pcb } from './types';
@@ -35,6 +35,7 @@ const COLORS = {
   ratsnest: '#f4f4f5',
   highlight: '#ffffff',
   shell: '#fb923c',
+  keepout: '#ef4444',
   ruler: '#52525b',
   error: '#ef4444',
   warning: '#f59e0b',
@@ -132,7 +133,14 @@ export function renderPcbSvg(
   }
   out.push(strokes(ticks, COLORS.ruler, 0.08), strokes(labels, COLORS.ruler, 0.12));
 
-  out.push(`<polygon points="${pts(boardOutline(b))}" fill="${COLORS.board}" stroke="${COLORS.edge}" stroke-width="0.1"/>`);
+  out.push(`<path d="${boardSvgPath(pcb)}" fill-rule="evenodd" fill="${COLORS.board}" stroke="${COLORS.edge}" stroke-width="0.1"/>`);
+  for (const k of pcb.keepouts ?? []) {
+    if (k.outline.length >= 3) out.push(`<polygon points="${pts(k.outline)}" fill="${COLORS.keepout}" fill-opacity="0.12" stroke="${COLORS.keepout}" stroke-width="0.12" stroke-dasharray="0.5 0.3"/>`);
+  }
+  for (const hole of pcb.holes ?? []) {
+    out.push(`<circle cx="${n(hole.x)}" cy="${n(hole.y)}" r="${n(hole.keepout / 2)}" fill="none" stroke="${COLORS.keepout}" stroke-width="0.12" stroke-dasharray="0.5 0.3"/>`);
+    out.push(`<circle cx="${n(hole.x)}" cy="${n(hole.y)}" r="${n(hole.diameter / 2)}" fill="${COLORS.background}" stroke="${COLORS.edge}" stroke-width="0.1"/>`);
+  }
 
   for (const layer of layers) {
     const color = COLORS[layer];

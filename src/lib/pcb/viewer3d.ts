@@ -215,6 +215,11 @@ export class BoardViewer {
       shape.holes.push(hole);
     };
     for (const v of pcb.vias) drill(v.x, v.y, v.drill / 2);
+    for (const h of pcb.holes ?? []) drill(h.x, h.y, h.diameter / 2);
+    for (const c of pcb.board.cutouts ?? []) {
+      if (c.outline.length < 3) continue;
+      shape.holes.push(new THREE.Path(c.outline.map(([x, y]) => new THREE.Vector2(x, -y))));
+    }
     for (const p of board.pads) {
       if (!p.hole) continue;
       const { center, w, h, rotation } = p.hole;

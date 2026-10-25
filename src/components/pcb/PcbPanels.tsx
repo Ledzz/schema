@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Box, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
+  addMountingHoles,
   addPours,
   autoroute,
   boardModel,
@@ -14,15 +15,19 @@ import {
   exportFabrication,
   flipSelected,
   pcbOutOfDate,
+  removePcbItems,
   rotateSelected,
+  setBoardOutline,
   syncPcb,
   updateBoard,
+  updateMechanical,
   updatePlacement,
   updateRules,
   updateTrack,
 } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
-import type { CopperLayer, Pour } from '../../lib/pcb/types';
+import { DEFAULT_HOLE, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Pour } from '../../lib/pcb/types';
+import { cornerHolePositions } from '../../lib/pcb/outline';
 import type { PourFill } from '../../lib/pcb/pour';
 import { Field, IconButton, Tabs, cx, inputClass } from '../ui';
 
@@ -207,6 +212,9 @@ export function PcbInspector() {
   const track = one ? pcb.tracks.find((t) => t.id === one) : undefined;
   const via = one ? pcb.vias.find((v) => v.id === one) : undefined;
   const pour = one ? pcb.pours?.find((z) => z.id === one) : undefined;
+  const hole = one ? pcb.holes?.find((h) => h.id === one) : undefined;
+  const keepout = one ? pcb.keepouts?.find((k) => k.id === one) : undefined;
+  const cutout = one ? pcb.board.cutouts?.find((c) => c.id === one) : undefined;
   const component = placement ? project.components.find((c) => c.id === placement.componentId) : undefined;
   const unrouted = [...conn.unrouted.values()].reduce((a, b) => a + b, 0);
 
@@ -342,21 +350,56 @@ export function PcbInspector() {
       )}
 
       {pour && <PourEditor pour={pour} fill={board.fills.find((f) => f.pour.id === pour.id)} />}
+      {hole && <HoleEditor hole={hole} />}
+      {keepout && <KeepoutEditor keepout={keepout} />}
+      {cutout && <CutoutEditor cutout={cutout} />}
 
       {!one && (
         <>
           <PoursSection fills={board.fills} />
           <section className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Board</h3>
-            <Field label="Width (mm)">
-              <NumberInput label="Board width" step={1} min={5} value={pcb.board.width} onCommit={(width) => updateBoard({ width })} />
-            </Field>
-            <Field label="Height (mm)">
-              <NumberInput label="Board height" step={1} min={5} value={pcb.board.height} onCommit={(height) => updateBoard({ height })} />
-            </Field>
+            {pcb.board.outline ? (
+              <Field label="Outline">
+                <span className="flex items-center gap-2">
+                  Custom, {Math.round(pcb.board.width * 10) / 10} × {Math.round(pcb.board.height * 10) / 10} mm
+                  <button onClick={() => setBoardOutline(null)} className="text-indigo-500 hover:underline">
+                    Make rectangle
+                  </button>
+                </span>
+              </Field>
+            ) : (
+              <>
+                <Field label="Width (mm)">
+                  <NumberInput label="Board width" step={1} min={5} value={pcb.board.width} onCommit={(width) => updateBoard({ width })} />
+                </Field>
+                <Field label="Height (mm)">
+                  <NumberInput label="Board height" step={1} min={5} value={pcb.board.height} onCommit={(height) => updateBoard({ height })} />
+                </Field>
+              </>
+            )}
             <Field label="Corner radius">
               <NumberInput label="Corner radius" step={0.5} min={0} value={pcb.board.cornerRadius} onCommit={(cornerRadius) => updateBoard({ cornerRadius })} />
             </Field>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5 text-[11px] text-muted">
+              <span>{pcb.holes?.length ?? 0} mounting holes</span>
+              <span>{pcb.keepouts?.length ?? 0} keepouts</span>
+              <span>{pcb.board.cutouts?.length ?? 0} cutouts</span>
+            </div>
+            <button
+              onClick={() => {
+                const inset = DEFAULT_HOLE.keepout / 2 + 0.5;
+                const free = cornerHolePositions(pcb.board, inset).filter((p) => !(pcb.holes ?? []).some((h) => Math.hypot(h.x - p[0], h.y - p[1]) < 1));
+                if (!free.length) return useEditor.getState().notify('Every corner already has a mounting hole');
+                const added = addMountingHoles(free);
+                useEditor.getState().setPcbIssues(checkPcb().issues);
+                useEditor.getState().notify(`Added ${added.length} M3 mounting holes ${inset} mm from the edges`);
+              }}
+              className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              <CircleDot className="h-3.5 w-3.5" /> Mounting holes in the corners
+            </button>
+            <p className="text-[10px] leading-snug text-muted">Draw an outline, keepouts, cutouts and pour zones with the tools on the left.</p>
           </section>
           <section className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Design rules</h3>
@@ -463,6 +506,18 @@ function PourEditor({ pour, fill }: { pour: Pour; fill?: PourFill }) {
           <Trash2 className="h-3.5 w-3.5" /> Delete
         </button>
       </div>
+      <Field label="Area">
+        {pour.outline ? (
+          <span className="flex items-center gap-2">
+            Zone
+            <button onClick={() => set({ outline: null })} className="text-indigo-500 hover:underline">
+              Fill whole board
+            </button>
+          </span>
+        ) : (
+          <span>Whole board</span>
+        )}
+      </Field>
       <Field label="Net">
         <select className={inputClass} value={pour.net} onChange={(e) => set({ net: e.target.value })}>
           {[...new Set([pour.net, ...nets])].map((n) => (
@@ -516,6 +571,99 @@ function PourEditor({ pour, fill }: { pour: Pour; fill?: PourFill }) {
   );
 }
 
+/* ---------- mechanical ---------- */
+
+function DeleteButton({ id, what }: { id: string; what: string }) {
+  return (
+    <button
+      onClick={() => {
+        removePcbItems(new Set([id]));
+        useEditor.getState().setPcbSelection([]);
+      }}
+      className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/5"
+      title={`Delete ${what}`}
+    >
+      <Trash2 className="h-3.5 w-3.5" /> Delete
+    </button>
+  );
+}
+
+function HoleEditor({ hole }: { hole: MountingHole }) {
+  const set = (patch: Partial<MountingHole>) => updateMechanical(hole.id, patch);
+  return (
+    <section className="space-y-1.5">
+      <h3 className="flex items-center justify-between text-sm font-semibold">
+        Mounting hole <DeleteButton id={hole.id} what="mounting hole" />
+      </h3>
+      <Field label="X (mm)">
+        <NumberInput label="Hole X" value={hole.x} onCommit={(x) => set({ x })} />
+      </Field>
+      <Field label="Y (mm)">
+        <NumberInput label="Hole Y" value={hole.y} onCommit={(y) => set({ y })} />
+      </Field>
+      <Field label="Drill (mm)">
+        <NumberInput label="Hole diameter" step={0.1} min={0.5} value={hole.diameter} onCommit={(diameter) => set({ diameter, keepout: Math.max(hole.keepout, diameter) })} />
+      </Field>
+      <Field label="Free ring (mm)">
+        <NumberInput label="Keepout diameter" step={0.1} min={hole.diameter} value={hole.keepout} onCommit={(keepout) => set({ keepout })} />
+      </Field>
+      <p className="text-[10px] leading-snug text-muted">Non-plated, drilled by JLCPCB. No copper or parts inside the ring; 3.2 mm with a 6.4 mm ring suits M3 screws.</p>
+    </section>
+  );
+}
+
+function KeepoutEditor({ keepout }: { keepout: Keepout }) {
+  const set = (patch: Partial<Keepout>) => updateMechanical(keepout.id, patch);
+  const toggleLayer = (layer: CopperLayer) => {
+    const layers = keepout.layers.includes(layer) ? keepout.layers.filter((l) => l !== layer) : [...keepout.layers, layer];
+    if (layers.length) set({ layers });
+  };
+  return (
+    <section className="space-y-1.5">
+      <h3 className="flex items-center justify-between text-sm font-semibold">
+        Keepout area <DeleteButton id={keepout.id} what="keepout" />
+      </h3>
+      <Field label="Layers">
+        <div className="flex gap-1">
+          {(['top', 'bottom'] as CopperLayer[]).map((layer) => (
+            <button key={layer} onClick={() => toggleLayer(layer)} className={cx('h-7 flex-1 rounded-md border capitalize', keepout.layers.includes(layer) ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
+              {layer}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Keep out">
+        <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+          {(['tracks', 'vias', 'pours', 'parts'] as const).map((k) => (
+            <label key={k} className="inline-flex items-center gap-1.5 capitalize">
+              <input type="checkbox" checked={keepout[k]} onChange={(e) => set({ [k]: e.target.checked })} /> {k}
+            </label>
+          ))}
+        </div>
+      </Field>
+      <p className="text-[10px] leading-snug text-muted">The auto-router avoids it, pours leave it empty and the design check reports anything inside.</p>
+    </section>
+  );
+}
+
+function CutoutEditor({ cutout }: { cutout: Cutout }) {
+  const xs = cutout.outline.map((p) => p[0]);
+  const ys = cutout.outline.map((p) => p[1]);
+  return (
+    <section className="space-y-1.5">
+      <h3 className="flex items-center justify-between text-sm font-semibold">
+        Cutout <DeleteButton id={cutout.id} what="cutout" />
+      </h3>
+      <Field label="Size">
+        <span>
+          {(Math.max(...xs) - Math.min(...xs)).toFixed(2)} × {(Math.max(...ys) - Math.min(...ys)).toFixed(2)} mm · {cutout.outline.length} corners
+        </span>
+      </Field>
+      <p className="text-[10px] leading-snug text-muted">Milled through the board along the outline layer. Drag it to move.</p>
+    </section>
+  );
+}
+
 /* ---------- tool rail ---------- */
 
 export function PcbToolRail() {
@@ -538,6 +686,22 @@ export function PcbToolRail() {
           <circle cx="12" cy="12" r="7" />
           <circle cx="12" cy="12" r="2.5" />
         </svg>
+      </IconButton>
+      <div className="my-1 h-px w-6 bg-[var(--line)]" />
+      <IconButton label="Board outline" active={tool === 'outline'} onClick={() => s().setPcbTool('outline')}>
+        <Pentagon className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Mounting hole" active={tool === 'hole'} onClick={() => s().setPcbTool('hole')}>
+        <CircleDot className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Keepout area" active={tool === 'keepout'} onClick={() => s().setPcbTool('keepout')}>
+        <Ban className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Board cutout" active={tool === 'cutout'} onClick={() => s().setPcbTool('cutout')}>
+        <Scissors className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Pour zone" active={tool === 'zone'} onClick={() => s().setPcbTool('zone')}>
+        <PaintBucket className="h-4 w-4" />
       </IconButton>
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
       {(['top', 'bottom'] as CopperLayer[]).map((l, i) => (
@@ -565,7 +729,7 @@ export function PcbToolRail() {
       <IconButton label="Flip to other side" shortcut="X" onClick={flipSelected} disabled={!hasSelection}>
         <FlipHorizontal2 className="h-4 w-4" />
       </IconButton>
-      <IconButton label="Delete track / via" shortcut="Del" onClick={deleteSelectedCopper} disabled={!hasSelection}>
+      <IconButton label="Delete track, via, hole, keepout or cutout" shortcut="Del" onClick={deleteSelectedCopper} disabled={!hasSelection}>
         <Trash2 className="h-4 w-4" />
       </IconButton>
       <div className="mt-auto flex flex-col items-center gap-1">
