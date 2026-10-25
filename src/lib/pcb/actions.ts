@@ -10,7 +10,7 @@ import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
-import { pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } from './geometry';
+import { pointShapeDistance, shapeDistance, type CopperItem, type CopperShape } from './geometry';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
@@ -427,25 +427,25 @@ export interface AutorouteReport {
   failed: { net: string; a: Vec; b: Vec }[];
 }
 
-/** Distance from a fine-pitch pad within which a necked-down track stays narrow. */
+/** Distance from narrow end copper within which a necked-down track stays narrow. */
 const NECK_LENGTH = 1;
 
 /**
  * Widens a route found at the narrow width wherever it can: segments more than NECK_LENGTH from
- * the fine-pitch end pads, and only where the wider copper still clears other nets. This is the
- * usual neck-down into fine-pitch pins, with full-width copper everywhere else.
+ * the narrow copper at its ends, and only where the wider copper still clears other nets. This is
+ * the usual neck-down into fine-pitch pins, with full-width copper everywhere else.
  */
 function neckDown(
   route: { layer: CopperLayer; points: Vec[] },
   narrow: number,
   wide: number,
-  finePads: WorldPad[],
+  fineEnds: CopperShape[],
   others: CopperItem[],
   clearance: number,
 ): { width: number; points: Vec[] }[] {
-  // Break the first and last segments NECK_LENGTH away from a fine-pitch pad they start on.
+  // Break the first and last segments NECK_LENGTH away from the narrow copper they start on.
   const pts = [...route.points];
-  const near = (p: Vec) => finePads.some((pad) => pointShapeDistance(p, pad.shape) === 0);
+  const near = (p: Vec) => fineEnds.some((shape) => pointShapeDistance(p, shape) === 0);
   const breakAt = (from: Vec, to: Vec): Vec | null => {
     const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
     if (len <= NECK_LENGTH + 0.2) return null;
@@ -462,7 +462,7 @@ function neckDown(
   }
   const widthOf = (a: Vec, b: Vec) => {
     const seg = { kind: 'capsule' as const, a, b, r: wide / 2 };
-    const neck = finePads.some((pad) => shapeDistance({ ...seg, r: 0 }, pad.shape) < NECK_LENGTH - 1e-6);
+    const neck = fineEnds.some((shape) => shapeDistance({ ...seg, r: 0 }, shape) < NECK_LENGTH - 1e-6);
     const clear = others.every((it) => !it.layers.includes(route.layer) || shapeDistance(seg, it.shape) >= clearance - 1e-6);
     return !neck && clear ? wide : narrow;
   };
@@ -486,17 +486,31 @@ function neckDown(
 
 const lerp = (a: Vec, b: Vec, t: number): Vec => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 
+/**
+ * The copper a connection ends on, with its narrow size: the pads containing the end point (an
+ * airwire may end on a track vertex inside a pin rather than at the pin's centre), otherwise the
+ * net's tracks or vias there, measured from the point itself so a neck-down doesn't follow the
+ * whole track.
+ */
+function endCopper(p: Vec, net: string, board: BoardModel, netOf: (it: CopperItem) => string | null): { size: number; shape: CopperShape }[] {
+  const pads = board.pads.filter((pad) => pad.net === net && pointShapeDistance(p, pad.shape) === 0);
+  if (pads.length) return pads.map((pad) => ({ size: Math.min(pad.pad.w, pad.pad.h), shape: pad.shape }));
+  const point: CopperShape = { kind: 'capsule', a: p, b: p, r: 0 };
+  return board.items
+    .filter((it) => it.type !== 'pad' && netOf(it) === net && it.shape.kind === 'capsule' && pointShapeDistance(p, it.shape) === 0)
+    .map((it) => ({ size: (it.shape as { r: number }).r * 2, shape: point }));
+}
+
 function routeOne(project: Project, aw: Airwire, widthOverride?: number): { tracks: Track[]; vias: Via[] } | null {
   const pcb = currentPcb(project);
   const board = buildBoard(project, pcb);
   const conn = pcbConnectivity(board, pcb);
-  // Route no wider than the narrow side of the pads it connects (a 0.5 mm track cannot enter a
-  // 0.25 mm QFN pin without crowding its neighbours), then widen away from those pads.
+  // Route no wider than the copper at its ends (a 0.5 mm track cannot enter a 0.25 mm QFN pin
+  // without crowding its neighbours), then widen away from it.
   const wide = widthOverride ?? trackWidthFor(aw.net, pcb);
-  const endPads = board.pads.filter((p) => samePoint(p.center, aw.a) || samePoint(p.center, aw.b));
-  const finePads = endPads.filter((p) => Math.min(p.pad.w, p.pad.h) < wide);
-  const width = finePads.length ? Math.max(pcb.rules.minTrackWidth, Math.min(...finePads.map((p) => Math.min(p.pad.w, p.pad.h)))) : wide;
   const netOf = (it: (typeof board.items)[number]) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net));
+  const fine = [aw.a, aw.b].flatMap((p) => endCopper(p, aw.net, board, netOf)).filter((e) => e.size < wide);
+  const width = fine.length ? Math.max(pcb.rules.minTrackWidth, Math.min(...fine.map((e) => e.size))) : wide;
   // Keep other nets out from under metal connector shells where possible.
   const avoid = shellAreas(board)
     .filter((a) => !a.nets.has(aw.net))
@@ -506,7 +520,7 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
   if (!r) return null;
   const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];
   const pieces = r.tracks.flatMap((t) =>
-    width < wide ? neckDown(t, width, wide, finePads, others, pcb.rules.clearance).map((p) => ({ layer: t.layer, ...p })) : [{ layer: t.layer, width, points: t.points }],
+    width < wide ? neckDown(t, width, wide, fine.map((e) => e.shape), others, pcb.rules.clearance).map((p) => ({ layer: t.layer, ...p })) : [{ layer: t.layer, width, points: t.points }],
   );
   return {
     tracks: pieces.map((t) => ({ id: newId('t'), layer: t.layer, width: t.width, points: t.points, net: aw.net })),

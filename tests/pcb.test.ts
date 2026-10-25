@@ -269,6 +269,34 @@ describe('auto-routing widths', () => {
     expect(widths()).toEqual([0.6]);
   });
 
+  it('narrows into a fine-pitch pin when the connection ends on a track inside it', () => {
+    // R1 gets 0.3 mm pads at 0.5 mm pitch, and a SIG stub already leaves R1.2 from inside the pad
+    // on the side facing R2, so the airwire ends on that track vertex rather than the pad centre.
+    const pad = (n: string, x: number) => `["PAD","${n}",0,"",1,"${n}",${x},0,0,["ROUND",0,0],["RECT",11.811,39.37,0],[],0,0,0,1,0]`;
+    const base = fixture();
+    const project: Project = {
+      ...base,
+      pcb: {
+        ...base.pcb!,
+        footprints: { ...base.pcb!.footprints, fine: { title: 'FINE', dataStr: [pad('1', -9.8425), pad('2', 9.8425)].join('\n'), source: 'easyeda' } },
+        footprintOf: { a: 'fine', b: 'builtin:0603' },
+        tracks: [{ id: 'stub', layer: 'top', width: 0.25, points: [[5.375, 5], [5.375, 3]], net: 'SIG' }],
+      },
+    };
+    const before = buildBoard(project, project.pcb!);
+    const [aw] = pcbConnectivity(before, project.pcb!).airwires;
+    expect([aw.a, aw.b]).toContainEqual([5.375, 5]);
+
+    useEditor.getState().loadProject(project);
+    autoroute('SIG', 1);
+    const routed = useEditor.getState().project;
+    const board = buildBoard(routed, routed.pcb!);
+    const errors = runDrc(board, routed.pcb!, pcbConnectivity(board, routed.pcb!)).filter((i) => i.severity === 'error');
+    expect(errors.map((i) => i.message)).toEqual([]);
+    // Narrow at the pin, full width once clear of it.
+    expect(widths().sort()).toEqual([0.25, 0.3, 1]);
+  });
+
   it('necks down into pads narrower than the track', () => {
     useEditor.getState().loadProject(fixture());
     // 0.8 mm wide 0603 pads: a 1 mm track narrows to 0.8 at both ends and is 1 mm in between.
