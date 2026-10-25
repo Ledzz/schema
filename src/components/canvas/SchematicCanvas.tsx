@@ -400,7 +400,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       )}
       <QuickEdit />
       {tool === 'place' && placing?.template.generic && (
-        <div className="absolute left-1/2 top-3 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+        <div className="absolute left-1/2 top-16 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
           <PassiveEditor
             inline
             kind={placing.template.generic.kind}
@@ -416,7 +416,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
       {tool === 'place' && placing && !placing.template.generic && (
-        <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-panel/90 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
+        <div className="pointer-events-none absolute left-1/2 top-16 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-panel/90 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
           <MousePointerClick className="h-3.5 w-3.5 text-indigo-400" />
           Click to place <span className="font-semibold">{placing.template.value}</span>
           <span className="text-muted">

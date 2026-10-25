@@ -8,7 +8,7 @@ import { SchematicCanvas } from './components/canvas/SchematicCanvas';
 import { LibraryPanel } from './components/library/LibraryPanel';
 import { LeftPanel } from './components/panels/LeftPanel';
 import { RightPanel } from './components/panels/RightPanel';
-import { StatusBar, Toast, ToolRail, TopBar } from './components/Chrome';
+import { SchematicToolbar, StatusBar, Toast, TopBar } from './components/Chrome';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
@@ -64,10 +64,13 @@ export default function App() {
       <TopBar svgRef={svgRef} />
       <div className="flex min-h-0 flex-1">
         {mode === 'pcb' ? <PcbLeftPanel /> : <LeftPanel />}
-        {mode === 'pcb' ? <PcbToolRail /> : <ToolRail />}
-        <main className="min-w-0 flex-1">
+        {mode === 'pcb' && <PcbToolRail />}
+        <main className="relative min-w-0 flex-1">
           {mode === 'schematic' ? (
-            <SchematicCanvas svgRef={svgRef} />
+            <>
+              <SchematicCanvas svgRef={svgRef} />
+              <SchematicToolbar />
+            </>
           ) : pcb3d ? (
             <Suspense fallback={<div className="grid h-full place-items-center text-xs text-muted">Loading 3D view…</div>}>
               <Board3D />

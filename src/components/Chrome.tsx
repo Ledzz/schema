@@ -241,55 +241,62 @@ export const PASSIVE_TOOLS: { kind: PassiveKind; key: string; icon: React.ReactN
   { kind: 'led', key: '⇧E', icon: svgIcon('M2 13h5M15 13h7M7 8v10l8-5zM15 8v10M14 6l3-3M17 7l3-3') },
 ];
 
-export function ToolRail() {
+/** Schematic tools, floating centred over the top of the canvas. */
+export function SchematicToolbar() {
   const tool = useEditor((s) => s.tool);
   const placingKind = useEditor((s) => s.placing?.template.generic?.kind);
   const libraryOpen = useEditor((s) => s.libraryOpen);
   const hasSelection = useEditor((s) => s.selection.length > 0);
   const s = useEditor.getState;
+  const separator = <div className="mx-1 h-5 w-px shrink-0 bg-[var(--line)]" />;
   return (
-    <div className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="Tools">
+    <div
+      className="absolute left-1/2 top-3 z-20 flex max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-0.5 overflow-x-auto rounded-xl border border-line bg-panel/95 p-1 shadow-lg backdrop-blur"
+      role="toolbar"
+      aria-orientation="horizontal"
+      aria-label="Tools"
+    >
       {TOOLS.map((t) => (
         <IconButton
           key={t.tool}
           label={t.label}
           shortcut={t.key}
           active={tool === t.tool}
+          className="shrink-0"
           onClick={() => (t.tool === 'select' || t.tool === 'wire' ? s().setTool(t.tool) : s().startPort(t.tool as 'label'))}
         >
           {t.icon}
         </IconButton>
       ))}
-      <div className="my-1 h-px w-6 bg-[var(--line)]" />
+      {separator}
       {PASSIVE_TOOLS.map((t) => (
-        <IconButton key={t.kind} label={PASSIVES[t.kind].label} shortcut={t.key} active={tool === 'place' && placingKind === t.kind} onClick={() => startPassive(t.kind)}>
+        <IconButton key={t.kind} label={PASSIVES[t.kind].label} shortcut={t.key} active={tool === 'place' && placingKind === t.kind} className="shrink-0" onClick={() => startPassive(t.kind)}>
           {t.icon}
         </IconButton>
       ))}
-      <div className="my-1 h-px w-6 bg-[var(--line)]" />
-      <IconButton label="Rotate" shortcut="R" onClick={rotateSelection} disabled={!hasSelection && tool === 'select'}>
+      {separator}
+      <IconButton label="Rotate" shortcut="R" className="shrink-0" onClick={rotateSelection} disabled={!hasSelection && tool === 'select'}>
         <RotateCcw className="h-4 w-4" />
       </IconButton>
-      <IconButton label="Mirror" shortcut="X" onClick={mirrorSelection} disabled={!hasSelection && tool !== 'place'}>
+      <IconButton label="Mirror" shortcut="X" className="shrink-0" onClick={mirrorSelection} disabled={!hasSelection && tool !== 'place'}>
         <FlipHorizontal2 className="h-4 w-4" />
       </IconButton>
-      <IconButton label="Delete" shortcut="Del" onClick={deleteSelection} disabled={!hasSelection}>
+      <IconButton label="Delete" shortcut="Del" className="shrink-0" onClick={deleteSelection} disabled={!hasSelection}>
         <Trash2 className="h-4 w-4" />
       </IconButton>
-      <div className="mt-auto flex flex-col items-center gap-1">
-        <IconButton label="Zoom in" shortcut="+" onClick={() => zoomBy(1.25)}>
-          <ZoomIn className="h-4 w-4" />
-        </IconButton>
-        <IconButton label="Zoom out" shortcut="−" onClick={() => zoomBy(0.8)}>
-          <ZoomOut className="h-4 w-4" />
-        </IconButton>
-        <IconButton label="Zoom to fit" shortcut="F" onClick={() => fitView()}>
-          <Maximize className="h-4 w-4" />
-        </IconButton>
-        <IconButton label="Parts library" shortcut="L" active={libraryOpen} onClick={() => s().setLibraryOpen(!libraryOpen)}>
-          <PanelBottom className="h-4 w-4" />
-        </IconButton>
-      </div>
+      {separator}
+      <IconButton label="Zoom in" shortcut="+" className="shrink-0" onClick={() => zoomBy(1.25)}>
+        <ZoomIn className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Zoom out" shortcut="−" className="shrink-0" onClick={() => zoomBy(0.8)}>
+        <ZoomOut className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Zoom to fit" shortcut="F" className="shrink-0" onClick={() => fitView()}>
+        <Maximize className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Parts library" shortcut="L" className="shrink-0" active={libraryOpen} onClick={() => s().setLibraryOpen(!libraryOpen)}>
+        <PanelBottom className="h-4 w-4" />
+      </IconButton>
     </div>
   );
 }
