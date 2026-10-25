@@ -6,13 +6,18 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **3D board view** — part models, catches connector orientation and height problems before
-   ordering. *(in progress)*
-2. **Custom board outlines, mounting holes, keepouts and pour zones** — almost every real board
+1. **Custom board outlines, mounting holes, keepouts and pour zones** — almost every real board
    needs one of them; the data model already allows a custom pour outline.
-3. **Silkscreen text and logos, movable designators.**
-4. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
-5. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
+2. **Silkscreen text and logos, movable designators.**
+3. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
+4. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
+5. **STEP export of the assembled board** — the 3D view already has the models; enclosure
+   design needs the board as a STEP file.
+
+## Done
+
+- **3D board view** (2026-10-25): EasyEDA's part models on a textured board with real drill
+  holes; parts without a model show as blocks.
 
 ## Schematic
 
@@ -32,7 +37,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - ★ Symbol, footprint and device editors, including an IPC footprint generator (parts come only
   from the JLC/EasyEDA library and the built-in passives).
 - Personal and team libraries; importing libraries from KiCad or Altium.
-- 3D models assigned to footprints.
+- Choosing or editing a footprint's 3D model (EasyEDA's assignment is used as is).
 
 ## PCB: board and placement
 
@@ -69,7 +74,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## 3D and mechanical
 
-- ★ 3D board view with part models; height and clearance checks; enclosure design.
+- STEP export, height and clearance checks, enclosure design (the 3D view itself is done).
 
 ## Simulation
 

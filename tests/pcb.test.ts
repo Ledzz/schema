@@ -3,7 +3,7 @@ import { builtinFootprintDoc, parsePcbFootprint, arcPoints, MIL } from '../src/l
 import { placementToWorld, pointInPolygon, worldPads, shapeDistance, type CopperShape } from '../src/lib/pcb/geometry';
 import { buildBoard, pcbConnectivity } from '../src/lib/pcb/board';
 import { runDrc, shellAreas } from '../src/lib/pcb/drc';
-import { renderPcbSvg } from '../src/lib/pcb/render';
+import { renderBoardFace, renderPcbSvg } from '../src/lib/pcb/render';
 import { autoroute, fabricationFiles, throughHoleParts } from '../src/lib/pcb/actions';
 import { useEditor } from '../src/store/editor';
 import { routeConnection, type RouteEnd } from '../src/lib/pcb/router';
@@ -220,6 +220,19 @@ describe('board picture', () => {
     expect(svg).toMatch(/<polyline points="5\.8,5 11\.2,5" fill="none" stroke="#ffffff"/);
     expect(svg).toContain('stroke="#f59e0b"');
     expect(svg).not.toMatch(/<text/);
+  });
+
+  it('draws each finished face over exactly the board for 3D textures', () => {
+    const project = fixture({ tracks: [{ id: 't', layer: 'top', width: 0.25, points: [[5.8, 5], [11.2, 5]], net: 'SIG' }] });
+    const board = buildBoard(project, project.pcb!);
+    const top = renderBoardFace(project.pcb!, board, 'top', 400);
+    const bottom = renderBoardFace(project.pcb!, board, 'bottom', 400);
+    expect(top.svg).toContain('viewBox="0 0 20 10"');
+    expect(top.heightPx).toBe(200);
+    expect(top.svg).toContain('5.8,5 11.2,5');
+    // The bottom face has no copper of its own here and no parts: mask only.
+    expect(bottom.svg).not.toContain('5.8,5 11.2,5');
+    expect(bottom.svg).not.toContain('<polygon');
   });
 });
 

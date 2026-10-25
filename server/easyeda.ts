@@ -1,6 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
-import type { DeviceData, LibraryDoc, StockInfo } from '../src/shared/parts';
+import type { DeviceData, LibraryDoc, PartModel, StockInfo } from '../src/shared/parts';
 
 /*
  * EasyEDA Pro library access, reverse-engineered from pro.easyeda.com (EasyEDA Pro v3.2.209):
@@ -14,6 +14,12 @@ import type { DeviceData, LibraryDoc, StockInfo } from '../src/shared/parts';
  *
  *  POST /api/components/getSmtPartInfo {numbers: ["C…"], path}
  *    Bulk JLCPCB assembly info: paste_type "base" | "expand", stock_num.
+ *
+ *  3D models: a device's attributes name a model document ("3D Model" uuid) and its
+ *  "3D Model Transform". GET /api/v2/components/{uuid}?path=… returns that document; its dataStr
+ *  is {"model": <file id>, "type": "wrl", "unit": "mm"}. The mesh is an OBJ (mm, Z up, materials
+ *  inline) at modules.easyeda.com/3dmodel/{file id}; the STEP original is at
+ *  modules.easyeda.com/qAxj6KHrDKw4blvCG8QJPs7Y/{file id} (smt-gl-engine Fv / Iv).
  */
 
 const ORIGIN = 'https://pro.easyeda.com';
@@ -99,6 +105,21 @@ export async function getDevice(lcsc: string): Promise<DeviceData | null> {
     footprint,
     image: device.images?.find(Boolean) ?? null,
   };
+}
+
+/** Loads the 3D model EasyEDA assigns to a device (OBJ text plus placement transform). */
+export async function getModel(device: DeviceData): Promise<PartModel | null> {
+  const uuid = device.attributes['3D Model'];
+  const transform = (device.attributes['3D Model Transform'] ?? '').split(',').map(Number);
+  if (!uuid || transform.length < 9 || transform.some((n) => !Number.isFinite(n))) return null;
+  const res = await fetch(`${ORIGIN}/api/v2/components/${encodeURIComponent(uuid)}?path=${SYSTEM_LIBRARY}`, { headers: { accept: 'application/json' } });
+  const doc = (await res.json().catch(() => null)) as { success?: boolean; result?: { dataStr?: string } } | null;
+  if (!doc?.success || !doc.result?.dataStr) return null;
+  const file = (JSON.parse(doc.result.dataStr) as { model?: string }).model;
+  if (!file) return null;
+  const obj = await fetch(`https://modules.easyeda.com/3dmodel/${encodeURIComponent(file)}`);
+  if (!obj.ok) return null;
+  return { lcsc: device.lcsc, title: device.attributes['3D Model Title'] ?? '', transform: transform.slice(0, 9), obj: await obj.text() };
 }
 
 export async function getStock(codes: string[]): Promise<StockInfo[]> {

@@ -85,3 +85,26 @@ Chrome for Testing 147 with `--enable-features=WebMCP,WebMCPTesting` exposes
 `navigator.modelContext` (`registerTool`, `unregisterTool`) and `navigator.modelContextTesting`
 (`listTools`, `executeTool`). The current spec draft moves the API to `document.modelContext`
 with `registerTool(tool, {signal})`; the app supports both.
+
+## 3D models (observed + confirmed, 2026-10-25)
+
+Found by reading EasyEDA Pro's shipped bundles (`pro-mgr`, `pro-ui`, `smt-gl-engine` 3.2.x from
+`modules.lceda.cn`) and replaying the requests by hand.
+
+1. A device's attributes name its model: `3D Model` (document uuid), `3D Model Title` and
+   `3D Model Transform`. The footprint record repeats them as `model_3d {uri, title, transform}`.
+2. `GET https://pro.easyeda.com/api/v2/components/{uuid}?path=<library owner uuid>` returns the
+   model document (`docType` 16). Its `dataStr` is `{"model": <file id>, "type": "wrl",
+   "unit": "mm"}`. The device's uuid itself is *not* the file key (the CDN answers NoSuchKey).
+3. `https://modules.easyeda.com/3dmodel/{file id}` serves the mesh as OBJ: millimetres, Z up,
+   with materials written inline between `newmtl` and `endmtl`. The `d` field is unreliable
+   (most models write 0 for opaque, some 1). `…/qAxj6KHrDKw4blvCG8QJPs7Y/{file id}` serves the
+   original STEP. The Chinese editor uses `modules.lceda.cn` for the same paths
+   (`smt-gl-engine` `Oh()` picks the host per edition).
+4. `3D Model Transform` is nine numbers: target size X, Y, Z in mil (Z 0 = keep), rotation in
+   degrees (the first is about Z, the board normal), offset X, Y, Z in mil (y up). Confirmed
+   against six parts: the model's box, centred on the footprint origin with its bottom on the
+   board, then rotated and offset, lands on the pads (e.g. a KF301 terminal's outline matches its
+   footprint's to 0.05 mm; a SOT-89 model with leads at -x gets 180°).
+5. Not every device's model document exists (an XH connector's returns 404); the app draws a
+   block for those.

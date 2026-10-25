@@ -50,6 +50,7 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Copper pours** (e.g. a GND fill on both layers). Each pour keeps its clearance to other nets, holes and the board edge. Same-net pads join through thermal reliefs (or solidly), slivers below a minimum width are removed, and islands with no same-net copper are dropped. Pours count as connections in the ratsnest and refill live as you edit.
   - **DRC**: copper clearance, shorts, unrouted nets, edge clearance, vias in pads, overlapping parts, missing footprints, pads with fewer than two thermal spokes, pours on nets with no pads, tracks or vias of other nets under a metal connector shell (USB, RJ45…).
   - **Export for JLCPCB.** Gerber RS-274X (copper with pours, mask, paste, silkscreen with vector text, outline) and an Excellon drill file (including slots) come zipped. The pick-and-place CPL and BOM are CSV files; through-hole parts can be left out of them to solder by hand.
+  - **3D view** (`3`, or the cube in the PCB tool rail). The board is extruded 1.6 mm with its drill holes and textured with the finished faces (mask, HASL pads, silkscreen); parts use the 3D models EasyEDA assigns to them, placed by EasyEDA's model transform, and parts without one show as blocks. Orbit, pan and zoom, with top, bottom and angled views. three.js loads only when the view opens.
   - **Order from JLCPCB** (PCB panel or File menu). The sheet checks the board (DRC errors block the order), shows the board size, the parts JLCPCB would assemble, their Basic/Extended split, setup fee and estimated cost for the chosen quantity. One click downloads the files and opens JLCPCB's quote page, and the sheet lists the settings to pick there. JLCPCB has no public ordering API, so dropping the files on their page and checking out stay manual.
 - **Design data**
   - Live netlist and a design check: unconnected pins, duplicate or unannotated designators, conflicting net names.
@@ -133,7 +134,7 @@ server/            Hono API (runs inside Vite in dev, standalone in prod)
   jlcpcb.ts        JLCPCB parts search, facets, type filters, 429 retry + concurrency limit
   easyeda.ts       EasyEDA device lookup, AES-GCM document decryption, bulk stock
   match.ts         passive value -> best JLCPCB part
-  api.ts           /api/parts/search | facets | match | :code | stock
+  api.ts           /api/parts/search | facets | match | :code | :code/model | stock
   designs.ts       dev-only read/write of designs/*.json for the ?open= round trip
 scripts/schem.ts   headless CLI running the WebMCP tools on a project file
 .claude/skills/    schematic-design and pcb-layout skills for Claude Code
@@ -141,7 +142,8 @@ src/
   shared/          types and passive value parsing shared by server and client
   lib/easyeda/     symbol and footprint parsers for EasyEDA Pro documents
   lib/schematic/   geometry, connectivity/netlist, ops (move/rotate…), router, BOM, hit-testing
-  lib/pcb/         footprints (mm), board model + connectivity, copper pours (Clipper), DRC, A* router, Gerber/drill/CPL
+  lib/pcb/         footprints (mm), board model + connectivity, copper pours (Clipper), DRC, A* router, Gerber/drill/CPL,
+                   board pictures, 3D models and the three.js viewer, JLCPCB ordering
   lib/actions.ts   schematic actions used by both the UI and the WebMCP tools
   lib/passives.ts  generic passive placement and matching
   lib/webmcp.ts    tool definitions and registration

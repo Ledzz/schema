@@ -57,6 +57,43 @@ function hole(h: { center: Vec; w: number; h: number; rotation: number }): strin
   return `<line x1="${n(h.center[0] - dx)}" y1="${n(h.center[1] - dy)}" x2="${n(h.center[0] + dx)}" y2="${n(h.center[1] + dy)}" stroke="${COLORS.hole}" stroke-width="${n(d)}" stroke-linecap="round"/>`;
 }
 
+/** Colours of a finished JLCPCB board: green mask, HASL pads, white silkscreen. */
+const FINISH = {
+  mask: '#14532d',
+  copperUnderMask: '#1f7a3f',
+  pad: '#cfd2d6',
+  silk: '#f4f4f5',
+};
+
+/**
+ * One face of the finished board as seen from above (the bottom face is not mirrored), sized to
+ * the board outline, for texturing the 3D view. Vias are tented, so they show as copper under mask.
+ */
+export function renderBoardFace(pcb: Pcb, board: BoardModel, side: CopperLayer, widthPx = 2048): { svg: string; widthPx: number; heightPx: number } {
+  const b = pcb.board;
+  const out: string[] = [`<rect x="${n(b.x)}" y="${n(b.y)}" width="${n(b.width)}" height="${n(b.height)}" fill="${FINISH.mask}"/>`];
+  for (const f of board.fills.filter((f) => f.pour.layer === side)) out.push(`<path d="${areasToSvgPath(f.areas)}" fill-rule="evenodd" fill="${FINISH.copperUnderMask}"/>`);
+  for (const t of pcb.tracks.filter((t) => t.layer === side)) {
+    out.push(`<polyline points="${pts(t.points)}" fill="none" stroke="${FINISH.copperUnderMask}" stroke-width="${n(t.width)}" stroke-linecap="round" stroke-linejoin="round"/>`);
+  }
+  for (const v of pcb.vias) out.push(`<circle cx="${n(v.x)}" cy="${n(v.y)}" r="${n(v.diameter / 2)}" fill="${FINISH.copperUnderMask}"/>`);
+  for (const p of board.pads.filter((p) => p.layers.includes(side))) out.push(`<polygon points="${pts(p.outline)}" fill="${FINISH.pad}"/>`);
+  for (const part of board.parts.filter((p) => p.placement.side === side)) {
+    for (const gr of part.graphics) {
+      if (gr.layer === 'outline') continue;
+      out.push(
+        gr.filled
+          ? `<polygon points="${pts(gr.points)}" fill="${FINISH.silk}"/>`
+          : `<polyline points="${pts(gr.points)}" fill="none" stroke="${FINISH.silk}" stroke-width="${n(gr.width)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+      );
+    }
+    out.push(strokes(textStrokes(part.component.designator, designatorAnchor(part.box), 0.8, 0, side === 'bottom'), FINISH.silk, 0.12));
+  }
+  const heightPx = Math.round((widthPx * b.height) / b.width);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="${n(b.x)} ${n(b.y)} ${n(b.width)} ${n(b.height)}">${out.join('')}</svg>`;
+  return { svg, widthPx, heightPx };
+}
+
 export function renderPcbSvg(
   pcb: Pcb,
   board: BoardModel,

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { useEditor } from './store/editor';
 import { useWebMcp } from './store/webmcp';
 import { ensureWebMcp } from './lib/webmcp';
@@ -12,6 +12,9 @@ import { StatusBar, Toast, ToolRail, TopBar } from './components/Chrome';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
+
+// three.js only loads when the 3D view is opened.
+const Board3D = lazy(() => import('./components/pcb/Board3D'));
 
 function LibraryResizer() {
   const onPointerDown = (e: React.PointerEvent) => {
@@ -40,6 +43,7 @@ export default function App() {
   const theme = useEditor((s) => s.theme);
   const libraryOpen = useEditor((s) => s.libraryOpen);
   const mode = useEditor((s) => s.mode);
+  const pcb3d = useEditor((s) => s.pcb3d);
   const svgRef = useRef<SVGSVGElement>(null);
   useShortcuts();
 
@@ -61,7 +65,17 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         {mode === 'pcb' ? <PcbLeftPanel /> : <LeftPanel />}
         {mode === 'pcb' ? <PcbToolRail /> : <ToolRail />}
-        <main className="min-w-0 flex-1">{mode === 'pcb' ? <PcbCanvas /> : <SchematicCanvas svgRef={svgRef} />}</main>
+        <main className="min-w-0 flex-1">
+          {mode === 'schematic' ? (
+            <SchematicCanvas svgRef={svgRef} />
+          ) : pcb3d ? (
+            <Suspense fallback={<div className="grid h-full place-items-center text-xs text-muted">Loading 3D view…</div>}>
+              <Board3D />
+            </Suspense>
+          ) : (
+            <PcbCanvas />
+          )}
+        </main>
         <RightPanel />
       </div>
       {libraryOpen && mode === 'schematic' && (

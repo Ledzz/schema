@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, Box, CircleAlert, CircleCheck, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, Plus, RefreshCcw, RotateCcw, Route, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
   addPours,
@@ -523,6 +523,7 @@ export function PcbToolRail() {
   const layer = useEditor((s) => s.activeLayer);
   const hasSelection = useEditor((s) => s.pcbSelection.length > 0);
   const showPours = useEditor((s) => s.showPours);
+  const pcb3d = useEditor((s) => s.pcb3d);
   const s = useEditor.getState;
   return (
     <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="PCB tools">
@@ -553,6 +554,9 @@ export function PcbToolRail() {
       ))}
       <IconButton label={showPours ? 'Hide copper pours' : 'Show copper pours'} active={showPours} onClick={() => s().setShowPours(!showPours)}>
         <Layers className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="3D view" shortcut="3" active={pcb3d} onClick={() => s().setPcb3d(!pcb3d)}>
+        <Box className="h-4 w-4" />
       </IconButton>
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
       <IconButton label="Rotate" shortcut="R" onClick={() => rotateSelected()} disabled={!hasSelection}>

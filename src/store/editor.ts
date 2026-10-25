@@ -110,6 +110,9 @@ interface EditorState {
   /** The "Order from JLCPCB" sheet is open. */
   orderOpen: boolean;
   setOrderOpen: (open: boolean) => void;
+  /** The PCB editor shows the 3D view instead of the 2D canvas. */
+  pcb3d: boolean;
+  setPcb3d: (on: boolean) => void;
 
   mode: 'schematic' | 'pcb';
   setMode: (mode: 'schematic' | 'pcb') => void;
@@ -229,6 +232,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setQuickEdit: (quickEditId) => set({ quickEditId }),
   orderOpen: false,
   setOrderOpen: (orderOpen) => set({ orderOpen }),
+  pcb3d: false,
+  setPcb3d: (pcb3d) => set({ pcb3d }),
 
   mode: (() => {
     try {

@@ -4,6 +4,7 @@ import {
   type DeviceData,
   type PartClass,
   type PartDetail,
+  type PartModel,
   type PartSummary,
   type SearchFacets,
   type SearchQuery,
@@ -12,7 +13,7 @@ import {
 } from '../src/shared/parts';
 import { TtlCache } from './cache';
 import { countInStockByClass, getPart, searchFacets, searchParts } from './jlcpcb';
-import { getDevice, getStock } from './easyeda';
+import { getDevice, getModel, getStock } from './easyeda';
 import { matchPassive, type PassiveMatch } from './match';
 import { PASSIVE_KINDS, type PassiveKind } from '../src/shared/passives';
 
@@ -22,6 +23,7 @@ const facetCache = new TtlCache<SearchFacets>(300, 10 * MINUTE);
 const partCache = new TtlCache<PartSummary | null>(2000, 30 * MINUTE);
 const deviceCache = new TtlCache<DeviceData | null>(2000, 24 * 60 * MINUTE);
 const matchCache = new TtlCache<PassiveMatch>(1000, 30 * MINUTE);
+const modelCache = new TtlCache<PartModel | null>(300, 24 * 60 * MINUTE);
 
 const LCSC_CODE = /^C\d{1,12}$/i;
 const SORTS: SortKey[] = ['relevance', 'stock', 'price', 'mpn'];
@@ -124,6 +126,18 @@ api.get('/parts/:code', async (c) => {
   }
   if (!part && !device) return c.json({ error: `Part ${code} not found` }, 404);
   return c.json({ part, device } satisfies PartDetail);
+});
+
+api.get('/parts/:code/model', async (c) => {
+  const code = c.req.param('code').toUpperCase();
+  if (!LCSC_CODE.test(code)) return c.json({ error: 'Expected an LCSC part number like C25804' }, 400);
+  const model = await modelCache.get(code, async () => {
+    const device = await deviceCache.get(code, () => getDevice(code));
+    return device ? getModel(device) : null;
+  });
+  if (!model) return c.json({ error: `No 3D model for ${code}` }, 404);
+  c.header('cache-control', 'public, max-age=86400');
+  return c.json(model);
 });
 
 api.post('/parts/stock', async (c) => {

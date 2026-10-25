@@ -28,7 +28,15 @@ const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor
 function pcbKey(key: string, e: KeyboardEvent): boolean {
   const s = useEditor.getState();
   const draft = s.routeDraft;
+  // The 3D view only toggles back; editing keys would change the hidden 2D board.
+  if (s.pcb3d) {
+    if (key === '3' || key === 'escape') s.setPcb3d(false);
+    return key === '3' || key === 'escape';
+  }
   switch (key) {
+    case '3':
+      s.setPcb3d(true);
+      return true;
     case 'escape':
       if (draft) finishDraft();
       else if (s.pcbTool !== 'select') s.setPcbTool('select');

@@ -96,6 +96,19 @@ export interface DeviceData {
   image: string | null;
 }
 
+/** A part's 3D model as EasyEDA serves it. */
+export interface PartModel {
+  lcsc: string;
+  title: string;
+  /**
+   * EasyEDA's "3D Model Transform": target size X, Y, Z in mil (0 = keep), rotation X, Y, Z in
+   * degrees, offset X, Y, Z in mil (y up), applied to the model centred on the footprint origin.
+   */
+  transform: number[];
+  /** Wavefront OBJ in millimetres, Z up, with materials inline (newmtl … endmtl). */
+  obj: string;
+}
+
 export interface PartDetail {
   part: PartSummary | null;
   device: DeviceData | null;
