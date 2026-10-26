@@ -128,6 +128,9 @@ interface EditorState {
   /** The ⌘F find box is open. */
   findOpen: boolean;
   setFindOpen: (open: boolean) => void;
+  /** The "Save as block" dialog is open (for the current selection). */
+  saveBlockOpen: boolean;
+  setSaveBlockOpen: (open: boolean) => void;
   /** The PCB editor shows the 3D view instead of the 2D canvas. */
   pcb3d: boolean;
   setPcb3d: (on: boolean) => void;
@@ -281,6 +284,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setBlocksOpen: (blocksOpen) => set({ blocksOpen }),
   findOpen: false,
   setFindOpen: (findOpen) => set({ findOpen }),
+  saveBlockOpen: false,
+  setSaveBlockOpen: (saveBlockOpen) => set({ saveBlockOpen }),
   pcb3d: false,
   setPcb3d: (pcb3d) => set({ pcb3d }),
 

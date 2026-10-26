@@ -125,6 +125,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Delete', shortcut: 'Del', onSelect: deleteSelection },
             { label: 'Select all', shortcut: `${mod}A`, separatorBefore: true, onSelect: selectAll },
             { label: 'Find…', shortcut: `${mod}F`, onSelect: () => s().setFindOpen(true) },
+            { label: 'Save selection as block…', disabled: selectionCount === 0 || mode !== 'schematic', onSelect: () => s().setSaveBlockOpen(true) },
             ...ALIGN_ACTIONS.map((a, i) => ({ label: a.label, separatorBefore: i === 0, disabled: selectionCount < a.min || mode !== 'schematic', onSelect: () => alignSelection(a.mode) })),
           ]}
         />

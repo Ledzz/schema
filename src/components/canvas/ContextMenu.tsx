@@ -118,7 +118,8 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
     { label: 'Copy', shortcut: '⌘C', onSelect: copySelection },
   ];
   const remove: ContextItem = { label: 'Delete', shortcut: 'Del', danger: true, separatorBefore: true, onSelect: deleteSelection };
-  if (count > 1) return { title: `${count} items`, items: [...common, remove] };
+  const saveBlock: ContextItem = { label: 'Save as block…', onSelect: () => s.setSaveBlockOpen(true) };
+  if (count > 1) return { title: `${count} items`, items: [...common, saveBlock, remove] };
 
   const component = project.components.find((c) => c.id === id);
   if (component) {
@@ -133,6 +134,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
         ...(component.partClass === 'extended' ? [{ label: 'Find a no-fee alternative…', onSelect: () => findNoFeeAlternative(component) }] : []),
         ...(hasSupply ? [{ label: 'Add decoupling', onSelect: () => addDecoupling(component.id, { rail: mostUsedRail(project) }).then((r) => s.notify(`Added ${r.caps.length} capacitors`)) }] : []),
         ...(datasheet && /^https?:\/\//.test(datasheet) ? [{ label: 'Open datasheet', onSelect: () => window.open(datasheet, '_blank', 'noopener') }] : []),
+        saveBlock,
         remove,
       ],
     };

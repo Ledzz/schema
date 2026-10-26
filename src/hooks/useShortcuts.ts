@@ -119,7 +119,8 @@ const isEditable = (t: EventTarget | null) =>
 export function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isEditable(e.target)) return;
+      // A dialog (blocks, order sheet…) has the keyboard; the editor behind it must not react.
+      if (isEditable(e.target) || document.querySelector('[role="dialog"]')) return;
       const s = useEditor.getState();
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();

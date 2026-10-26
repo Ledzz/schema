@@ -12,7 +12,7 @@ import { SchematicToolbar, StatusBar, Toast, TopBar } from './components/Chrome'
 import { TooltipLayer } from './components/Tooltip';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
-import { BlocksDialog } from './components/BlocksDialog';
+import { BlocksDialog, SaveBlockDialog } from './components/BlocksDialog';
 import { FindBox } from './components/FindBox';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
@@ -96,6 +96,7 @@ export default function App() {
       <TooltipLayer />
       <OrderDialog />
       <BlocksDialog />
+      <SaveBlockDialog />
     </div>
   );
 }

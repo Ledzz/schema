@@ -65,7 +65,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - ★ Cross-probing between schematic and PCB.
 - Net classes and differential-pair marking.
 - Stricter design check: pin-type conflicts such as two outputs on one net.
-- User-made snippets and templates (built-in circuit blocks exist).
+- Shared team block libraries (your own blocks are saved per browser, with export/import).
 - PDF and print export (SVG only today).
 
 ## Libraries
