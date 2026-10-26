@@ -14,7 +14,7 @@ import { shapeDistance, type CopperItem, type WorldPad } from './geometry';
 import { boardEdges, shapeEdgeDistance } from './outline';
 import { POUR_EDGE_CLEARANCE } from './pour';
 import { designatorLabel, textStroke, strokeFor } from './silk';
-import { emptyPcb, type Pcb } from './types';
+import { copperLayers, emptyPcb, isInner, LAYER_NAMES, type Pcb } from './types';
 
 /** JLCPCB limits used by the checklist (mm). */
 export const JLC = {
@@ -40,6 +40,8 @@ export const JLC = {
   edge: 0.2,
   silkWidth: 0.15,
   textHeight: 1.0,
+  /** 4-layer boards: finer tracks, thinner rings, inner copper kept off the drill holes. */
+  multilayer: { trace: 0.09, spacing: 0.09, pthRing: 0.15, pthRingRecommended: 0.2, boardMax: [663, 593] as const, viaHoleToInner: 0.2, pthHoleToInner: 0.3 },
   /** Economic PCBA (one side, 2–50 boards) and standard PCBA board sizes. */
   economicPcba: { min: 10, max: [470, 500] as const, pitch: 0.4 },
   standardPcba: { min: 70, max: [460, 500] as const, pitch: 0.35 },
@@ -158,6 +160,16 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
   const items: CheckItem[] = [];
   const add = (item: CheckItem) => items.push(item);
   const b = pcb.board;
+  const stack = copperLayers(pcb);
+  const multi = stack.length > 2;
+  // Limits that differ for multilayer boards.
+  const lim = {
+    trace: multi ? JLC.multilayer.trace : JLC.trace,
+    spacing: multi ? JLC.multilayer.spacing : JLC.spacing,
+    pthRing: multi ? JLC.multilayer.pthRing : JLC.pthRing,
+    pthRingRecommended: multi ? JLC.multilayer.pthRingRecommended : JLC.pthRingRecommended,
+    boardMax: multi ? JLC.multilayer.boardMax : JLC.boardMax,
+  };
 
   /* ---------- board ---------- */
   const issues = runDrc(board, pcb, conn);
@@ -174,7 +186,7 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
     at: errors[0]?.at ?? undefined,
     refs: errors[0]?.refs,
   });
-  const [maxW, maxH] = JLC.boardMax;
+  const [maxW, maxH] = lim.boardMax;
   const sizeOk = Math.min(b.width, b.height) >= JLC.boardMin && Math.max(b.width, b.height) <= maxW && Math.min(b.width, b.height) <= maxH;
   add({
     id: 'size',
@@ -184,6 +196,18 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
     value: `${b.width} × ${b.height} mm`,
     limit: `${JLC.boardMin} × ${JLC.boardMin} mm to ${maxW} × ${maxH} mm`,
   });
+  if (multi) {
+    const planes = (pcb.pours ?? []).filter((p) => !p.outline && p.layer !== 'top' && p.layer !== 'bottom');
+    add({
+      id: 'stack',
+      group: 'Board',
+      title: 'Layer stack',
+      status: planes.length ? 'info' : 'warn',
+      value: stack.map((l) => `${LAYER_NAMES[l]}${planes.find((p) => p.layer === l) ? ` (${planes.find((p) => p.layer === l)!.net} plane)` : ''}`).join(', '),
+      limit: "4 layers on JLCPCB's default stackup, 1.6 mm",
+      detail: planes.length ? undefined : 'No inner plane yet: a GND plane on Inner 1 is what makes 4 layers worth it.',
+    });
+  }
 
   /* ---------- copper ---------- */
   const tracks = pcb.tracks;
@@ -193,9 +217,9 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
       id: 'trace',
       group: 'Copper',
       title: 'Track width',
-      status: thin.width < JLC.trace - 1e-6 ? 'fail' : thin.width < JLC.traceComfort - 1e-6 ? 'warn' : 'pass',
+      status: thin.width < lim.trace - 1e-6 ? 'fail' : thin.width < JLC.traceComfort - 1e-6 ? 'warn' : 'pass',
       value: `thinnest ${mm(thin.width)}`,
-      limit: `≥ ${mm(JLC.trace)} (keep ≥ ${mm(JLC.traceComfort)} where you can)`,
+      limit: `≥ ${mm(lim.trace)} (keep ≥ ${mm(JLC.traceComfort)} where you can)`,
       detail: thin.width < JLC.traceComfort ? 'Widen the thinnest tracks, or accept the tighter etching tolerance.' : undefined,
       at: thin.points[0],
       refs: [thin.id],
@@ -208,10 +232,10 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
     id: 'spacing',
     group: 'Copper',
     title: 'Copper spacing',
-    status: gap < JLC.spacing - 1e-6 ? 'fail' : 'pass',
+    status: gap < lim.spacing - 1e-6 ? 'fail' : 'pass',
     value: gap === Infinity ? 'no copper of different nets within 0.5 mm' : spacing.gap <= pourGap ? `closest ${mm(spacing.gap)} (${spacing.what})` : `closest ${mm(pourGap)} (pour clearance)`,
-    limit: `≥ ${mm(JLC.spacing)} between tracks, pads and pours of different nets`,
-    detail: gap < JLC.spacing ? 'Move the copper apart; footprints with pads closer than this cannot be made either.' : undefined,
+    limit: `≥ ${mm(lim.spacing)} between tracks, pads and pours of different nets`,
+    detail: gap < lim.spacing ? 'Move the copper apart; footprints with pads closer than this cannot be made either.' : undefined,
     at: spacing.gap <= pourGap ? spacing.at : undefined,
     refs: spacing.gap <= pourGap ? spacing.refs : undefined,
   });
@@ -234,8 +258,8 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
   });
   const r = pcb.rules;
   const ruleProblems = [
-    r.clearance < JLC.spacing && `clearance ${mm(r.clearance)}`,
-    Math.min(r.trackWidth, r.minTrackWidth) < JLC.trace && `track width ${mm(Math.min(r.trackWidth, r.minTrackWidth))}`,
+    r.clearance < lim.spacing && `clearance ${mm(r.clearance)}`,
+    Math.min(r.trackWidth, r.minTrackWidth) < lim.trace && `track width ${mm(Math.min(r.trackWidth, r.minTrackWidth))}`,
     r.viaDrill < JLC.viaDrill && `via drill ${mm(r.viaDrill)}`,
     r.viaDiameter - r.viaDrill < JLC.viaRingDiff - 1e-6 && `via ${mm(r.viaDiameter)} on a ${mm(r.viaDrill)} drill`,
   ].filter((x): x is string => !!x);
@@ -282,10 +306,10 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
       id: 'pth',
       group: 'Drills',
       title: 'Plated through-holes',
-      status: badDrill.length || worst.ring < JLC.pthRing - 1e-6 ? 'fail' : worst.ring < JLC.pthRingRecommended - 1e-6 ? 'warn' : 'pass',
+      status: badDrill.length || worst.ring < lim.pthRing - 1e-6 ? 'fail' : worst.ring < lim.pthRingRecommended - 1e-6 ? 'warn' : 'pass',
       value: `${pth.length} holes, thinnest ring ${mm(worst.ring)} (${padName(worst.pad)})`,
-      limit: `drill ${JLC.pthDrill[0]}–${JLC.pthDrill[1]} mm, slots ≥ ${mm(JLC.platedSlot)} wide; copper ring ≥ ${mm(JLC.pthRing)} (≥ ${mm(JLC.pthRingRecommended)} recommended)`,
-      detail: badDrill.length ? `Drill out of range at ${list(badDrill.map((x) => padName(x.pad)))}.` : worst.ring < JLC.pthRingRecommended ? 'The footprint has a thin ring; it is usually fine, but a larger pad is safer.' : undefined,
+      limit: `drill ${JLC.pthDrill[0]}–${JLC.pthDrill[1]} mm, slots ≥ ${mm(JLC.platedSlot)} wide; copper ring ≥ ${mm(lim.pthRing)} (≥ ${mm(lim.pthRingRecommended)} recommended)`,
+      detail: badDrill.length ? `Drill out of range at ${list(badDrill.map((x) => padName(x.pad)))}.` : worst.ring < lim.pthRingRecommended ? 'The footprint has a thin ring; it is usually fine, but a larger pad is safer.' : undefined,
       at: worst.pad.center,
       refs: [worst.pad.componentId],
     });
@@ -330,6 +354,34 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
       at: tight.a.center,
       refs: [tight.a.ref, tight.b.ref].filter((r): r is string => !!r),
     });
+  }
+
+  if (multi && all.length) {
+    // Inner copper of other nets must stay clear of every drill hole.
+    const inner = board.items.filter((it) => it.layers.some(isInner));
+    const netOf = (it: CopperItem) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net));
+    let worst = { slack: Infinity, gap: 0, need: 0, hole: all[0], what: '' };
+    for (const h of all) {
+      const need = h.kind === 'via' ? JLC.multilayer.viaHoleToInner : JLC.multilayer.pthHoleToInner;
+      const drill = { kind: 'capsule' as const, a: h.center, b: h.center, r: (h.d + h.len) / 2 };
+      for (const it of inner) {
+        if (netOf(it) !== null && netOf(it) === h.net) continue;
+        if (it.type === 'via' && it.ref === h.ref) continue;
+        if (it.type === 'pad' && it.ref.startsWith(`${h.ref}:`) && it.box.x1 <= h.center[0] && it.box.x2 >= h.center[0] && it.box.y1 <= h.center[1] && it.box.y2 >= h.center[1]) continue;
+        const gap = shapeDistance(drill, it.shape);
+        if (gap - need < worst.slack) worst = { slack: gap - need, gap, need, hole: h, what: it.type };
+      }
+    }
+    if (worst.slack < Infinity)
+      add({
+        id: 'innerholes',
+        group: 'Drills',
+        title: 'Inner layers clear of holes',
+        status: worst.slack < -1e-6 ? 'fail' : 'pass',
+        value: `closest ${mm(worst.gap)} (${worst.what} to ${worst.hole.name})`,
+        limit: `inner copper ≥ ${mm(JLC.multilayer.viaHoleToInner)} from via holes, ≥ ${mm(JLC.multilayer.pthHoleToInner)} from pad holes`,
+        at: worst.hole.center,
+      });
   }
 
   /* ---------- silkscreen ---------- */

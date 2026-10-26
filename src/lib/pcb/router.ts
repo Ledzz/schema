@@ -19,7 +19,6 @@ export interface RouteResult {
 }
 
 const STEP = 0.25;
-const LAYERS: CopperLayer[] = ['top', 'bottom'];
 const DIRS: [number, number][] = [
   [1, 0],
   [1, 1],
@@ -96,6 +95,8 @@ export interface RouteOptions {
   edges?: EdgeField;
   /** Areas tracks or vias must not enter. */
   keepouts?: Pick<Keepout, 'outline' | 'layers' | 'tracks' | 'vias'>[];
+  /** Layers the route may use (default top and bottom); a via joins all of them. */
+  layers?: CopperLayer[];
   /**
    * Drilled holes already on the board. New vias keep JLCPCB's hole spacing from all of them, of
    * any net; a layer change exactly on a via of this net reuses it instead of adding one.
@@ -159,14 +160,18 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   const y1 = Math.min(board.y + board.height, Math.max(from.point[1], to.point[1]) + margin);
   const cols = Math.floor((x1 - x0) / STEP) + 1;
   const rows = Math.floor((y1 - y0) / STEP) + 1;
-  // 16 search states per cell; keep memory around 20 MB.
-  if (cols < 2 || rows < 2 || cols * rows > 150_000) return null;
+  const LAYERS = opt.layers ?? (['top', 'bottom'] as CopperLayer[]);
+  const L = LAYERS.length;
+  /** Index of a layer in the routing stack, or -1 when the route may not use it. */
+  const li = (l: CopperLayer) => LAYERS.indexOf(l);
+  // 8 search states per cell and layer; keep memory around 20 MB.
+  if (cols < 2 || rows < 2 || cols * rows * L > 300_000) return null;
   const cells = cols * rows;
   const cx = (i: number) => x0 + (i % cols) * STEP;
   const cy = (i: number) => y0 + Math.floor(i / cols) * STEP;
 
-  // blocked[layer][cell]; viaBlocked[cell] (a via needs room on both layers).
-  const blocked = [new Uint8Array(cells), new Uint8Array(cells)];
+  // blocked[layer][cell]; viaBlocked[cell] (a via needs room on every layer).
+  const blocked = LAYERS.map(() => new Uint8Array(cells));
   const viaBlocked = new Uint8Array(cells);
   const trackInflate = rules.clearance + width / 2;
   const viaInflate = rules.clearance + rules.viaDiameter / 2;
@@ -175,7 +180,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     const x = cx(i);
     const y = cy(i);
     const de = opt.edges ? fieldAt(opt.edges, x, y) : Math.min(x - board.x, y - board.y, board.x + board.width - x, board.y + board.height - y);
-    if (de < edge) blocked[0][i] = blocked[1][i] = 1;
+    if (de < edge) for (const b of blocked) b[i] = 1;
     if (de < rules.viaDiameter / 2 + 0.25) viaBlocked[i] = 1;
   }
   for (const k of opt.keepouts ?? []) {
@@ -192,7 +197,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       for (let ix = ix0; ix <= ix1; ix++) {
         const i = iy * cols + ix;
         const d = pointShapeDistance([x0 + ix * STEP, y0 + iy * STEP], area);
-        if (k.tracks && d < width / 2 + 0.05) for (const l of k.layers) blocked[l === 'top' ? 0 : 1][i] = 1;
+        if (k.tracks && d < width / 2 + 0.05) for (const l of k.layers) if (li(l) >= 0) blocked[li(l)][i] = 1;
         if (k.vias && d < rules.viaDiameter / 2 + 0.05) viaBlocked[i] = 1;
       }
   }
@@ -218,15 +223,16 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       for (let ix = ix0; ix <= ix1; ix++) {
         const i = iy * cols + ix;
         const d = pointShapeDistance([x0 + ix * STEP, y0 + iy * STEP], it.shape);
-        if (d < trackInflate) for (const l of it.layers) blocked[l === 'top' ? 0 : 1][i] = 1;
+        if (d < trackInflate) for (const l of it.layers) if (li(l) >= 0) blocked[li(l)][i] = 1;
         if (d < viaInflate) viaBlocked[i] = 1;
       }
     }
   }
 
-  const avoided = [new Uint8Array(cells), new Uint8Array(cells)];
+  const avoided = LAYERS.map(() => new Uint8Array(cells));
   for (const area of opt.avoid ?? []) {
-    const l = area.layer === 'top' ? 0 : 1;
+    const l = li(area.layer);
+    if (l < 0) continue;
     for (const outline of area.outlines) {
       const xs = outline.map((p) => p[0]);
       const ys = outline.map((p) => p[1]);
@@ -271,11 +277,11 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   };
   const start = cellOf(from.point);
   const goal = cellOf(to.point);
-  const goalLayers = new Set<number>(to.layers.map((l) => (l === 'top' ? 0 : 1)));
+  const goalLayers = new Set<number>(to.layers.map(li).filter((l) => l >= 0));
   // Endpoints sit on their own pads, so they are always allowed.
-  for (const l of [0, 1]) {
-    blocked[l][start] = 0;
-    blocked[l][goal] = 0;
+  for (const b of blocked) {
+    b[start] = 0;
+    b[goal] = 0;
   }
 
   const SQRT2 = Math.SQRT2;
@@ -283,7 +289,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   const VIA = 12;
   /** Extra cost per step inside an avoided area (a step costs 1). */
   const AVOID = 4;
-  const N = cells * 2 * 8;
+  const N = cells * L * 8;
   const cost = new Float32Array(N).fill(Infinity);
   const prev = new Int32Array(N).fill(-1);
   const heap = new Heap();
@@ -294,9 +300,10 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     const dy = Math.abs(Math.floor(c / cols) - gy);
     return Math.max(dx, dy) + (SQRT2 - 1) * Math.min(dx, dy);
   };
-  const state = (c: number, l: number, d: number) => (c * 2 + l) * 8 + d;
+  const state = (c: number, l: number, d: number) => (c * L + l) * 8 + d;
   for (const layer of from.layers) {
-    const l = layer === 'top' ? 0 : 1;
+    const l = li(layer);
+    if (l < 0) continue;
     for (let d = 0; d < 8; d++) {
       const s = state(start, l, d);
       cost[s] = 0;
@@ -308,8 +315,8 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   while (heap.size) {
     const s = heap.pop();
     const d = s % 8;
-    const l = Math.floor(s / 8) % 2;
-    const c = Math.floor(s / 16);
+    const l = Math.floor(s / 8) % L;
+    const c = Math.floor(s / (8 * L));
     if (c === goal && goalLayers.has(l)) {
       found = s;
       break;
@@ -335,10 +342,10 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
         heap.push(cost[ns] + h(nc), ns);
       }
     }
-    // Change layer through a via.
+    // Change layer through a via (drilled through, so it reaches every layer).
     if (!viaBlocked[c] && c !== start) {
-      const nl = 1 - l;
-      if (!blocked[nl][c]) {
+      for (let nl = 0; nl < L; nl++) {
+        if (nl === l || blocked[nl][c]) continue;
         const ns = state(c, nl, d);
         const step = reuse.has(c) ? 1 : VIA;
         if (base + step < cost[ns]) {
@@ -354,8 +361,8 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   // Walk back and split into per-layer polylines and vias.
   const path: { p: Vec; l: number; c: number }[] = [];
   for (let s = found; s >= 0; s = prev[s]) {
-    const c = Math.floor(s / 16);
-    path.push({ p: [Math.round(cx(c) * 1000) / 1000, Math.round(cy(c) * 1000) / 1000], l: Math.floor(s / 8) % 2, c });
+    const c = Math.floor(s / (8 * L));
+    path.push({ p: [Math.round(cx(c) * 1000) / 1000, Math.round(cy(c) * 1000) / 1000], l: Math.floor(s / 8) % L, c });
   }
   path.reverse();
   const tracks: RouteResult['tracks'] = [];

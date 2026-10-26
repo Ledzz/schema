@@ -108,13 +108,14 @@ function padShape(pl: Placement, pad: PadGeom, center: Vec, outline: Vec[]): Cop
   return { kind: 'poly', points: outline };
 }
 
-export function padLayers(pl: Placement, pad: PadGeom): CopperLayer[] {
-  if (pad.layer === 'through') return ['top', 'bottom'];
+/** Copper layers a pad is on: through-hole pads span the whole stack. */
+export function padLayers(pl: Placement, pad: PadGeom, stack: readonly CopperLayer[] = ['top', 'bottom']): CopperLayer[] {
+  if (pad.layer === 'through') return [...stack];
   const onTop = pad.layer === 'top';
   return [(pl.side === 'top') === onTop ? 'top' : 'bottom'];
 }
 
-export function worldPads(pl: Placement, fp: FootprintGeom, designator: string, padNet: (number: string) => string | null): WorldPad[] {
+export function worldPads(pl: Placement, fp: FootprintGeom, designator: string, padNet: (number: string) => string | null, stack: readonly CopperLayer[] = ['top', 'bottom']): WorldPad[] {
   return fp.pads.map((pad, index) => {
     const center = placementToWorld(pl, [pad.x, pad.y]);
     const outline = padOutline(pl, pad);
@@ -135,7 +136,7 @@ export function worldPads(pl: Placement, fp: FootprintGeom, designator: string, 
       center,
       rotation: padWorldRotation(pl, pad),
       pad,
-      layers: padLayers(pl, pad),
+      layers: padLayers(pl, pad, stack),
       outline,
       shape: padShape(pl, pad, center, outline),
       hole,
@@ -266,9 +267,10 @@ export function trackItems(t: Track): CopperItem[] {
   });
 }
 
-export function viaItem(v: Via): CopperItem {
+/** A via: drilled through, so on every layer of the stack. */
+export function viaItem(v: Via, stack: readonly CopperLayer[] = ['top', 'bottom']): CopperItem {
   const shape: CopperShape = { kind: 'capsule', a: [v.x, v.y], b: [v.x, v.y], r: v.diameter / 2 };
-  return { key: `v:${v.id}`, type: 'via', ref: v.id, layers: ['top', 'bottom'], net: v.net, shape, box: shapeBox(shape) };
+  return { key: `v:${v.id}`, type: 'via', ref: v.id, layers: [...stack], net: v.net, shape, box: shapeBox(shape) };
 }
 
 export function padItem(p: WorldPad): CopperItem {

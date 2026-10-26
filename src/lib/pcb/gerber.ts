@@ -7,7 +7,7 @@ import type { BoardModel } from './board';
 import { padOutline, rotateDeg, type WorldPad } from './geometry';
 import { boardEdges } from './outline';
 import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
-import type { Board, CopperLayer, Pcb } from './types';
+import { copperLayers, isInner, sideOfLayer, type Board, type CopperLayer, type Pcb, type Side } from './types';
 
 export interface FabFile {
   name: string;
@@ -102,11 +102,16 @@ function emitPad(g: Gerber, pad: WorldPad, grow: number, pcbPlacement: Parameter
 }
 
 
+/** Gerber file suffix for each copper layer (KiCad's names, which JLCPCB recognises). */
+const COPPER_FILES: Record<CopperLayer, string> = { top: 'F_Cu.gtl', inner1: 'In1_Cu.g2', inner2: 'In2_Cu.g3', bottom: 'B_Cu.gbl' };
+
 export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): FabFile[] {
   const b = pcb.board;
+  const stack = copperLayers(pcb);
+  const n = stack.length;
+  const copperFunction = (l: CopperLayer, i: number) => `Copper,L${i + 1},${l === 'top' ? 'Top' : l === 'bottom' ? 'Bot' : 'Inr'}`;
   const layers: Record<string, Gerber> = {
-    'F_Cu.gtl': new Gerber('Copper,L1,Top', 'Positive', b),
-    'B_Cu.gbl': new Gerber('Copper,L2,Bot', 'Positive', b),
+    ...Object.fromEntries(stack.map((l, i) => [COPPER_FILES[l], new Gerber(copperFunction(l, i), 'Positive', b)])),
     'F_Mask.gts': new Gerber('Soldermask,Top', 'Negative', b),
     'B_Mask.gbs': new Gerber('Soldermask,Bot', 'Negative', b),
     'F_Paste.gtp': new Gerber('Paste,Top', 'Positive', b),
@@ -115,9 +120,9 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     'B_Silkscreen.gbo': new Gerber('Legend,Bot', 'Positive', b),
     'Edge_Cuts.gm1': new Gerber('Profile,NP', 'Positive', b),
   };
-  const copper = (l: CopperLayer) => layers[l === 'top' ? 'F_Cu.gtl' : 'B_Cu.gbl'];
-  const mask = (l: CopperLayer) => layers[l === 'top' ? 'F_Mask.gts' : 'B_Mask.gbs'];
-  const paste = (l: CopperLayer) => layers[l === 'top' ? 'F_Paste.gtp' : 'B_Paste.gbp'];
+  const copper = (l: CopperLayer) => layers[COPPER_FILES[l]];
+  const mask = (l: Side) => layers[l === 'top' ? 'F_Mask.gts' : 'B_Mask.gbs'];
+  const paste = (l: Side) => layers[l === 'top' ? 'F_Paste.gtp' : 'B_Paste.gbp'];
 
   // Pours first: each area dark, its holes cleared, so pads and tracks drawn later stay intact.
   for (const f of board.fills) {
@@ -149,8 +154,10 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     for (const pad of part.pads) {
       for (const l of pad.layers) {
         emitPad(copper(l), pad, 0, part.placement);
-        emitPad(mask(l), pad, pcb.rules.maskExpansion, part.placement);
-        if (pad.pad.layer !== 'through') emitPad(paste(l), pad, 0, part.placement);
+        // Mask and paste exist only on the outer faces.
+        if (isInner(l)) continue;
+        emitPad(mask(sideOfLayer(l)), pad, pcb.rules.maskExpansion, part.placement);
+        if (pad.pad.layer !== 'through') emitPad(paste(sideOfLayer(l)), pad, 0, part.placement);
       }
     }
     for (const gfx of part.graphics) {
@@ -169,11 +176,8 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     const silk = layers[t.side === 'top' ? 'F_Silkscreen.gto' : 'B_Silkscreen.gbo'];
     for (const s of textItemStrokes(t)) silk.stroke(textStroke(t), s);
   }
-  for (const t of pcb.tracks) copper(t.layer).stroke(t.width, t.points);
-  for (const v of pcb.vias) {
-    copper('top').circle(v.diameter, [v.x, v.y]);
-    copper('bottom').circle(v.diameter, [v.x, v.y]);
-  }
+  for (const t of pcb.tracks) if (stack.includes(t.layer)) copper(t.layer).stroke(t.width, t.points);
+  for (const v of pcb.vias) for (const l of stack) copper(l).circle(v.diameter, [v.x, v.y]);
   // Outline and milled cutouts on the profile layer; mounting holes are drilled (NPTH file).
   const edges = boardEdges(pcb);
   for (const poly of [edges.outline, ...edges.cutouts]) layers['Edge_Cuts.gm1'].stroke(0.1, poly);
@@ -184,17 +188,17 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
   return [
     ...Object.entries(layers).map(([suffix, g]) => ({ name: `${baseName}-${suffix}`, content: g.toString() })),
     { name: `${baseName}.drl`, content: generateDrill(pcb, board) },
-    ...(pcb.holes?.length ? [{ name: `${baseName}-NPTH.drl`, content: generateNpthDrill(pcb) }] : []),
+    ...(pcb.holes?.length ? [{ name: `${baseName}-NPTH.drl`, content: generateNpthDrill(pcb, n) }] : []),
   ];
 }
 
 /** Excellon file for the non-plated mounting holes. */
-export function generateNpthDrill(pcb: Pcb): string {
+export function generateNpthDrill(pcb: Pcb, layerCount = 2): string {
   const b = pcb.board;
   const xy = (x: number, y: number) => `X${(x - b.x).toFixed(3)}Y${(b.y + b.height - y).toFixed(3)}`;
   const holes = pcb.holes ?? [];
   const tools = [...new Set(holes.map((h) => h.diameter.toFixed(3)))].sort((a, c) => Number(a) - Number(c));
-  const lines = ['M48', '; DRILL file {Schematics} non-plated holes', '; #@! TF.FileFunction,NonPlated,1,2,NPTH', 'FMAT,2', 'METRIC,TZ'];
+  const lines = ['M48', '; DRILL file {Schematics} non-plated holes', `; #@! TF.FileFunction,NonPlated,1,${layerCount},NPTH`, 'FMAT,2', 'METRIC,TZ'];
   tools.forEach((d, i) => lines.push(`T${i + 1}C${d}`));
   lines.push('%', 'G90', 'G05');
   tools.forEach((d, i) => {

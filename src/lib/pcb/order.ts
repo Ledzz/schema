@@ -25,6 +25,8 @@ export interface OrderSummary {
   ready: boolean;
   width: number;
   height: number;
+  /** Copper layers. */
+  layers: number;
   errors: string[];
   warnings: string[];
   partCount: number;
@@ -49,6 +51,7 @@ export function orderSummary(project: Project, opts: OrderOptions): OrderSummary
       ready: false,
       width: 0,
       height: 0,
+      layers: 2,
       errors: ['The board is empty: switch to the PCB editor and update it from the schematic first.'],
       warnings: [],
       partCount: 0,
@@ -73,6 +76,7 @@ export function orderSummary(project: Project, opts: OrderOptions): OrderSummary
     checklist,
     width: pcb.board.width,
     height: pcb.board.height,
+    layers: pcb.board.layers ?? 2,
     errors,
     warnings: issues.filter((i) => i.severity === 'warning').map((i) => i.message),
     partCount: placed.length,

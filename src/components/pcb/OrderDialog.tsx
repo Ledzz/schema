@@ -41,7 +41,7 @@ function OrderSheet() {
       Drop <File name={`${base}-gerbers.zip`} /> on <b>Add gerber file</b>.
     </>,
     <>
-      Check <b>Layers 2</b>, <b>{summary.width} × {summary.height} mm</b> (read from the Gerbers), <b>PCB Qty {opts.quantity}</b>, thickness <b>1.6 mm</b> and{' '}
+      Check <b>Layers {summary.layers}</b>, <b>{summary.width} × {summary.height} mm</b> (read from the Gerbers), <b>PCB Qty {opts.quantity}</b>, thickness <b>1.6 mm</b> and{' '}
       <b>Via Covering: Tented</b>
       {summary.viasInPads && <> (or Epoxy Filled &amp; Capped, at extra cost, so solder can't wick into the thermal vias)</>}. Leave the rest at JLCPCB's defaults.
     </>,
@@ -94,7 +94,7 @@ function OrderSheet() {
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
               <span className="text-muted">Board</span>
               <span>
-                {summary.width} × {summary.height} mm · 2 layers · FR-4 1.6 mm
+                {summary.width} × {summary.height} mm · {summary.layers} layers · FR-4 1.6 mm
               </span>
               <span className="text-muted">Parts</span>
               <span>

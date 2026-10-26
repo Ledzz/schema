@@ -19,7 +19,8 @@ import { focusLibrarySearch } from '../lib/libraryFocus';
 import { saveDesign } from '../lib/designs';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
-import { deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
+import { currentPcb, deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
+import { copperLayers } from '../lib/pcb/types';
 import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
 
 const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
@@ -32,6 +33,14 @@ function pcbKey(key: string, e: KeyboardEvent): boolean {
   if (s.pcb3d) {
     if (key === '3' || key === 'escape') s.setPcb3d(false);
     return key === '3' || key === 'escape';
+  }
+  // Shift+1 / Shift+2: the inner layers of a 4-layer board (by key position, whatever the layout).
+  if (e.shiftKey && (e.code === 'Digit1' || e.code === 'Digit2')) {
+    const layer = e.code === 'Digit1' ? 'inner1' : 'inner2';
+    if (!copperLayers(currentPcb()).includes(layer)) return false;
+    if (draft) viaInDraft(layer);
+    else s.setActiveLayer(layer);
+    return true;
   }
   switch (key) {
     case '3':

@@ -5,7 +5,7 @@
  */
 import type { Vec } from '../schematic/types';
 import { boardOutline, pointInPolygon, pointSegDist, shapeDistance, type CopperShape } from './geometry';
-import type { Board, Keepout, MountingHole, Pcb } from './types';
+import { copperLayers, type Board, type CopperLayer, type Keepout, type MountingHole, type Pcb } from './types';
 
 export interface BoardEdges {
   outline: Vec[];
@@ -76,13 +76,14 @@ export function shapeEdgeDistance(shape: CopperShape, edges: BoardEdges): number
   return best;
 }
 
-/** Drawn keepouts plus the free ring around every mounting hole. */
-export function keepoutAreas(pcb: Pick<Pcb, 'keepouts' | 'holes'>): Keepout[] {
+/** Drawn keepouts plus the free ring around every mounting hole (on every copper layer). */
+export function keepoutAreas(pcb: Pick<Pcb, 'keepouts' | 'holes'> & Partial<Pick<Pcb, 'board'>>): Keepout[] {
+  const layers = pcb.board ? copperLayers({ board: pcb.board }) : (['top', 'bottom'] as CopperLayer[]);
   const rings = (pcb.holes ?? []).map(
     (h: MountingHole): Keepout => ({
       id: h.id,
       outline: circlePolygon([h.x, h.y], Math.max(h.keepout, h.diameter) / 2),
-      layers: ['top', 'bottom'],
+      layers,
       tracks: true,
       vias: true,
       pours: true,

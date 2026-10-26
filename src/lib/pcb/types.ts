@@ -2,7 +2,26 @@ import type { Vec } from '../schematic/types';
 
 /** PCB units are millimetres, y grows downwards (screen convention). */
 
-export type CopperLayer = 'top' | 'bottom';
+/** A face of the board: where parts, silkscreen, mask and paste are. */
+export type Side = 'top' | 'bottom';
+
+/** Copper layers from top to bottom; the inner ones exist only on 4-layer boards. */
+export type CopperLayer = 'top' | 'inner1' | 'inner2' | 'bottom';
+
+export const LAYER_STACKS = {
+  2: ['top', 'bottom'],
+  4: ['top', 'inner1', 'inner2', 'bottom'],
+} as const satisfies Record<number, readonly CopperLayer[]>;
+
+/** The board's copper layers, top to bottom. */
+export const copperLayers = (pcb: Pick<Pcb, 'board'>): CopperLayer[] => [...LAYER_STACKS[pcb.board.layers ?? 2]];
+
+export const isInner = (l: CopperLayer) => l === 'inner1' || l === 'inner2';
+
+/** The board side a layer belongs to; inner layers count as top for new silkscreen. */
+export const sideOfLayer = (l: CopperLayer): Side => (l === 'bottom' ? 'bottom' : 'top');
+
+export const LAYER_NAMES: Record<CopperLayer, string> = { top: 'Top', inner1: 'Inner 1', inner2: 'Inner 2', bottom: 'Bottom' };
 
 export interface Placement {
   componentId: string;
@@ -10,8 +29,8 @@ export interface Placement {
   y: number;
   /** Counter-clockwise degrees as seen from the top. */
   rotation: number;
-  side: CopperLayer;
-  /** Designator overrides; without them it sits centred above the part, 0.8 mm high. */
+  side: Side;
+  /** Designator overrides; without them it sits centred above the part, 1 mm high. */
   label?: DesignatorLabel;
 }
 
@@ -38,7 +57,7 @@ export interface SilkText {
   size: number;
   /** Degrees counter-clockwise. */
   rotation: number;
-  side: CopperLayer;
+  side: Side;
   /** Line width in mm (default from the size). */
   stroke?: number;
 }
@@ -54,7 +73,7 @@ export interface SilkLogo {
   width: number;
   height: number;
   rotation: number;
-  side: CopperLayer;
+  side: Side;
   /** Filled shapes in a unit frame: centred on 0, 1 wide. */
   shapes: { outer: Vec[]; holes: Vec[][] }[];
 }
@@ -110,6 +129,8 @@ export interface Board {
   height: number;
   /** Rounds the rectangle's corners, or every corner of a custom outline. */
   cornerRadius: number;
+  /** Copper layer count (default 2). */
+  layers?: 2 | 4;
   /** Custom outline, a closed polygon in mm; x/y/width/height are then its bounding box. */
   outline?: Vec[];
   /** Openings milled through the board. */

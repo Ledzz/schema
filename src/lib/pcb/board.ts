@@ -18,7 +18,7 @@ import {
   type CopperItem,
   type WorldPad,
 } from './geometry';
-import type { CopperLayer, Pcb, Placement, StoredFootprint } from './types';
+import { copperLayers, type CopperLayer, type Pcb, type Placement, type StoredFootprint } from './types';
 
 const parsed = new WeakMap<StoredFootprint, FootprintGeom>();
 
@@ -70,6 +70,7 @@ export function schematicPinNets(project: Project): Map<string, Map<string, stri
 
 export function buildBoard(project: Project, pcb: Pcb): BoardModel {
   const pinNets = schematicPinNets(project);
+  const stack = copperLayers(pcb);
   const byId = new Map(project.components.map((c) => [c.id, c]));
   const parts: BoardPart[] = [];
   const missingFootprints: Component[] = [];
@@ -89,12 +90,14 @@ export function buildBoard(project: Project, pcb: Pcb): BoardModel {
       component,
       fp,
       box: placementBox(placement, fp),
-      pads: worldPads(placement, fp, component.designator, (n) => nets?.get(n) ?? null),
+      pads: worldPads(placement, fp, component.designator, (n) => nets?.get(n) ?? null, stack),
       graphics: worldGraphics(placement, fp),
     });
   }
   const pads = parts.flatMap((p) => p.pads);
-  const items = [...pads.map(padItem), ...pcb.tracks.flatMap(trackItems), ...pcb.vias.map(viaItem)];
+  // Tracks on layers the board doesn't have (left over from a 4-layer setup) are ignored.
+  const tracks = pcb.tracks.filter((t) => stack.includes(t.layer));
+  const items = [...pads.map(padItem), ...tracks.flatMap(trackItems), ...pcb.vias.map((v) => viaItem(v, stack))];
   const edges = boardEdges(pcb);
   const keepouts = keepoutAreas(pcb);
   // Zones (pours with an outline) fill first and take priority over whole-board pours.
@@ -153,6 +156,11 @@ export interface PcbConnectivity {
   shorts: Short[];
   /** track/via id -> net reached through copper */
   itemNet: Map<string, string>;
+  /**
+   * The copper island a node belongs to: `p:<componentId>:<pad index>` for pads, `z:<pour id>:<area
+   * index>` for pour areas, `t:<id>` / `v:<id>` for tracks and vias. Equal results mean connected.
+   */
+  island: (node: string) => string;
 }
 
 const nodeOf = (it: CopperItem) => (it.type === 'pad' ? `p:${it.ref}` : it.type === 'via' ? `v:${it.ref}` : `t:${it.ref}`);
@@ -167,6 +175,7 @@ function endpointTouches(p: Vec, layer: CopperLayer, it: CopperItem): boolean {
 export function pcbConnectivity(board: BoardModel, pcb: Pcb): PcbConnectivity {
   const uf = new UnionFind();
   const items = board.items;
+  const stack = copperLayers(pcb);
 
   // Track ends connect to whatever copper they land on; vias connect to pads/tracks they sit on.
   for (const t of pcb.tracks) {
@@ -182,7 +191,8 @@ export function pcbConnectivity(board: BoardModel, pcb: Pcb): PcbConnectivity {
   for (const v of pcb.vias) {
     for (const it of items) {
       if (it.type === 'via' && it.ref === v.id) continue;
-      if (endpointTouches([v.x, v.y], 'top', it) || endpointTouches([v.x, v.y], 'bottom', it)) uf.union(`v:${v.id}`, nodeOf(it));
+      // A via is drilled through, so it joins copper on any layer.
+      if (stack.some((l) => endpointTouches([v.x, v.y], l, it))) uf.union(`v:${v.id}`, nodeOf(it));
     }
   }
 
@@ -243,7 +253,7 @@ export function pcbConnectivity(board: BoardModel, pcb: Pcb): PcbConnectivity {
     }
     for (const v of pcb.vias) {
       const r = uf.find(`v:${v.id}`);
-      if (islands.has(r)) islands.get(r)!.push({ p: [v.x, v.y], layers: ['top', 'bottom'] });
+      if (islands.has(r)) islands.get(r)!.push({ p: [v.x, v.y], layers: stack });
     }
     const groups = [...islands.values()];
     const connected = new Set([0]);
@@ -265,5 +275,5 @@ export function pcbConnectivity(board: BoardModel, pcb: Pcb): PcbConnectivity {
     }
     unrouted.set(net, groups.length - 1);
   }
-  return { airwires, unrouted, shorts, itemNet };
+  return { airwires, unrouted, shorts, itemNet, island: (node) => uf.find(node) };
 }

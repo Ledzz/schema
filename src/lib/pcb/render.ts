@@ -11,10 +11,10 @@ import { textStrokes } from './font';
 import { boardSvgPath } from './outline';
 import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
 import { areasToSvgPath } from './pour';
-import type { CopperLayer, Pcb } from './types';
+import { copperLayers, isInner, type CopperLayer, type Pcb, type Side } from './types';
 
 export interface RenderOptions {
-  /** Copper layers to draw: both (top over bottom, the default), or one side alone. */
+  /** Copper layers to draw: all of them ('both', top over the rest, the default), or one alone. */
   layers?: 'both' | CopperLayer;
   /** Draw this net bright and fade everything else. */
   highlightNet?: string | null;
@@ -27,6 +27,8 @@ const COLORS = {
   board: '#14301f',
   edge: '#facc15',
   top: '#e5483d',
+  inner1: '#e3a32b',
+  inner2: '#2fbf71',
   bottom: '#3d7bf0',
   tht: '#c9a33f',
   hole: '#0b0d10',
@@ -59,7 +61,7 @@ function hole(h: { center: Vec; w: number; h: number; rotation: number }): strin
 }
 
 /** Free text and logos on one side, as SVG elements. */
-function freeSilk(pcb: Pcb, side: CopperLayer, color: string): string[] {
+function freeSilk(pcb: Pcb, side: Side, color: string): string[] {
   const out: string[] = [];
   for (const l of (pcb.logos ?? []).filter((l) => l.side === side)) out.push(`<path d="${areasToSvgPath(logoAreas(l))}" fill-rule="evenodd" fill="${color}"/>`);
   for (const t of (pcb.texts ?? []).filter((t) => t.side === side)) out.push(strokes(textItemStrokes(t), color, textStroke(t)));
@@ -78,7 +80,7 @@ const FINISH = {
  * One face of the finished board as seen from above (the bottom face is not mirrored), sized to
  * the board outline, for texturing the 3D view. Vias are tented, so they show as copper under mask.
  */
-export function renderBoardFace(pcb: Pcb, board: BoardModel, side: CopperLayer, widthPx = 2048): { svg: string; widthPx: number; heightPx: number } {
+export function renderBoardFace(pcb: Pcb, board: BoardModel, side: Side, widthPx = 2048): { svg: string; widthPx: number; heightPx: number } {
   const b = pcb.board;
   const out: string[] = [`<rect x="${n(b.x)}" y="${n(b.y)}" width="${n(b.width)}" height="${n(b.height)}" fill="${FINISH.mask}"/>`];
   for (const f of board.fills.filter((f) => f.pour.layer === side)) out.push(`<path d="${areasToSvgPath(f.areas)}" fill-rule="evenodd" fill="${FINISH.copperUnderMask}"/>`);
@@ -113,7 +115,7 @@ export function renderPcbSvg(
   opts: RenderOptions = {},
 ): { svg: string; widthPx: number; heightPx: number } {
   const b = pcb.board;
-  const layers: CopperLayer[] = opts.layers === 'top' ? ['top'] : opts.layers === 'bottom' ? ['bottom'] : ['bottom', 'top'];
+  const layers: CopperLayer[] = !opts.layers || opts.layers === 'both' ? copperLayers(pcb).reverse() : [opts.layers];
   const hi = opts.highlightNet ?? null;
   const netOf = (id: string, fallback: string | null) => conn.itemNet.get(id) ?? fallback;
   // With a highlighted net, everything else fades.
@@ -167,8 +169,8 @@ export function renderPcbSvg(
       const s = look(p.net, color);
       g.push(`<polygon points="${pts(p.outline)}" fill="${s.color}" opacity="${s.opacity}"/>`);
     }
-    // The upper layer stays opaque; a lower one shows through less.
-    out.push(`<g opacity="${layers.length > 1 && layer === layers[0] ? 0.7 : 0.95}">${g.join('')}</g>`);
+    // The top layer stays opaque; lower ones show through less, inner planes least.
+    out.push(`<g opacity="${layers.length === 1 || layer === 'top' ? 0.95 : isInner(layer) ? 0.5 : 0.7}">${g.join('')}</g>`);
   }
 
   for (const p of board.pads.filter((p) => p.pad.layer === 'through')) {
@@ -208,7 +210,7 @@ export function renderPcbSvg(
     }
     out.push(labelSvg);
   }
-  for (const side of layers) out.push(...freeSilk(pcb, side, side === 'top' ? COLORS.silkTop : COLORS.silkBottom));
+  for (const side of ['bottom', 'top'] as Side[]) if (layers.includes(side)) out.push(...freeSilk(pcb, side, side === 'top' ? COLORS.silkTop : COLORS.silkBottom));
 
   for (const a of conn.airwires) {
     if (hi && a.net !== hi) continue;

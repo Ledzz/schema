@@ -6,16 +6,21 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
-2. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
-3. **STEP export of the assembled board** — the 3D view already has the models; enclosure
+1. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
+2. **STEP export of the assembled board** — the 3D view already has the models; enclosure
    design needs the board as a STEP file.
-4. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
-5. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
+3. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
+4. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
    other.
+5. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
+   router still leaves a connection or two for manual routing.
 
 ## Done
 
+- **4-layer boards** (2026-10-26): Inner 1 and Inner 2 copper layers with tracks, vias through all
+  layers, pours and inner planes. Auto-routing keeps off the planes and joins each SMD pad of a
+  plane net to its plane with a short stub and via; Gerbers gain inner layers; the JLCPCB checklist
+  uses the multilayer limits and checks inner copper against drill holes.
 - **JLCPCB checklist** (2026-10-26): the board measured against JLCPCB's published PCB and
   assembly limits, in the PCB panel, the order sheet (failures block the order) and as an agent
   tool. Silkscreen defaults now meet JLCPCB's 1 mm text and 0.15 mm line minimums.
@@ -56,8 +61,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 - Arcs in board outlines and DXF outline import (outlines are straight-sided polygons with
   rounded corners today).
-- ★ More than 2 layers: 4/6-layer stackups, layer stack manager, JLC impedance calculator,
-  blind and buried vias.
+- 6+ layers, a layer stack manager, JLC's impedance calculator, blind and buried vias (2 and 4
+  layers with through vias today).
 - Align and distribute, part locking, rooms, measure tool, dimension lines, grid setting.
 - Multi-colour or greyscale artwork (logos are traced to one colour), TrueType fonts.
 - Test points, fiducials, tooling holes, panelization (V-cuts, tabs).

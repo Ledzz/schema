@@ -41,6 +41,7 @@ import { IconButton, MenuButton, cx } from './ui';
 import { startPassive } from '../lib/passives';
 import { detachDesign, openDesign, saveDesign } from '../lib/designs';
 import { boardModel, enterPcb } from '../lib/pcb/actions';
+import { LAYER_NAMES } from '../lib/pcb/types';
 import { PASSIVES, type PassiveKind } from '../shared/passives';
 
 const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
@@ -336,8 +337,8 @@ function PcbStatusBar() {
         X {cursor[0].toFixed(2)} · Y {cursor[1].toFixed(2)} mm
       </span>
       <span className="inline-flex items-center gap-1">
-        <span className="h-2 w-2 rounded-full" style={{ background: layer === 'top' ? 'var(--pcb-top)' : 'var(--pcb-bottom)' }} />
-        {layer} layer
+        <span className="h-2 w-2 rounded-full" style={{ background: `var(--pcb-${layer})` }} />
+        {LAYER_NAMES[layer]} layer
       </span>
       <span className="tabular w-14">{Math.round(zoom * 10)}%</span>
       <span className="truncate">{hint}</span>

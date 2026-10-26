@@ -55,6 +55,9 @@ lazy-loaded modules changed.
   and DRC come from `buildBoard` / `pcbConnectivity` / `runDrc` on the current project.
 - **UI and tools share actions.** Put new behaviour in `src/lib/**/actions.ts` (or a lib module)
   and call it from both the component and the tool, rather than writing it twice.
+- **Sides vs layers.** `Side` (`top`/`bottom`) is where parts, silkscreen, mask and paste are;
+  `CopperLayer` adds `inner1`/`inner2` on 4-layer boards. Use `copperLayers(pcb)` for the stack
+  instead of assuming top and bottom; vias and through-hole pads span every layer of it.
 - **Units and axes.** Schematic coordinates are symbol units on a 10-unit grid, y down. PCB is
   millimetres, y down, origin at the board's top-left. EasyEDA footprints are mil with y up
   (converted in `pcb/footprint.ts`); Gerber, drill and CPL are mm with y up from the board's

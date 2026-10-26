@@ -10,11 +10,10 @@ import type { Box } from '../../lib/pcb/geometry';
 import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
 import { addText, addVia, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
-import { emptyPcb, type CopperLayer, type Pcb } from '../../lib/pcb/types';
+import { copperLayers, emptyPcb, isInner, LAYER_NAMES, type CopperLayer, type Pcb } from '../../lib/pcb/types';
 import { Kbd } from '../ui';
 
-const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', bottom: 'var(--pcb-bottom)' };
-const other = (l: CopperLayer): CopperLayer => (l === 'top' ? 'bottom' : 'top');
+const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', inner1: 'var(--pcb-inner1)', inner2: 'var(--pcb-inner2)', bottom: 'var(--pcb-bottom)' };
 const pts = (p: Vec[]) => p.map((q) => `${q[0]},${q[1]}`).join(' ');
 
 type Hit = { kind: 'part' | 'track' | 'via' | 'pour' | 'hole' | 'keepout' | 'cutout' | 'label' | 'text' | 'logo'; id: string } | null;
@@ -392,7 +391,7 @@ export function PcbCanvas() {
       {draft && (
         <div className="pointer-events-none absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-panel/90 px-3 py-1.5 text-xs shadow-lg backdrop-blur">
           <span className="h-2 w-2 rounded-full" style={{ background: LAYER_COLOR[draft.layer] }} />
-          Routing <span className="font-semibold">{draft.net ?? 'no net'}</span> on {draft.layer} · {draft.width} mm
+          Routing <span className="font-semibold">{draft.net ?? 'no net'}</span> on {LAYER_NAMES[draft.layer]} · {draft.width} mm
           <span className="text-muted">
             · <Kbd>V</Kbd> via · <Kbd>⌫</Kbd> undo corner · <Kbd>Esc</Kbd> finish
           </span>
@@ -434,14 +433,15 @@ const BoardLayers = memo(function BoardLayers({
   highlightNet: string | null;
   showPours: boolean;
 }) {
-  const order: CopperLayer[] = [other(activeLayer), activeLayer];
+  // Every copper layer from the bottom up, the active one on top of the rest.
+  const order: CopperLayer[] = [...copperLayers(pcb).reverse().filter((l) => l !== activeLayer), activeLayer];
   const netOfTrack = (id: string, fallback: string | null) => conn.itemNet.get(id) ?? fallback;
   return (
     <>
       {order.map((layer) => {
         const dim = layer !== activeLayer;
         return (
-          <g key={layer} opacity={dim ? 0.45 : 0.92}>
+          <g key={layer} opacity={dim ? (isInner(layer) ? 0.3 : 0.45) : 0.92}>
             {showPours &&
               board.fills
                 .filter((f) => f.pour.layer === layer)

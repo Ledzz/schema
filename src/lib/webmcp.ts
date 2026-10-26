@@ -32,7 +32,7 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
@@ -42,7 +42,7 @@ import { boardEdges, circlePolygon, cornerHolePositions, edgeDistance, insideBoa
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
-import { DEFAULT_HOLE, type CopperLayer, type Pcb, type Pour, type SilkText } from './pcb/types';
+import { DEFAULT_HOLE, copperLayers, type Side, type CopperLayer, type Pcb, type Pour, type SilkText } from './pcb/types';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -151,7 +151,15 @@ function offBoard(box: Box): boolean {
   return !([[box.x1, box.y1], [box.x2, box.y1], [box.x2, box.y2], [box.x1, box.y2]] as [number, number][]).every((p) => insideBoard(p, edges));
 }
 
-const sideOf = (v: unknown): CopperLayer | undefined => (v === 'top' || v === 'bottom' ? v : undefined);
+/** The given layers, refusing inner ones on a 2-layer board. */
+function checkLayers(layers: CopperLayer[]): CopperLayer[] {
+  const stack = copperLayers(currentPcb());
+  const missing = layers.filter((l) => !stack.includes(l));
+  if (missing.length) throw new Error(`The board has no ${missing.join(' or ')} layer; make it a 4-layer board with pcb_set_board { "layers": 4 } first`);
+  return layers;
+}
+
+const sideOf = (v: unknown): Side | undefined => (v === 'top' || v === 'bottom' ? v : undefined);
 
 /** Traces a rasterised image and places it as a logo; shared by the browser and the command line. */
 export function placeTracedLogo(input: Record<string, unknown>, bitmap: Bitmap) {
@@ -676,6 +684,8 @@ export const TOOLS: ToolDefinition[] = [
       const length = (points: [number, number][]) => points.slice(1).reduce((sum, q, i) => sum + Math.hypot(q[0] - points[i][0], q[1] - points[i][1]), 0);
       return {
         board: pcb.board,
+        layers: copperLayers(pcb),
+        planes: planeLayers(pcb).size ? Object.fromEntries(planeLayers(pcb)) : undefined,
         rules: pcb.rules,
         part_area_mm2: Math.round(partArea),
         parts: board.parts.map((p) => ({
@@ -730,7 +740,7 @@ export const TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        layers: { type: 'string', enum: ['both', 'top', 'bottom'], description: 'Copper layers to draw (default both, top over bottom).' },
+        layers: { type: 'string', enum: ['both', 'top', 'inner1', 'inner2', 'bottom'], description: 'Copper layers to draw: both (default, every layer, top over the rest) or one layer alone (inner layers on 4-layer boards).' },
         highlight_net: { type: 'string', description: 'Draw this net in white and fade the rest.' },
         width_px: { type: 'integer', minimum: 300, maximum: 4000, description: 'Picture width in pixels (default 1400).' },
       },
@@ -745,13 +755,14 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_set_board',
     title: 'Set board shape',
     description:
-      'Set the board size in millimetres (a rectangle with optional corner radius), or give `outline` for a custom shape (an L, a notched or angled board, one that fits an enclosure); the corner radius rounds its corners too. Width/height go back to a rectangle. Parts outside the new shape show up in pcb_check.',
+      'Set the board size in millimetres (a rectangle with optional corner radius), or give `outline` for a custom shape (an L, a notched or angled board, one that fits an enclosure); the corner radius rounds its corners too. Width/height go back to a rectangle. Parts outside the new shape show up in pcb_check. `layers` switches between 2 and 4 copper layers (top, inner1, inner2, bottom); going back to 2 deletes inner-layer tracks and pours.',
     inputSchema: {
       type: 'object',
       properties: {
         width: { type: 'number', minimum: 5 },
         height: { type: 'number', minimum: 5 },
         corner_radius: { type: 'number', minimum: 0 },
+        layers: { type: 'integer', enum: [2, 4], description: 'Copper layers (default 2). 4 adds two inner layers, usually a GND plane and a power plane.' },
         outline: outlineSchema('Custom board shape.'),
       },
     },
@@ -764,7 +775,8 @@ export const TOOLS: ToolDefinition[] = [
       if (input.height !== undefined) patch.height = Number(input.height);
       if (input.corner_radius !== undefined) patch.cornerRadius = Number(input.corner_radius);
       if (Object.keys(patch).length) updateBoard(patch);
-      return { board: currentPcb().board };
+      const removed = input.layers === undefined ? undefined : setLayerCount(Number(input.layers) as 2 | 4);
+      return { board: currentPcb().board, removed: removed && (removed.removedTracks || removed.removedPours) ? { inner_tracks: removed.removedTracks, inner_pours: removed.removedPours } : undefined };
     },
   },
   {
@@ -809,7 +821,7 @@ export const TOOLS: ToolDefinition[] = [
       properties: {
         outline: outlineSchema('Keepout shape.'),
         rect: rectSchema('Keepout shape.'),
-        layers: { type: 'array', items: { type: 'string', enum: ['top', 'bottom'] }, description: 'Default both.' },
+        layers: { type: 'array', items: { type: 'string', enum: ['top', 'inner1', 'inner2', 'bottom'] }, description: 'Default every copper layer of the board.' },
         tracks: { type: 'boolean', description: 'Keep tracks out (default true).' },
         vias: { type: 'boolean', description: 'Keep vias out (default true).' },
         pours: { type: 'boolean', description: 'Keep copper pours out (default true).' },
@@ -820,7 +832,7 @@ export const TOOLS: ToolDefinition[] = [
       const outline = areaInput(input, 'keepout')!;
       const flags: Record<string, boolean> = {};
       for (const k of ['tracks', 'vias', 'pours', 'parts'] as const) if (input[k] !== undefined) flags[k] = Boolean(input[k]);
-      const layers = Array.isArray(input.layers) && input.layers.length ? (input.layers as CopperLayer[]) : undefined;
+      const layers = Array.isArray(input.layers) && input.layers.length ? checkLayers(input.layers as CopperLayer[]) : undefined;
       const keepout = addKeepout(outline, { ...flags, ...(layers ? { layers } : {}) });
       const { issues } = checkPcb();
       const inside = issues.filter((i) => i.refs?.includes(keepout.id)).map((i) => i.message);
@@ -1024,7 +1036,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_autoroute',
     title: 'Auto-route PCB',
     description:
-      'Route unrouted connections with the built-in two-layer grid router (shortest first). Supply and ground nets (GND, VCC, VIN, VM, +5V, +3V3 …) get the power track width, others the signal width. Optionally limit to one net, and set `width` to route a high-current net such as a motor output or sense-resistor connection wider. Check the result with pcb_check.',
+      'Route unrouted connections with the built-in grid router (shortest first) on the board’s layers. Supply and ground nets (GND, VCC, VIN, VM, +5V, +3V3 …) get the power track width, others the signal width. On a 4-layer board with inner planes (whole-board pours on inner1/inner2), each SMD pad of a plane net first gets a short stub and a via into its plane (`planes` in the result), and the router keeps off the plane layers. Optionally limit to one net, and set `width` to route a high-current net such as a motor output or sense-resistor connection wider. Check the result with pcb_check.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1034,7 +1046,7 @@ export const TOOLS: ToolDefinition[] = [
     },
     execute: async (input) => {
       const r = autoroute(input.net ? String(input.net) : undefined, input.width === undefined ? undefined : Number(input.width));
-      return { routed: r.routed, failed: r.failed.map((f) => f.net) };
+      return { routed: r.routed, failed: r.failed.map((f) => f.net), planes: r.planes || undefined, plane_failed: r.planeFailed.length ? r.planeFailed : undefined };
     },
   },
   {
@@ -1093,7 +1105,7 @@ export const TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         net: { type: 'string', description: 'Net to pour (default GND).' },
-        layers: { type: 'array', items: { type: 'string', enum: ['top', 'bottom'] }, description: 'Default both.' },
+        layers: { type: 'array', items: { type: 'string', enum: ['top', 'inner1', 'inner2', 'bottom'] }, description: 'Default top and bottom. On a 4-layer board, a pour on inner1 or inner2 is a plane: the router leaves that layer to it and pcb_autoroute drops each SMD pad of the net into it through a via.' },
         clearance: { type: 'number', minimum: 0.1, description: 'Gap to other nets in mm (default 0.3).' },
         connection: { type: 'string', enum: ['thermal', 'solid'] },
         outline: outlineSchema('Pour only this area (a zone), e.g. a power plane under a regulator.'),
@@ -1104,7 +1116,7 @@ export const TOOLS: ToolDefinition[] = [
       const net = input.net ? String(input.net) : 'GND';
       const zone = areaInput(input, 'pour zone', false);
       if (!boardNets().includes(net)) throw new Error(`No pad on the PCB is on net ${net}. Nets: ${boardNets().join(', ')}`);
-      const layers = Array.isArray(input.layers) && input.layers.length ? (input.layers as CopperLayer[]) : (['top', 'bottom'] as CopperLayer[]);
+      const layers = Array.isArray(input.layers) && input.layers.length ? checkLayers(input.layers as CopperLayer[]) : (['top', 'bottom'] as CopperLayer[]);
       const settings: Partial<Pour> = {};
       if (input.clearance !== undefined) settings.clearance = Number(input.clearance);
       if (input.connection === 'thermal' || input.connection === 'solid') settings.connection = input.connection;

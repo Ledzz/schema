@@ -10,13 +10,14 @@ import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
-import { pointShapeDistance, shapeDistance, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
+import { pointShapeDistance, rotateDeg, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
+import { POUR_EDGE_CLEARANCE } from './pour';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
 import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from './outline';
 import { edgeField, routeConnection, simplifyPath } from './router';
-import { DEFAULT_HOLE, DEFAULT_POUR, emptyPcb, type CopperLayer, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
+import { DEFAULT_HOLE, DEFAULT_POUR, copperLayers, emptyPcb, isInner, sideOfLayer, type CopperLayer, type Side, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
 import { labelId, TEXT_SIZE } from './silk';
 import { drilledHoles, viaHoleConflict } from './jlcpcb';
 import { fitPcbView } from './view';
@@ -280,7 +281,7 @@ export function addMountingHoles(points: Vec[], diameter = DEFAULT_HOLE.diameter
 }
 
 export function addKeepout(outline: Vec[], opts: Partial<Omit<Keepout, 'id' | 'outline'>> = {}): Keepout {
-  const keepout: Keepout = { id: newId('keep'), outline, layers: ['top', 'bottom'], tracks: true, vias: true, pours: true, parts: false, ...opts };
+  const keepout: Keepout = { id: newId('keep'), outline, layers: copperLayers(currentPcb()), tracks: true, vias: true, pours: true, parts: false, ...opts };
   commitPcb((pcb) => ({ ...pcb, keepouts: [...(pcb.keepouts ?? []), keepout] }));
   return keepout;
 }
@@ -341,7 +342,7 @@ export function rotateSelected(step = 90) {
 /** Moves the selected parts, text and logos to the other side of the board. */
 export function flipSelected() {
   const ids = new Set(st().pcbSelection);
-  const other = (side: CopperLayer): CopperLayer => (side === 'top' ? 'bottom' : 'top');
+  const other = (side: Side): Side => (side === 'top' ? 'bottom' : 'top');
   commitPcb((pcb) => ({
     ...pcb,
     placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, side: other(p.side) } : p)),
@@ -353,7 +354,7 @@ export function flipSelected() {
 /* ---------- silkscreen ---------- */
 
 export function addText(text: string, at: Vec, opts: Partial<Omit<SilkText, 'id' | 'text' | 'x' | 'y'>> = {}): SilkText {
-  const t: SilkText = { id: newId('txt'), text, x: at[0], y: at[1], size: TEXT_SIZE, rotation: 0, side: st().activeLayer, ...opts };
+  const t: SilkText = { id: newId('txt'), text, x: at[0], y: at[1], size: TEXT_SIZE, rotation: 0, side: sideOfLayer(st().activeLayer), ...opts };
   commitPcb((pcb) => ({ ...pcb, texts: [...(pcb.texts ?? []), t] }));
   return t;
 }
@@ -402,6 +403,23 @@ export function deleteSelectedCopper() {
 
 export function updatePlacement(componentId: string, patch: Partial<Placement>) {
   commitPcb((pcb) => ({ ...pcb, placements: pcb.placements.map((p) => (p.componentId === componentId ? { ...p, ...patch } : p)) }));
+}
+
+/** Switches between 2 and 4 copper layers; going back to 2 deletes the inner-layer copper. */
+export function setLayerCount(layers: 2 | 4): { removedTracks: number; removedPours: number } {
+  const pcb = currentPcb();
+  const drop = layers === 2;
+  const removedTracks = drop ? pcb.tracks.filter((t) => isInner(t.layer)).length : 0;
+  const removedPours = drop ? (pcb.pours ?? []).filter((p) => isInner(p.layer)).length : 0;
+  commitPcb((p) => ({
+    ...p,
+    board: { ...p.board, layers },
+    tracks: drop ? p.tracks.filter((t) => !isInner(t.layer)) : p.tracks,
+    pours: drop ? p.pours?.filter((z) => !isInner(z.layer)) : p.pours,
+    keepouts: drop ? p.keepouts?.map((k) => ({ ...k, layers: k.layers.filter((l) => !isInner(l)) })).filter((k) => k.layers.length) : p.keepouts,
+  }));
+  if (drop && isInner(st().activeLayer)) st().setActiveLayer('top');
+  return { removedTracks, removedPours };
 }
 
 export function updateBoard(patch: Partial<Pcb['board']>) {
@@ -530,6 +548,10 @@ export function finishDraft() {
 export interface AutorouteReport {
   routed: number;
   failed: { net: string; a: Vec; b: Vec }[];
+  /** Pads joined to an inner plane through a stub and via. */
+  planes: number;
+  /** Pads that found no room for a via to their plane. */
+  planeFailed: string[];
 }
 
 /** Distance from narrow end copper within which a necked-down track stays narrow. */
@@ -620,7 +642,7 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
   const avoid = shellAreas(board)
     .filter((a) => !a.nets.has(aw.net))
     .map(({ layer, outlines }) => ({ layer, outlines }));
-  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb), holes: drilledHoles(pcb, board, conn) };
+  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb), holes: drilledHoles(pcb, board, conn), layers: routingLayers(pcb) };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
   const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];
@@ -637,9 +659,117 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
  * Routes unrouted connections one at a time (shortest first), optionally for one net only and
  * with a given track width (default: by net, see trackWidthFor). Everything is a single undo step.
  */
-export function autoroute(net?: string, width?: number): AutorouteReport {
-  const report: AutorouteReport = { routed: 0, failed: [] };
-  let project = st().project;
+/* ---------- inner planes ---------- */
+
+/** Inner layers carrying a whole-board pour, with its net: power planes the router leaves alone. */
+export function planeLayers(pcb: Pcb): Map<CopperLayer, string> {
+  const stack = copperLayers(pcb);
+  return new Map((pcb.pours ?? []).filter((p) => !p.outline && isInner(p.layer) && stack.includes(p.layer)).map((p) => [p.layer, p.net] as const));
+}
+
+/** Layers the auto-router uses: every copper layer except the planes. */
+export function routingLayers(pcb: Pcb): CopperLayer[] {
+  const planes = planeLayers(pcb);
+  return copperLayers(pcb).filter((l) => !planes.has(l));
+}
+
+/**
+ * Joins the surface-mount pads of plane nets (say GND on an inner plane) to their plane: a short
+ * stub from the pad to a via just outside it, where the via clears other nets, drill holes, SMD
+ * pads, keepouts and the edge. Pads already connected to the plane are left alone; through-hole
+ * pads reach it by themselves.
+ */
+function fanoutToPlanes(project: Project, onlyNet?: string): { project: Project; joined: number; failed: string[] } {
+  const pcb = currentPcb(project);
+  const planes = planeLayers(pcb);
+  const planeNets = new Map([...planes].filter(([, n]) => !onlyNet || n === onlyNet).map(([l, n]) => [n, l]));
+  if (!planeNets.size) return { project, joined: 0, failed: [] };
+  const { board, conn } = boardModel(project);
+  const holes = drilledHoles(pcb, board, conn);
+  const edges = boardEdges(pcb);
+  const keepouts = keepoutAreas(pcb).filter((k) => k.vias && k.outline.length >= 3);
+  const { clearance, viaDiameter, viaDrill } = pcb.rules;
+  const r = viaDiameter / 2;
+  const netOf = (it: CopperItem) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net));
+  const items: { it: CopperItem; net: string | null }[] = board.items.map((it) => ({ it, net: netOf(it) }));
+  const tracks: Track[] = [];
+  const vias: Via[] = [];
+  const failed: string[] = [];
+  const snap = (v: number) => Math.round(v / 0.25) * 0.25;
+
+  for (const pad of board.pads) {
+    const planeLayer = pad.net ? planeNets.get(pad.net) : undefined;
+    if (!pad.net || !planeLayer || pad.hole || pad.layers.length !== 1) continue;
+    const fill = board.fills.find((f) => f.pour.layer === planeLayer && !f.pour.outline && f.pour.net === pad.net);
+    const island = conn.island(`p:${pad.componentId}:${pad.index}`);
+    if (fill?.areas.some((_, i) => conn.island(`z:${fill.pour.id}:${i}`) === island)) continue;
+
+    const layer = pad.layers[0];
+    const width = Math.max(pcb.rules.minTrackWidth, Math.min(trackWidthFor(pad.net, pcb), pad.pad.w, pad.pad.h));
+    const part = board.parts.find((p) => p.component.id === pad.componentId)!;
+    const centre: Vec = [(part.box.x1 + part.box.x2) / 2, (part.box.y1 + part.box.y2) / 2];
+    const away = Math.atan2(pad.center[1] - centre[1], pad.center[0] - centre[0]) || -Math.PI / 2;
+    const candidates: Vec[] = [];
+    const seen = new Set<string>();
+    // First straight out along the pad's own axes, outward from the part first, so the stub stays
+    // in line with a fine-pitch pin instead of cutting across its neighbours.
+    const long = rotateDeg(pad.pad.w >= pad.pad.h ? [1, 0] : [0, 1], pad.rotation);
+    const axes = [
+      { dir: long, reach: Math.max(pad.pad.w, pad.pad.h) / 2 },
+      { dir: [-long[0], -long[1]] as Vec, reach: Math.max(pad.pad.w, pad.pad.h) / 2 },
+      { dir: [-long[1], long[0]] as Vec, reach: Math.min(pad.pad.w, pad.pad.h) / 2 },
+      { dir: [long[1], -long[0]] as Vec, reach: Math.min(pad.pad.w, pad.pad.h) / 2 },
+    ].sort((p, q) => q.dir[0] * Math.cos(away) + q.dir[1] * Math.sin(away) - (p.dir[0] * Math.cos(away) + p.dir[1] * Math.sin(away)));
+    for (let step = 0; step < 10; step++)
+      for (const { dir, reach } of axes) {
+        const dist = reach + r + 0.15 + step * 0.25;
+        candidates.push([Math.round((pad.center[0] + dir[0] * dist) * 1000) / 1000, Math.round((pad.center[1] + dir[1] * dist) * 1000) / 1000]);
+      }
+    // Then anywhere around it on the routing grid, nearest spots first.
+    for (let dist = Math.min(pad.pad.w, pad.pad.h) / 2 + r + 0.15; dist <= 3; dist += 0.25)
+      for (const k of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8]) {
+        const a = away + (k * Math.PI) / 8;
+        const at: Vec = [snap(pad.center[0] + dist * Math.cos(a)), snap(pad.center[1] + dist * Math.sin(a))];
+        const key = at.join(',');
+        if (!seen.has(key)) {
+          seen.add(key);
+          candidates.push(at);
+        }
+      }
+    const fits = (at: Vec) => {
+      if (!insideBoard(at, edges) || edgeDistance(at, edges) < r + POUR_EDGE_CLEARANCE) return false;
+      if (keepouts.some((k) => pointShapeDistance(at, { kind: 'poly', points: k.outline }) < r + 0.05)) return false;
+      if (viaHoleConflict(at, viaDrill, holes)) return false;
+      const via = { kind: 'capsule' as const, a: at, b: at, r };
+      const stub = { kind: 'capsule' as const, a: pad.center, b: at, r: width / 2 };
+      return items.every(({ it, net }) => {
+        // No via in any SMD pad, its own included: solder would wick into the hole.
+        if (it.type === 'pad' && it.layers.length === 1 && shapeDistance(via, it.shape) < 0.1) return false;
+        if (net === pad.net) return true;
+        if (shapeDistance(via, it.shape) < clearance) return false;
+        return !it.layers.includes(layer) || shapeDistance(stub, it.shape) >= clearance;
+      });
+    };
+    const at = candidates.find(fits);
+    if (!at) {
+      failed.push(`${pad.designator}.${pad.number}`);
+      continue;
+    }
+    const track: Track = { id: newId('t'), layer, width, points: [pad.center, at], net: pad.net };
+    const via: Via = { id: newId('v'), x: at[0], y: at[1], diameter: viaDiameter, drill: viaDrill, net: pad.net };
+    tracks.push(track);
+    vias.push(via);
+    for (const it of [...trackItems(track), viaItem(via, copperLayers(pcb))]) items.push({ it, net: pad.net });
+    holes.push({ center: at, d: viaDrill, len: 0, kind: 'via', net: pad.net, name: `${pad.net} via` });
+  }
+  return { project: { ...project, pcb: { ...pcb, tracks: [...pcb.tracks, ...tracks], vias: [...pcb.vias, ...vias] } }, joined: vias.length, failed };
+}
+
+/**
+ * Routes the airwires `want` accepts one at a time, shortest first, into `project`; returns the
+ * updated project. Connections that fail are recorded in the report and not retried.
+ */
+function routeAirwires(project: Project, want: (a: Airwire) => boolean, width: number | undefined, report: AutorouteReport): Project {
   const skip = new Set<string>();
   // A connection that comes back after being routed made no progress (its copper didn't join
   // the pads), so it counts as failed instead of being routed again and again.
@@ -655,9 +785,7 @@ export function autoroute(net?: string, width?: number): AutorouteReport {
       return id !== undefined && id === partAt(a.b) ? 1 : 0;
     };
     const length = (a: Airwire) => Math.hypot(a.a[0] - a.b[0], a.a[1] - a.b[1]);
-    const pending = conn.airwires
-      .filter((a) => (!net || a.net === net) && !skip.has(`${a.net}|${a.a}|${a.b}`))
-      .sort((p, q) => samePart(p) - samePart(q) || length(p) - length(q));
+    const pending = conn.airwires.filter((a) => want(a) && !skip.has(`${a.net}|${a.a}|${a.b}`)).sort((p, q) => samePart(p) - samePart(q) || length(p) - length(q));
     const aw = pending[0];
     if (!aw) break;
     const key = `${aw.net}|${aw.a}|${aw.b}`;
@@ -672,7 +800,27 @@ export function autoroute(net?: string, width?: number): AutorouteReport {
     project = { ...project, pcb: { ...pcb, tracks: [...pcb.tracks, ...r.tracks], vias: [...pcb.vias, ...r.vias] } };
     report.routed++;
   }
-  if (report.routed > 0) {
+  return project;
+}
+
+/**
+ * Auto-routes unrouted connections, optionally of one net and at a given width, as one undo step.
+ * On boards with inner planes the other nets go first, then each pad of a plane net drops into its
+ * plane through a via in the room left (vias placed first would block fine-pitch pins), and only
+ * pads that found no room are routed with tracks.
+ */
+export function autoroute(net?: string, width?: number): AutorouteReport {
+  const report: AutorouteReport = { routed: 0, failed: [], planes: 0, planeFailed: [] };
+  const planeNets = new Set(planeLayers(currentPcb()).values());
+  const wanted = (a: Airwire) => !net || a.net === net;
+  let project = routeAirwires(st().project, (a) => wanted(a) && !planeNets.has(a.net), width, report);
+  if (planeNets.size) {
+    const fanout = fanoutToPlanes(project, net);
+    report.planes = fanout.joined;
+    report.planeFailed = fanout.failed;
+    project = routeAirwires(fanout.project, (a) => wanted(a) && planeNets.has(a.net), width, report);
+  }
+  if (report.routed > 0 || report.planes > 0) {
     const routedPcb = project.pcb!;
     st().commit((doc) => ({ ...doc, pcb: routedPcb }));
   }

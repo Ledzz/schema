@@ -19,6 +19,7 @@ import {
   removePcbItems,
   rotateSelected,
   setBoardOutline,
+  setLayerCount,
   syncPcb,
   updateBoard,
   updateLabel,
@@ -33,7 +34,7 @@ import { DESIGNATOR_SIZE, designatorLabel, labelComponent, strokeFor } from '../
 import { rasterizeInBrowser, traceBitmap } from '../../lib/pcb/logo';
 import { JlcpcbChecklistPanel } from './Checklist';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
-import { DEFAULT_HOLE, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
+import { DEFAULT_HOLE, copperLayers, isInner, LAYER_NAMES, sideOfLayer, type Side, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
 import { cornerHolePositions } from '../../lib/pcb/outline';
 import type { PourFill } from '../../lib/pcb/pour';
 import { Field, IconButton, Tabs, cx, inputClass } from '../ui';
@@ -312,7 +313,7 @@ export function PcbInspector() {
           </Field>
           <Field label="Side">
             <div className="flex gap-1">
-              {(['top', 'bottom'] as CopperLayer[]).map((side) => (
+              {(['top', 'bottom'] as Side[]).map((side) => (
                 <button key={side} onClick={() => updatePlacement(placement.componentId, { side })} className={cx('h-7 flex-1 rounded-md border capitalize', placement.side === side ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
                   {side}
                 </button>
@@ -338,7 +339,7 @@ export function PcbInspector() {
           </Field>
           <Field label="Layer">
             <div className="flex gap-1">
-              {(['top', 'bottom'] as CopperLayer[]).map((layer) => (
+              {copperLayers(pcb).map((layer) => (
                 <button key={layer} onClick={() => updateTrack(track.id, { layer })} className={cx('h-7 flex-1 rounded-md border capitalize', track.layer === layer ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
                   {layer}
                 </button>
@@ -398,6 +399,24 @@ export function PcbInspector() {
             <Field label="Corner radius">
               <NumberInput label="Corner radius" step={0.5} min={0} value={pcb.board.cornerRadius} onCommit={(cornerRadius) => updateBoard({ cornerRadius })} />
             </Field>
+            <Field label="Layers">
+              <div className="flex gap-1">
+                {([2, 4] as const).map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => {
+                      const inner = pcb.tracks.filter((t) => isInner(t.layer)).length + (pcb.pours ?? []).filter((z) => isInner(z.layer)).length;
+                      if (n === 2 && inner && !confirm(`Going back to 2 layers deletes ${inner} inner-layer track${inner > 1 ? 's' : ''} and pours. Continue?`)) return;
+                      setLayerCount(n);
+                      if (n === 4) useEditor.getState().notify('4 layers: add a GND pour on Inner 1 for a ground plane; auto-route drops pads into it through vias');
+                    }}
+                    className={cx('h-7 flex-1 rounded-md border', (pcb.board.layers ?? 2) === n ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </Field>
             <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5 text-[11px] text-muted">
               <span>{pcb.holes?.length ?? 0} mounting holes</span>
               <span>{pcb.keepouts?.length ?? 0} keepouts</span>
@@ -435,7 +454,10 @@ export function PcbInspector() {
             <Field label="Via drill">
               <NumberInput label="Via drill" min={0.2} value={pcb.rules.viaDrill} onCommit={(viaDrill) => updateRules({ viaDrill })} />
             </Field>
-            <p className="text-[10px] leading-snug text-muted">JLCPCB 2-layer minimums: 0.1 mm track and clearance, 0.15/0.25 mm via; drills under 0.3 mm cost extra unless 0.2 mm+ with a 0.45 mm+ via. The JLCPCB tab checks the whole board.</p>
+            <p className="text-[10px] leading-snug text-muted">
+              JLCPCB {pcb.board.layers ?? 2}-layer minimums: {pcb.board.layers === 4 ? '0.09' : '0.1'} mm track and clearance, 0.15/0.25 mm via; drills under 0.3 mm cost extra unless 0.2
+              mm+ with a 0.45 mm+ via. The JLCPCB tab checks the whole board.
+            </p>
           </section>
         </>
       )}
@@ -482,9 +504,13 @@ function PoursSection({ fills }: { fills: PourFill[] }) {
             ))}
           </select>
           <select aria-label="Pour layers" className={cx(inputClass, 'w-24')} value={layers} onChange={(e) => setLayers(e.target.value as 'both' | CopperLayer)}>
-            <option value="both">Both</option>
-            <option value="top">Top</option>
-            <option value="bottom">Bottom</option>
+            <option value="both">Top + bottom</option>
+            {copperLayers(currentPcb(project)).map((l) => (
+              <option key={l} value={l}>
+                {LAYER_NAMES[l]}
+                {isInner(l) ? ' (plane)' : ''}
+              </option>
+            ))}
           </select>
           <button
             aria-label="Add copper pour"
@@ -492,7 +518,7 @@ function PoursSection({ fills }: { fills: PourFill[] }) {
             onClick={() => {
               const created = addPours(chosen, layers === 'both' ? ['top', 'bottom'] : [layers]);
               useEditor.getState().setPcbSelection(created.length === 1 ? [created[0].id] : []);
-              useEditor.getState().notify(`Added ${chosen} pour${created.length > 1 ? 's on both layers' : ` on ${created[0].layer}`}`);
+              useEditor.getState().notify(`Added ${chosen} pour${created.length > 1 ? 's on top and bottom' : ` on ${LAYER_NAMES[created[0].layer]}${isInner(created[0].layer) ? ': a plane, which auto-route joins pads to through vias' : ''}`}`);
             }}
             className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-indigo-600 px-2 text-white hover:bg-indigo-500"
           >
@@ -507,7 +533,8 @@ function PoursSection({ fills }: { fills: PourFill[] }) {
 }
 
 function PourEditor({ pour, fill }: { pour: Pour; fill?: PourFill }) {
-  const nets = boardNets(useEditor((s) => s.project));
+  const project = useEditor((s) => s.project);
+  const nets = boardNets(project);
   const set = (patch: Partial<Pour>) => updatePour(pour.id, patch);
   return (
     <section className="space-y-1.5">
@@ -546,7 +573,7 @@ function PourEditor({ pour, fill }: { pour: Pour; fill?: PourFill }) {
       </Field>
       <Field label="Layer">
         <div className="flex gap-1">
-          {(['top', 'bottom'] as CopperLayer[]).map((layer) => (
+          {copperLayers(currentPcb(project)).map((layer) => (
             <button key={layer} onClick={() => set({ layer })} className={cx('h-7 flex-1 rounded-md border capitalize', pour.layer === layer ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
               {layer}
             </button>
@@ -642,7 +669,7 @@ function KeepoutEditor({ keepout }: { keepout: Keepout }) {
       </h3>
       <Field label="Layers">
         <div className="flex gap-1">
-          {(['top', 'bottom'] as CopperLayer[]).map((layer) => (
+          {copperLayers(currentPcb()).map((layer) => (
             <button key={layer} onClick={() => toggleLayer(layer)} className={cx('h-7 flex-1 rounded-md border capitalize', keepout.layers.includes(layer) ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
               {layer}
             </button>
@@ -683,10 +710,10 @@ function CutoutEditor({ cutout }: { cutout: Cutout }) {
 
 /* ---------- silkscreen ---------- */
 
-function SideButtons({ side, onChange }: { side: CopperLayer; onChange: (side: CopperLayer) => void }) {
+function SideButtons({ side, onChange }: { side: Side; onChange: (side: Side) => void }) {
   return (
     <div className="flex gap-1">
-      {(['top', 'bottom'] as CopperLayer[]).map((l) => (
+      {(['top', 'bottom'] as Side[]).map((l) => (
         <button key={l} onClick={() => onChange(l)} className={cx('h-7 flex-1 rounded-md border capitalize', side === l ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
           {l}
         </button>
@@ -809,7 +836,7 @@ async function importLogo(file: File) {
     const { shapes, aspect } = traceBitmap(await rasterizeInBrowser(url));
     const b = currentPcb().board;
     const width = Math.round(Math.min(15, b.width / 3, (b.height / 3) / aspect) * 10) / 10;
-    const logo = addLogo({ name: file.name.replace(/\.[^.]+$/, ''), x: b.x + b.width / 2, y: b.y + b.height / 2, width, height: width * aspect, rotation: 0, side: s.activeLayer, shapes });
+    const logo = addLogo({ name: file.name.replace(/\.[^.]+$/, ''), x: b.x + b.width / 2, y: b.y + b.height / 2, width, height: width * aspect, rotation: 0, side: sideOfLayer(s.activeLayer), shapes });
     s.setPcbTool('select');
     s.setPcbSelection([logo.id]);
     s.notify(`Logo traced (${shapes.length} shape${shapes.length === 1 ? '' : 's'}); drag it into place and set its width on the right`);
@@ -820,12 +847,15 @@ async function importLogo(file: File) {
 
 /* ---------- tool rail ---------- */
 
+const LAYER_KEYS: Record<CopperLayer, string> = { top: '1', inner1: '⇧1', inner2: '⇧2', bottom: '2' };
+
 export function PcbToolRail() {
   const tool = useEditor((s) => s.pcbTool);
   const layer = useEditor((s) => s.activeLayer);
   const hasSelection = useEditor((s) => s.pcbSelection.length > 0);
   const showPours = useEditor((s) => s.showPours);
   const pcb3d = useEditor((s) => s.pcb3d);
+  const stack = useEditor((s) => copperLayers(currentPcb(s.project)).join(','));
   const logoInput = useRef<HTMLInputElement>(null);
   const s = useEditor.getState;
   return (
@@ -876,16 +906,16 @@ export function PcbToolRail() {
         }}
       />
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
-      {(['top', 'bottom'] as CopperLayer[]).map((l, i) => (
+      {(stack.split(',') as CopperLayer[]).map((l) => (
         <button
           key={l}
-          title={`${l === 'top' ? 'Top' : 'Bottom'} layer (${i + 1})`}
+          title={`${LAYER_NAMES[l]} layer (${LAYER_KEYS[l]})`}
           aria-pressed={layer === l}
           onClick={() => s().setActiveLayer(l)}
           className={cx('flex h-7 w-8 items-center justify-center rounded-md text-[10px] font-semibold', layer === l ? 'ring-2 ring-[var(--select)]' : 'opacity-60 hover:opacity-100')}
-          style={{ background: l === 'top' ? 'var(--pcb-top)' : 'var(--pcb-bottom)', color: 'white' }}
+          style={{ background: `var(--pcb-${l})`, color: 'white' }}
         >
-          {l === 'top' ? 'TOP' : 'BOT'}
+          {{ top: 'TOP', inner1: 'IN1', inner2: 'IN2', bottom: 'BOT' }[l]}
         </button>
       ))}
       <IconButton label={showPours ? 'Hide copper pours' : 'Show copper pours'} active={showPours} onClick={() => s().setShowPours(!showPours)}>

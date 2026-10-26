@@ -1,6 +1,6 @@
 ---
 name: pcb-layout
-description: Turn a schematic made in this repo's Schematics app into a manufacturable 2-layer PCB for JLCPCB. Loads JLCPCB footprints, sizes the board, places parts sensibly, adds GND copper pours, routes (auto-router plus clean-up), tidies the silkscreen (designators, board name, pin labels, logos), runs DRC and exports Gerbers, drill, BOM and pick-and-place files. Use this whenever the user wants a PCB, board layout, placement, routing, a ground plane or pour, mounting holes, silkscreen text or a logo on the board, Gerbers, or to "get the board ready to order" — including right after a schematic was designed with the schematic-design skill.
+description: Turn a schematic made in this repo's Schematics app into a manufacturable 2- or 4-layer PCB for JLCPCB. Loads JLCPCB footprints, sizes the board, places parts sensibly, adds GND copper pours, routes (auto-router plus clean-up), tidies the silkscreen (designators, board name, pin labels, logos), runs DRC and exports Gerbers, drill, BOM and pick-and-place files. Use this whenever the user wants a PCB, board layout, placement, routing, a ground plane or pour, mounting holes, silkscreen text or a logo on the board, Gerbers, or to "get the board ready to order" — including right after a schematic was designed with the schematic-design skill.
 ---
 
 # PCB layout
@@ -94,9 +94,19 @@ board to check the result.
 - Use the bottom side (`"side": "bottom"`) only when the top is truly full. Assembly on both sides
   costs more.
 
-### 4. Ground pours
+### 4. Ground pours (and planes on 4 layers)
 
-`pcb_add_pour` with `"net": "GND"` on both layers. For a local plane of another net (say a wide
+**2 or 4 layers?** Stay on 2 layers for simple boards. Choose 4 (`pcb_set_board` with
+`"layers": 4`, ideally before routing) when the user asks for it, or for dense boards with a
+fine-pitch MCU, USB or fast signals. JLCPCB's 4-layer boards cost a little more but give a solid
+ground plane. Put a GND plane on Inner 1 (`pcb_add_pour` with `"layers": ["inner1"]`). Leave Inner 2
+free for signals; make it a power plane (e.g. +3V3) only when the board is not crowded, because
+plane layers are closed to routing. `pcb_autoroute` routes the signals first, then drops each SMD
+pad of a plane net into its plane through a stub and via (`planes` in its result), so don't route
+GND by hand. Pads it reports in `plane_failed` (usually exposed pads) need thermal vias from
+`pcb_add_vias`.
+
+`pcb_add_pour` with `"net": "GND"` on both outer layers. For a local plane of another net (say a wide
 VM area under a motor driver), add a zone with `rect` or `outline`: zones take priority and the
 GND pour flows around them. A ground plane gives every signal a short
 return path and makes most GND connections for free, which leaves the router far less to do.
