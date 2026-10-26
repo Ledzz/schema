@@ -58,6 +58,18 @@ describe('sheets', () => {
     expect(analyze(p, resolve).issues.some((i) => i.message.includes('Hierarchical port IN on Other has no block'))).toBe(true);
   });
 
+  it('silences unconnected pins with a no-connect marker on their own sheet only', () => {
+    const p = project({
+      sheets,
+      components: [comp('a', 'res', 'R1', 0, 0, { sheet: 's2' }), comp('b', 'res', 'R2', 0, 0, { sheet: 's1' })],
+      ports: [
+        { id: 'x1', kind: 'noconnect', name: '', x: -20, y: 0, rotation: 0, sheet: 's2' },
+        { id: 'x2', kind: 'noconnect', name: '', x: 20, y: 0, rotation: 0, sheet: 's2' },
+      ],
+    });
+    expect(analyze(p, resolve).unconnected.map((u) => `${u.designator}.${u.pinNumber}`)).toEqual(['R2.1', 'R2.2']);
+  });
+
   it('edits one sheet at a time', () => {
     // A wire on sheet 2 ends where R1 (sheet 1) has a pin: moving R1 must not drag it.
     const p = project({

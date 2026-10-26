@@ -91,12 +91,13 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports' 
     else atPoint.set(k, [node]);
   };
 
-  const pins: (PinRef & { node: string })[] = [];
+  const pins: (PinRef & { node: string; sheet: string })[] = [];
   for (const c of project.components) {
     for (const wp of worldPins(c, symbols(c.symbolKey))) {
       const node = `p:${c.id}:${wp.pin.id}`;
       pins.push({
         node,
+        sheet: sheetOf(c, project),
         componentId: c.id,
         designator: c.designator,
         pinId: wp.pin.id,
@@ -212,7 +213,7 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports' 
   const issues: ErcIssue[] = [];
   for (const p of pins) {
     const r = uf.find(p.node);
-    const nc = noConnect.has(pointKey(p.at));
+    const nc = noConnect.has(at(p.sheet, p.at));
     if ((groupSize.get(r) ?? 1) <= 1) {
       if (!nc) unconnected.push(p);
       continue;
