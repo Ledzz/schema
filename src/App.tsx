@@ -12,6 +12,7 @@ import { SchematicToolbar, StatusBar, Toast, TopBar } from './components/Chrome'
 import { TooltipLayer } from './components/Tooltip';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
+import { BlocksDialog } from './components/BlocksDialog';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
 // three.js only loads when the 3D view is opened.
@@ -92,6 +93,7 @@ export default function App() {
       <Toast />
       <TooltipLayer />
       <OrderDialog />
+      <BlocksDialog />
     </div>
   );
 }

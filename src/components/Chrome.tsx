@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import {
+  Blocks,
   Bot,
   Cable,
   CircleOff,
@@ -125,6 +126,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           label="Place"
           items={[
             { label: 'Part from library…', shortcut: '/', onSelect: focusLibrarySearch },
+            { label: 'Circuit block…', shortcut: 'B', onSelect: () => s().setBlocksOpen(true) },
             ...PASSIVE_TOOLS.map((t, i) => ({ label: PASSIVES[t.kind].label, shortcut: t.key, separatorBefore: i === 0, onSelect: () => startPassive(t.kind) })),
             { label: 'Wire', shortcut: 'W', separatorBefore: true, onSelect: () => s().setTool('wire') },
             { label: 'Net label', shortcut: 'N', onSelect: () => s().startPort('label') },
@@ -279,6 +281,9 @@ export function SchematicToolbar() {
           {t.icon}
         </IconButton>
       ))}
+      <IconButton label="Circuit block" shortcut="B" className="shrink-0" onClick={() => s().setBlocksOpen(true)}>
+        <Blocks className="h-4 w-4" />
+      </IconButton>
       {separator}
       <IconButton label="Rotate" shortcut="R" className="shrink-0" onClick={rotateSelection} disabled={!hasSelection && tool === 'select'}>
         <RotateCcw className="h-4 w-4" />

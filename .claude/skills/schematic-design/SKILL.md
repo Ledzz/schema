@@ -50,6 +50,15 @@ out to be on the other side of a symbol. `references/recipes.md` has proven sub-
 (decoupling, regulators, USB-C power, connectors, LEDs, I2C, buttons, reset, crystals, 555
 timers, MCU minimum systems) — read the parts the design uses.
 
+Many of them exist as ready blocks: `insert_block` places a 3.3 V AMS1117 regulator
+(`ldo-3v3`), USB-C 5 V input (`usb-c-power`), indicator LED (`led`), I2C pull-ups
+(`i2c-pullups`), push button (`button`), reset/enable RC (`reset-rc`), 8 MHz crystal with load
+capacitors (`crystal`), 555 astable (`ne555-astable`), SWD header (`swd-header`) or voltage
+divider (`divider`) with parts, wiring and flags in one call; its `params` set rails, net names
+and values (the tool description lists them). Use blocks for those parts of the plan and the
+individual tools for the rest, then move the blocks into place with `update_component`. After
+placing an IC, `add_decoupling` adds its supply-pin capacitors and bulk capacitor per rail.
+
 ### 3. Choose parts
 
 - **Passives, LEDs and diodes:** use `place_passive` with a value and a size. It normalises the

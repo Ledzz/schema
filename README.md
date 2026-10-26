@@ -44,6 +44,8 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Labels and flags.** Name them in the placement bar before placing (`Tab` jumps to the name); power and ground flags suggest the project's own rails and the common ones. Dropped on a pin, a label or flag gets a short stub leading away from the part, placed clear of other wiring. Wiring or labelling a pin removes its no-connect marker.
   - Move with rubber-banding wires (labels and flags drag their wires too), rotate, mirror, duplicate, copy/paste, undo/redo. Deleting a part also deletes the wires, labels and flags that only connected to it.
   - Box select, zoom and pan, junction dots, pin hover info, net highlighting.
+  - **Circuit blocks** (`B`, Place menu or toolbar): proven sub-circuits inserted with their parts, wiring, labels and flags in one undo step — 3.3 V regulator (AMS1117), USB-C 5 V power input, indicator LED, I2C pull-ups, push button, reset/enable RC, crystal with load capacitors, 555 astable timer, SWD header and voltage divider. Rails, net names and values are set before inserting; passives are matched to the cheapest JLCPCB part as usual.
+  - **Add decoupling** (inspector of a selected IC): 100 nF per supply pin, 1 µF + 10 nF on analog supplies (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags. Capacitors on rails above 5 V get a voltage rating; supply pins not yet on a rail get connected to the one you choose.
 - **PCB editor** (Schematic / PCB switch in the top bar)
   - **Sync from the schematic.** Loads each part's JLCPCB footprint, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
@@ -75,12 +77,13 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 43 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 45 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
 - **Schematic:**
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
+  - `insert_block` (circuit blocks), `add_decoupling`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
 - **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board` (size or custom outline), `pcb_add_mounting_holes`, `pcb_add_keepout`, `pcb_add_cutout`, `pcb_add_text`, `pcb_add_logo`, `pcb_update_silkscreen`, `pcb_set_designator`, `pcb_remove_features`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour` (whole board or a zone), `pcb_remove_pours`, `pcb_check`, `pcb_jlcpcb_check` (JLCPCB manufacturing checklist), `pcb_render` (board picture with mm rulers), `pcb_export_step` (assembled board as STEP), `pcb_export` (optionally without through-hole parts in the assembly files)

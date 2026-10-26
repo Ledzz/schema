@@ -212,6 +212,9 @@ export function useShortcuts() {
         case 'l':
           s.setLibraryOpen(!s.libraryOpen);
           break;
+        case 'b':
+          s.setBlocksOpen(true);
+          break;
         case '/':
           if (s.tool === 'wire' && s.wireDraft) s.toggleWireFlip();
           else focusLibrarySearch();

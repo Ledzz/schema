@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, ExternalLink, FlipHorizontal2, Play, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
+import { Bot, ExternalLink, FlipHorizontal2, Play, Plus, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import { useWebMcp } from '../../store/webmcp';
 import { connectivity, findNoFeeAlternative } from '../../lib/actions';
-import { deleteSelection, mirrorSelection, rotateSelection } from '../../lib/editing';
+import { deleteSelection, fitView, mirrorSelection, rotateSelection } from '../../lib/editing';
+import { addDecoupling, planDecoupling, supplyPins, type PlannedCap } from '../../lib/decoupling';
 import { worldPins } from '../../lib/schematic/geometry';
 import { symbolFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
@@ -250,6 +251,8 @@ function ComponentInspector({ c }: { c: Component }) {
         )}
       </div>
 
+      {!c.generic && <DecouplingSection c={c} />}
+
       {attrs.length > 0 && (
         <dl className="grid grid-cols-[88px_1fr] gap-x-2 gap-y-1 text-[11px]">
           {attrs.map(([k, v]) => (
@@ -288,6 +291,74 @@ function ComponentInspector({ c }: { c: Component }) {
           })}
         </div>
       </details>
+    </div>
+  );
+}
+
+/** Adds the recipe's decoupling capacitors for an IC's supply pins. */
+function DecouplingSection({ c }: { c: Component }) {
+  const project = useEditor((s) => s.project);
+  const pins = useMemo(() => supplyPins(c, project), [c, project]);
+  const commonRail = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of project.ports) if (p.kind === 'power' && p.name.trim()) counts.set(p.name, (counts.get(p.name) ?? 0) + 1);
+    return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '+3V3';
+  }, [project.ports]);
+  const [rail, setRail] = useState<string | null>(null);
+  const [bulk, setBulk] = useState(true);
+  const [busy, setBusy] = useState(false);
+  if (pins.length === 0) return null;
+  const loose = pins.filter((p) => !p.rail);
+  const chosenRail = rail ?? commonRail;
+  let caps: PlannedCap[] = [];
+  let problem: string | null = null;
+  try {
+    caps = planDecoupling(c, { rail: chosenRail, bulk }, project).caps;
+  } catch (err) {
+    problem = (err as Error).message;
+  }
+  const counts = new Map<string, number>();
+  for (const cap of caps) counts.set(cap.value, (counts.get(cap.value) ?? 0) + 1);
+  const add = async () => {
+    setBusy(true);
+    const s = useEditor.getState();
+    try {
+      const r = await addDecoupling(c.id, { rail: chosenRail, bulk });
+      s.setSelection(r.ids);
+      fitView(r.ids);
+      s.notify(`Added ${r.caps.length} capacitors (${r.caps[0].designator}–${r.caps[r.caps.length - 1].designator}); place them next to their pins on the board`);
+    } catch (err) {
+      s.notify((err as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-2 rounded-lg border border-line bg-panel-2 p-2.5">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">Decoupling</span>
+        <span className="text-[11px] text-muted" data-tip={pins.map((p) => `${p.label}: ${p.rail ?? 'not connected'}`).join(' · ')}>
+          {pins.length} supply pin{pins.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      {loose.length > 0 && (
+        <Field label="Rail">
+          <input className={inputClass} value={chosenRail} onChange={(e) => setRail(e.target.value)} spellCheck={false} />
+        </Field>
+      )}
+      {loose.length > 0 && <p className="text-[11px] text-muted">Pin{loose.length === 1 ? '' : 's'} {loose.map((p) => p.label).join(', ')} will be connected to it.</p>}
+      <label className="flex items-center gap-2 text-[11px]">
+        <input type="checkbox" checked={bulk} onChange={(e) => setBulk(e.target.checked)} /> 10 µF bulk capacitor per rail
+      </label>
+      <button
+        onClick={() => void add()}
+        disabled={busy || !!problem}
+        data-tip={problem ?? '100 nF per supply pin, 1 µF + 10 nF on analog supplies, under the part with rail and GND flags'}
+        className="inline-flex h-7 w-full items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 disabled:opacity-45 dark:hover:bg-white/5"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {busy ? 'Adding…' : `Add ${[...counts].map(([v, n]) => `${n} × ${v}`).join(', ') || 'capacitors'}`}
+      </button>
     </div>
   );
 }

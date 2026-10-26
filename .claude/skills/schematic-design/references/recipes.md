@@ -7,6 +7,10 @@ stock and Basic status change.
 Contents: decoupling · linear regulators · USB-C power · connectors · indicator LED · I2C ·
 buttons · reset/enable · crystals · 555 timer · MCU minimum systems
 
+`insert_block` builds the regulator (AMS1117), USB-C power, LED, I2C, button, reset, crystal,
+555 and SWD-header recipes below in one call, and `add_decoupling` applies the decoupling one to
+an IC.
+
 ## Decoupling
 
 - 100 nF ceramic (X7R, 0402/0603) on **every** IC power pin, placed next to that pin on the PCB.

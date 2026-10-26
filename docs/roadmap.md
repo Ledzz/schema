@@ -17,6 +17,10 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Circuit blocks and automatic decoupling** (2026-10-26): ten sub-circuits from the
+  schematic-design recipes (regulator, USB-C power, LED, I2C pull-ups, button, reset RC,
+  crystal, 555 timer, SWD header, divider) inserted with parts and wiring in one undo step, and
+  decoupling capacitors for a selected IC's supply pins; both also as agent tools.
 - **Easier schematic wiring and labelling** (2026-10-26): wires start by dragging from a pin
   and route around parts from pin to pin, with automatic bends, `/` to flip one and Backspace to
   take off a corner; labels and flags are named before placing (with the project's rails as
@@ -61,7 +65,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - ★ Cross-probing between schematic and PCB.
 - Net classes and differential-pair marking.
 - Stricter design check: pin-type conflicts such as two outputs on one net.
-- Snippets, reusable blocks and templates.
+- User-made snippets and templates (built-in circuit blocks exist).
 - PDF and print export (SVG only today).
 
 ## Libraries

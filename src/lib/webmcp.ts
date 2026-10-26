@@ -32,6 +32,8 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
+import { BLOCKS, insertBlock } from './blocks';
+import { addDecoupling } from './decoupling';
 import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
@@ -449,6 +451,56 @@ export const TOOLS: ToolDefinition[] = [
     execute: async (input) => {
       markNoConnect(String(input.pin));
       return { ok: true };
+    },
+  },
+  {
+    name: 'insert_block',
+    title: 'Insert circuit block',
+    description: `Insert a proven sub-circuit with its parts, wiring, labels and power flags in one step (one undo step), to the right of the drawing unless x/y are given. Blocks: ${BLOCKS.map((b) => `${b.id} (${b.title}; params ${b.params.map((p) => `${p.key}="${p.default}"`).join(', ')})`).join('; ')}. Parameters left out take those defaults. Returns the designator of each part and the nets it uses; check the result with check_design and move the parts where they belong.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        block: { type: 'string', enum: BLOCKS.map((b) => b.id) },
+        params: { type: 'object', description: 'Net names and values, e.g. {"VIN": "+5V", "VOUT": "+3V3"}.', additionalProperties: { type: 'string' } },
+        x: { type: 'number' },
+        y: { type: 'number' },
+      },
+      required: ['block'],
+    },
+    execute: async (input) => {
+      const params = Object.fromEntries(Object.entries((input.params as Record<string, unknown>) ?? {}).map(([k, v]) => [k, String(v)]));
+      const at: [number, number] | undefined = input.x !== undefined && input.y !== undefined ? [Number(input.x), Number(input.y)] : undefined;
+      const r = await insertBlock(String(input.block), params, at);
+      st().setSelection(r.ids);
+      return { parts: r.parts, nets: r.nets };
+    },
+  },
+  {
+    name: 'add_decoupling',
+    title: 'Add decoupling capacitors',
+    description:
+      'Add decoupling for an IC: 100 nF per supply pin (VDD, VCC, VIN…), 1 µF + 10 nF on analog supply pins (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags (one undo step). Capacitors on rails above 5 V get a voltage rating. Supply pins not yet on a named net need `rail` and are connected to it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        designator: { type: 'string', description: 'The IC, e.g. "U2".' },
+        rail: { type: 'string', description: 'Rail for supply pins not yet on a named net, e.g. "+3V3".' },
+        value: { type: 'string', description: 'Capacitor per supply pin (default "100n").' },
+        size: { type: 'string', description: 'Chip size for those capacitors (default "0603"); bulk capacitors are 0805.' },
+        bulk: { type: 'boolean', description: 'Add a 10 µF bulk capacitor per rail (default true).' },
+      },
+      required: ['designator'],
+    },
+    execute: async (input) => {
+      const c = byDesignator(String(input.designator));
+      const r = await addDecoupling(c.id, {
+        rail: input.rail === undefined ? undefined : String(input.rail),
+        value: input.value === undefined ? undefined : String(input.value),
+        size: input.size === undefined ? undefined : String(input.size),
+        bulk: input.bulk === undefined ? undefined : Boolean(input.bulk),
+      });
+      st().setSelection(r.ids);
+      return { capacitors: r.caps.map((cap) => ({ designator: cap.designator, value: cap.value, rail: cap.rail, for_pin: cap.pin ?? 'bulk' })), connected_pins: r.connected.length ? r.connected : undefined };
     },
   },
   {

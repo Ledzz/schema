@@ -122,6 +122,9 @@ interface EditorState {
   /** The "Order from JLCPCB" sheet is open. */
   orderOpen: boolean;
   setOrderOpen: (open: boolean) => void;
+  /** The circuit block picker is open. */
+  blocksOpen: boolean;
+  setBlocksOpen: (open: boolean) => void;
   /** The PCB editor shows the 3D view instead of the 2D canvas. */
   pcb3d: boolean;
   setPcb3d: (on: boolean) => void;
@@ -162,6 +165,12 @@ interface EditorState {
   endTransient: () => void;
   undo: () => void;
   redo: () => void;
+  /** The document now, to fold the edits made after it into one undo step (or drop them). */
+  historyMark: () => Doc;
+  /** Turns every edit since `mark` into a single undo step. */
+  squashHistory: (mark: Doc) => void;
+  /** Throws away every edit since `mark`. */
+  revertHistory: (mark: Doc) => void;
   addSymbols: (symbols: Project['symbols']) => void;
   loadProject: (p: Project) => void;
   renameProject: (name: string) => void;
@@ -265,6 +274,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setQuickEdit: (quickEditId) => set({ quickEditId }),
   orderOpen: false,
   setOrderOpen: (orderOpen) => set({ orderOpen }),
+  blocksOpen: false,
+  setBlocksOpen: (blocksOpen) => set({ blocksOpen }),
   pcb3d: false,
   setPcb3d: (pcb3d) => set({ pcb3d }),
 
@@ -350,6 +361,18 @@ export const useEditor = create<EditorState>()((set, get) => ({
     });
   },
 
+  historyMark: () => docOf(get().project),
+  squashHistory: (mark) => {
+    const { past } = get();
+    const i = past.findLastIndex((d) => d.components === mark.components && d.wires === mark.wires && d.ports === mark.ports);
+    if (i >= 0) set({ past: past.slice(0, i + 1) });
+  },
+  revertHistory: (mark) => {
+    const { past, project } = get();
+    const i = past.findLastIndex((d) => d.components === mark.components && d.wires === mark.wires && d.ports === mark.ports);
+    if (i < 0) return;
+    set({ project: { ...project, components: mark.components, wires: mark.wires, ports: mark.ports, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
+  },
   undo: () => {
     const { past, future, project } = get();
     const prev = past[past.length - 1];
