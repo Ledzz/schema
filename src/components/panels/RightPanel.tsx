@@ -3,13 +3,14 @@ import { Bot, ExternalLink, FlipHorizontal2, Play, Plus, Replace, RotateCcw, Spa
 import { useEditor } from '../../store/editor';
 import { useWebMcp } from '../../store/webmcp';
 import { connectivity, findNoFeeAlternative, nameNet, renameNet } from '../../lib/actions';
-import { deleteSelection, fitView, mirrorSelection, rotateSelection } from '../../lib/editing';
+import { alignSelection, deleteSelection, fitView, mirrorSelection, rotateSelection } from '../../lib/editing';
+import { ALIGN_ACTIONS } from '../align';
 import { addDecoupling, planDecoupling, supplyPins, type PlannedCap } from '../../lib/decoupling';
 import { worldPins } from '../../lib/schematic/geometry';
 import { symbolFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
 import { TOOLS, runTool, type ToolDefinition } from '../../lib/webmcp';
-import { CLASS_HINT, ClassBadge, Field, Tabs, cx, formatPrice, formatStock, inputClass } from '../ui';
+import { CLASS_HINT, ClassBadge, Field, IconButton, Tabs, cx, formatPrice, formatStock, inputClass } from '../ui';
 import { PassiveEditor } from '../passives/PassiveEditor';
 import { PcbInspector } from '../pcb/PcbPanels';
 import { assignPassive, pickPart } from '../../lib/passives';
@@ -49,12 +50,20 @@ function Inspector() {
   if (selection.length === 0) return <ProjectSummary />;
   if (selection.length > 1) {
     const selected = project.components.filter((c) => selection.includes(c.id));
+    const alignable = selected.length + project.ports.filter((p) => selection.includes(p.id)).length;
     const kind = selected[0]?.generic?.kind;
     const samePassives = kind && selected.length === selection.length && selected.every((c) => c.generic?.kind === kind);
     return (
       <div className="space-y-3 p-3 text-xs">
         <div className="font-semibold">
           {samePassives ? `${selected.length} ${PASSIVES[kind].label.toLowerCase()}s` : `${selection.length} items selected`}
+        </div>
+        <div className="flex flex-wrap gap-1" role="toolbar" aria-label="Align">
+          {ALIGN_ACTIONS.map((a) => (
+            <IconButton key={a.mode} label={a.label} className="h-7 w-7" disabled={alignable < a.min} onClick={() => alignSelection(a.mode)}>
+              {a.icon}
+            </IconButton>
+          ))}
         </div>
         {samePassives && (
           <PassiveEditor

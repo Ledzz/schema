@@ -129,6 +129,7 @@ export function useShortcuts() {
           z: () => (e.shiftKey ? s.redo() : s.undo()),
           y: () => s.redo(),
           d: duplicateSelection,
+          f: () => s.setFindOpen(true),
           a: selectAll,
           c: copySelection,
           v: paste,

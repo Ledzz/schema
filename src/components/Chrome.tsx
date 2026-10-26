@@ -22,6 +22,7 @@ import { ROUTE_MODE_NAMES, useEditor, type Tool } from '../store/editor';
 import { useWebMcp } from '../store/webmcp';
 import { connectivity, downloadText, refreshStock, safeFileName } from '../lib/actions';
 import {
+  alignSelection,
   deleteSelection,
   duplicateSelection,
   exportSvg,
@@ -39,6 +40,7 @@ import { formatNetlist } from '../lib/schematic/netlist';
 import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
+import { ALIGN_ACTIONS } from './align';
 import { startPassive } from '../lib/passives';
 import { detachDesign, openDesign, saveDesign } from '../lib/designs';
 import { boardModel, changeRouteMode, enterPcb, exportStep } from '../lib/pcb/actions';
@@ -67,6 +69,8 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
   const theme = useEditor((s) => s.theme);
   const canUndo = useEditor((s) => s.past.length > 0);
   const canRedo = useEditor((s) => s.future.length > 0);
+  const selectionCount = useEditor((s) => s.selection.length);
+  const mode = useEditor((s) => s.mode);
   const status = useWebMcp((s) => s.status);
   const sourceFile = useEditor((s) => s.sourceFile);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -120,6 +124,8 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Mirror', shortcut: 'X', onSelect: mirrorSelection },
             { label: 'Delete', shortcut: 'Del', onSelect: deleteSelection },
             { label: 'Select all', shortcut: `${mod}A`, separatorBefore: true, onSelect: selectAll },
+            { label: 'Find…', shortcut: `${mod}F`, onSelect: () => s().setFindOpen(true) },
+            ...ALIGN_ACTIONS.map((a, i) => ({ label: a.label, separatorBefore: i === 0, disabled: selectionCount < a.min || mode !== 'schematic', onSelect: () => alignSelection(a.mode) })),
           ]}
         />
         <MenuButton

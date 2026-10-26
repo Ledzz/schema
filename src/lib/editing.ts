@@ -5,7 +5,7 @@ import { useEditor } from '../store/editor';
 import { nextDesignator, splitDesignator, annotate } from './schematic/designators';
 import { componentBox, samePoint, snap, unionBoxes } from './schematic/geometry';
 import { portBox } from './schematic/hit';
-import { deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type Doc } from './schematic/ops';
+import { alignItems, deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type AlignMode, type Doc } from './schematic/ops';
 import { connectionNear } from './schematic/hit';
 import { elbow, simplify, wireVerticalFirst } from './schematic/route';
 import { resolverFor } from './schematic/symbols';
@@ -98,6 +98,12 @@ export function paste(at?: Vec) {
   st().setSelection(created);
 }
 
+/** Aligns or distributes the selected parts and labels as one undo step. */
+export function alignSelection(mode: AlignMode) {
+  const ids = selectedSet();
+  st().commit((doc) => alignItems(doc, ids, mode, symbols()));
+}
+
 export function selectAll() {
   const { project } = st();
   st().setSelection([...project.components, ...project.wires, ...project.ports].map((i) => i.id));
@@ -181,7 +187,8 @@ export function fitView(ids?: string[]) {
   const top = TOOLBAR_HEIGHT;
   const w = Math.max(b.x2 - b.x1, 40);
   const h = Math.max(b.y2 - b.y1, 40);
-  const zoom = Math.min(8, Math.max(0.2, Math.min((canvasSize.width - margin * 2) / w, (canvasSize.height - top - margin * 2) / h)));
+  // A single small part shouldn't fill the screen.
+  const zoom = Math.min(ids?.length ? 4 : 8, Math.max(0.2, Math.min((canvasSize.width - margin * 2) / w, (canvasSize.height - top - margin * 2) / h)));
   st().setView({
     zoom,
     x: canvasSize.width / 2 - ((b.x1 + b.x2) / 2) * zoom,

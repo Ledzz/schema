@@ -13,6 +13,7 @@ import { TooltipLayer } from './components/Tooltip';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
 import { BlocksDialog } from './components/BlocksDialog';
+import { FindBox } from './components/FindBox';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
 // three.js only loads when the 3D view is opened.
@@ -80,6 +81,7 @@ export default function App() {
           ) : (
             <PcbCanvas />
           )}
+          <FindBox />
         </main>
         <RightPanel />
       </div>

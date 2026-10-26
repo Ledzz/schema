@@ -125,6 +125,9 @@ interface EditorState {
   /** The circuit block picker is open. */
   blocksOpen: boolean;
   setBlocksOpen: (open: boolean) => void;
+  /** The ⌘F find box is open. */
+  findOpen: boolean;
+  setFindOpen: (open: boolean) => void;
   /** The PCB editor shows the 3D view instead of the 2D canvas. */
   pcb3d: boolean;
   setPcb3d: (on: boolean) => void;
@@ -276,6 +279,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setOrderOpen: (orderOpen) => set({ orderOpen }),
   blocksOpen: false,
   setBlocksOpen: (blocksOpen) => set({ blocksOpen }),
+  findOpen: false,
+  setFindOpen: (findOpen) => set({ findOpen }),
   pcb3d: false,
   setPcb3d: (pcb3d) => set({ pcb3d }),
 

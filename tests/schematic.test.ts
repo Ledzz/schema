@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyze } from '../src/lib/schematic/netlist';
-import { deleteItems, dragWire, moveItems, moveWirePoints, rotateItems } from '../src/lib/schematic/ops';
+import { alignItems, deleteItems, dragWire, moveItems, moveWirePoints, rotateItems } from '../src/lib/schematic/ops';
+import { findItems } from '../src/lib/find';
 import { resolverFor } from '../src/lib/schematic/symbols';
 import { autoRoute, routePins, portRotationFor, simplify, wireVerticalFirst } from '../src/lib/schematic/route';
 import { worldPins, toWorld } from '../src/lib/schematic/geometry';
@@ -286,5 +287,35 @@ describe('designators', () => {
       ['a', 'R2'],
       ['c', 'R3'],
     ]);
+  });
+});
+
+describe('find', () => {
+  const p = project({
+    components: [comp('a', 'res', 'R1', 0, 0, { value: '10kΩ', lcsc: 'C25804' }), comp('b', 'res', 'R12', 100, 0, { value: '1kΩ' }), comp('c', 'res', 'U1', 200, 0, { value: 'STM32F030', attrs: { 'Manufacturer Part': 'STM32F030C6T6TR' } })],
+    ports: [{ id: 'l', kind: 'label', name: 'R1_SENSE', x: -20, y: 0, rotation: 0 }],
+  });
+  const conn = analyze(p, resolve);
+
+  it('puts exact designators first, then prefixes, then other fields and nets', () => {
+    expect(findItems(p, conn, 'r1').map((r) => r.label)).toEqual(['R1', 'R12', 'R1_SENSE']);
+    expect(findItems(p, conn, 'c25804').map((r) => r.label)).toEqual(['R1']);
+    expect(findItems(p, conn, 'stm32')[0]).toMatchObject({ kind: 'part', label: 'U1' });
+    expect(findItems(p, conn, 'sense')[0]).toMatchObject({ kind: 'net', label: 'R1_SENSE', ids: ['l'] });
+    expect(findItems(p, conn, '   ')).toEqual([]);
+  });
+});
+
+describe('align and distribute', () => {
+  const p = project({ components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 100, 40), comp('c', 'res', 'R3', 300, 90)] });
+  const ids = new Set(['a', 'b', 'c']);
+
+  it('aligns tops on the grid and spaces centres evenly', () => {
+    expect(alignItems(p, ids, 'top', resolve).components.map((c) => c.y)).toEqual([0, 0, 0]);
+    expect(alignItems(p, ids, 'left', resolve).components.map((c) => c.x)).toEqual([0, 0, 0]);
+    // Centres at 0, 100 and 300: the middle one goes to 150.
+    expect(alignItems(p, ids, 'distribute-x', resolve).components.map((c) => c.x)).toEqual([0, 150, 300]);
+    // Too few items: nothing moves.
+    expect(alignItems(p, new Set(['a', 'b']), 'distribute-y', resolve)).toBe(p);
   });
 });

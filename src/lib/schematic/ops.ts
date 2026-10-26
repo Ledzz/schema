@@ -1,4 +1,6 @@
-import { nextRotation, onSegment, rotate, samePoint, snap, worldPins } from './geometry';
+import { componentBox, nextRotation, onSegment, rotate, samePoint, snap, worldPins } from './geometry';
+import { portBox } from './hit';
+import type { Box } from '../easyeda/symbol';
 import { simplify } from './route';
 import type { SymbolResolver } from './symbols';
 import type { Component, NetPort, Project, Vec, Wire } from './types';
@@ -195,6 +197,45 @@ export function dragWire(doc: Doc, wireId: string, grab: WireGrab, delta: Vec, s
       return to ? { ...p, x: to[0], y: to[1] } : p;
     }),
   };
+}
+
+export type AlignMode = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom' | 'distribute-x' | 'distribute-y';
+
+/**
+ * Lines up the selected parts and labels by their outlines (left/center/right, top/middle/
+ * bottom) or spaces them evenly between the outermost two. Moves are whole multiples of the
+ * 10-unit grid so pins stay on it, which can leave alignment a few units off; wires follow.
+ */
+export function alignItems(doc: Doc, ids: ReadonlySet<string>, mode: AlignMode, symbols: SymbolResolver): Doc {
+  const items = [
+    ...doc.components.filter(isSelected(ids)).map((c) => ({ id: c.id, box: componentBox(c, symbols(c.symbolKey)) })),
+    ...doc.ports.filter(isSelected(ids)).map((p) => ({ id: p.id, box: portBox(p) })),
+  ];
+  if (items.length < (mode.startsWith('distribute') ? 3 : 2)) return doc;
+  const horizontal = mode === 'left' || mode === 'center' || mode === 'right' || mode === 'distribute-x';
+  const lo = (b: Box) => (horizontal ? b.x1 : b.y1);
+  const hi = (b: Box) => (horizontal ? b.x2 : b.y2);
+  const mid = (b: Box) => (lo(b) + hi(b)) / 2;
+  const shifts = new Map<string, number>();
+  if (mode === 'distribute-x' || mode === 'distribute-y') {
+    const sorted = [...items].sort((a, b) => mid(a.box) - mid(b.box));
+    const first = mid(sorted[0].box);
+    const step = (mid(sorted[sorted.length - 1].box) - first) / (sorted.length - 1);
+    sorted.forEach((it, i) => shifts.set(it.id, first + step * i - mid(it.box)));
+  } else {
+    const edge = mode === 'left' || mode === 'top' ? Math.min(...items.map((i) => lo(i.box))) : mode === 'right' || mode === 'bottom' ? Math.max(...items.map((i) => hi(i.box))) : null;
+    const center = (Math.min(...items.map((i) => lo(i.box))) + Math.max(...items.map((i) => hi(i.box)))) / 2;
+    for (const it of items) {
+      const target = mode === 'left' || mode === 'top' ? edge! - lo(it.box) : mode === 'right' || mode === 'bottom' ? edge! - hi(it.box) : center - mid(it.box);
+      shifts.set(it.id, target);
+    }
+  }
+  let out = doc;
+  for (const [id, shift] of shifts) {
+    const d = snap(shift, 10);
+    if (d) out = moveItems(out, new Set([id]), horizontal ? d : 0, horizontal ? 0 : d, symbols);
+  }
+  return out;
 }
 
 /** Updates one component (e.g. a new position or rotation) and keeps attached wires connected. */
