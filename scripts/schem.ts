@@ -159,7 +159,14 @@ async function main() {
       const errors = check.issues.filter((i) => i.severity === 'error').map((i) => i.message);
       const dir = join(dirname(projectPath), `${slug}-fab`);
       const skip = input.hand_solder_through_hole ? throughHoleIds() : new Set<string>();
-      return { files: exportTo(dir, skip), drc_errors: errors, hand_soldered: st().project.components.filter((c) => skip.has(c.id)).map((c) => c.designator) };
+      const { jlcpcbChecklist } = await import('../src/lib/pcb/jlcpcb');
+      const jlcpcb = jlcpcbChecklist(st().project, { skip }).filter((i) => i.status === 'fail').map((i) => `${i.title}: ${i.value}`);
+      return {
+        files: exportTo(dir, skip),
+        drc_errors: errors,
+        jlcpcb_failures: jlcpcb.length ? jlcpcb : undefined,
+        hand_soldered: st().project.components.filter((c) => skip.has(c.id)).map((c) => c.designator),
+      };
     },
     pcb_add_logo: async (input) => placeTracedLogo(input, await rasterizeImage(String(input.image), TRACE_RESOLUTION)),
     pcb_render: async (input) => {
@@ -176,7 +183,7 @@ async function main() {
   const cliDescriptions: Record<string, string> = {
     new_schematic: 'Replace the project with an empty one (optionally named). Nothing is asked; the old content is gone from this file.',
     pcb_export:
-      'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths and any DRC errors. With hand_solder_through_hole, through-hole parts stay out of the BOM and CPL so JLCPCB does not charge for soldering them.',
+      'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths, any DRC errors and any failed items of the JLCPCB checklist (see pcb_jlcpcb_check). With hand_solder_through_hole, through-hole parts stay out of the BOM and CPL so JLCPCB does not charge for soldering them.',
     pcb_render:
       'Draw the board as a PNG in <project>-renders/ and return its path; open it with an image viewer (Claude Code’s Read tool shows it). Copper is top red, bottom blue, through-hole gold; pours, silkscreen, metal connector bodies (dashed orange), unrouted connections (dashed white), DRC markers (red errors, amber warnings) and millimetre rulers along the top and left edges are drawn too.',
   };

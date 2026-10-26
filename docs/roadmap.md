@@ -16,6 +16,9 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **JLCPCB checklist** (2026-10-26): the board measured against JLCPCB's published PCB and
+  assembly limits, in the PCB panel, the order sheet (failures block the order) and as an agent
+  tool. Silkscreen defaults now meet JLCPCB's 1 mm text and 0.15 mm line minimums.
 - **Silkscreen text and logos, movable designators** (2026-10-26): text on either side with a
   fuller stroke font (lowercase, symbols, several lines, proportional spacing), logos traced from
   PNG/JPEG/SVG images, and designators that can be moved, rotated, resized or hidden. Gerbers,
@@ -70,8 +73,9 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - Zone priorities beyond "zones before whole-board pours", and cutouts inside a single zone.
 - Per-net and net-class rules, rule areas.
 - Per-pad thermal settings; stitching-via arrays in the UI (an agent tool only today).
-- More DRC: silkscreen over mask openings rather than pads, annular ring, drill-to-copper, courtyard overlap (approximated
-  with bounding boxes today), checks against JLC's limits.
+- More DRC: silkscreen over mask openings rather than pads, drill-to-copper, courtyard overlap
+  (approximated with bounding boxes today), solder mask slivers. (JLCPCB's limits are checked by
+  the JLCPCB checklist.)
 
 ## Outputs and ordering
 

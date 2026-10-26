@@ -34,6 +34,7 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
+import { checklistReady, jlcpcbChecklist } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
 import { rasterizeInBrowser, traceBitmap, type Bitmap } from './pcb/logo';
 import type { Box } from './pcb/geometry';
@@ -879,7 +880,7 @@ export const TOOLS: ToolDefinition[] = [
         size: { type: 'number', minimum: 0.5, maximum: 20, description: `Cap height in mm (default ${TEXT_SIZE}).` },
         rotation: { type: 'number', description: 'Degrees counter-clockwise (default 0).' },
         side: { type: 'string', enum: ['top', 'bottom'], description: 'Default top.' },
-        stroke_width: { type: 'number', minimum: 0.1, maximum: 2, description: 'Line width in mm (default 15% of the size, at least 0.12).' },
+        stroke_width: { type: 'number', minimum: 0.1, maximum: 2, description: 'Line width in mm (default 15% of the size, at least JLCPCB’s 0.15 mm minimum).' },
       },
       required: ['text', 'x', 'y'],
     },
@@ -970,7 +971,7 @@ export const TOOLS: ToolDefinition[] = [
         x: { type: 'number' },
         y: { type: 'number' },
         rotation: { type: 'number', description: 'Degrees counter-clockwise as seen on the board.' },
-        size: { type: 'number', minimum: 0.5, maximum: 5, description: 'Text height in mm (default 0.8).' },
+        size: { type: 'number', minimum: 0.5, maximum: 5, description: 'Text height in mm (default 1, JLCPCB’s minimum for legible text).' },
         hidden: { type: 'boolean' },
         reset: { type: 'boolean' },
       },
@@ -1121,6 +1122,35 @@ export const TOOLS: ToolDefinition[] = [
       const ids = pours.filter((p) => !input.net || p.net === String(input.net)).map((p) => p.id);
       removePours(ids);
       return { removed: ids.length };
+    },
+  },
+  {
+    name: 'pcb_jlcpcb_check',
+    title: 'JLCPCB manufacturing checklist',
+    description:
+      'Check the board against JLCPCB’s published limits for standard 2-layer boards and PCB assembly: board size, track width, copper spacing and edge clearance (measured on the actual copper), design rules, via and drill sizes, annular rings, hole spacing, non-plated holes and cutouts, silkscreen line width, text height and placement, and for assembly: library parts, board size, sides, package sizes and pin pitch, extended parts, stock and through-hole parts. Each item has status pass, warn (costs extra, may print poorly or needs standard PCBA), fail (JLCPCB cannot make it) or info. Run it before pcb_export.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assembly: { type: 'boolean', description: 'Include the assembly checks (default true).' },
+        hand_solder_through_hole: { type: 'boolean', description: 'Through-hole parts are left out of assembly (default false).' },
+        quantity: { type: 'integer', minimum: 1, description: 'Boards to order, for the stock check (default 5).' },
+      },
+    },
+    annotations: { readOnlyHint: true },
+    execute: async (input) => {
+      if (!currentPcb().placements.length) throw new Error('The PCB is empty; run pcb_update first');
+      const items = jlcpcbChecklist(st().project, {
+        assembly: input.assembly !== false,
+        skip: input.hand_solder_through_hole ? throughHoleIds() : undefined,
+        quantity: input.quantity === undefined ? undefined : Number(input.quantity),
+      });
+      return {
+        ready: checklistReady(items),
+        failed: items.filter((i) => i.status === 'fail').length,
+        warnings: items.filter((i) => i.status === 'warn').length,
+        items: items.map(({ group, title, status, value, limit, detail }) => ({ group, title, status, value, limit, detail })),
+      };
     },
   },
   {

@@ -148,12 +148,18 @@ Finish the printing once parts and routing are settled:
 - Render the board and check that nothing overlaps; `pcb_update_silkscreen` moves or changes text
   and logos by id.
 
-### 7. Design rule check
+### 7. Design rule check and JLCPCB checklist
 
 `pcb_check` must report no errors before you export. Read the warnings too: a pad with fewer
 than two thermal spokes may solder poorly or lose its GND connection, and a track under a metal
 shell is only insulated by solder mask. Overlapping parts, vias in pads and silkscreen on pads are
 worth fixing. The render circles each problem, which makes it easy to see what to move.
+
+Then run `pcb_jlcpcb_check` (with `hand_solder_through_hole` if the user will solder those parts):
+it measures the board against JLCPCB's limits, including things DRC doesn't treat as errors, such
+as stacked or overlapping vias of one net, vias that need JLCPCB's costlier small-via option, thin
+annular rings and silkscreen too small to print. Fix every `fail` before exporting; mention the
+`warn` items you accept in the hand-off. `pcb_export` also lists any failures.
 
 ### 8. Export and hand off
 

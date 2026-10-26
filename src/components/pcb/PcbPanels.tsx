@@ -29,8 +29,9 @@ import {
   updateText,
   updateTrack,
 } from '../../lib/pcb/actions';
-import { DESIGNATOR_SIZE, designatorLabel, labelComponent } from '../../lib/pcb/silk';
+import { DESIGNATOR_SIZE, designatorLabel, labelComponent, strokeFor } from '../../lib/pcb/silk';
 import { rasterizeInBrowser, traceBitmap } from '../../lib/pcb/logo';
+import { JlcpcbChecklistPanel } from './Checklist';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
 import { DEFAULT_HOLE, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
 import { cornerHolePositions } from '../../lib/pcb/outline';
@@ -81,15 +82,17 @@ export function PcbLeftPanel() {
         value={tab}
         onChange={setTab}
         tabs={[
-          { value: 'parts', label: `Parts · ${pcb.placements.length}` },
+          { value: 'parts', label: `Parts ${pcb.placements.length}` },
           { value: 'nets', label: <span className="inline-flex items-center gap-1">Nets{unrouted > 0 && <span className="rounded-full bg-amber-500/20 px-1.5 text-[10px] text-amber-600 dark:text-amber-300">{unrouted}</span>}</span> },
           { value: 'drc', label: <span className="inline-flex items-center gap-1">DRC{issues.length > 0 && <span className="rounded-full bg-rose-500/20 px-1.5 text-[10px] text-rose-500">{issues.length}</span>}</span> },
+          { value: 'jlcpcb', label: 'JLCPCB' },
         ]}
       />
       <div className="min-h-0 flex-1 overflow-auto text-xs">
         {tab === 'parts' && <PartsList board={board} />}
         {tab === 'nets' && <NetsList conn={conn} board={board} />}
         {tab === 'drc' && <DrcList />}
+        {tab === 'jlcpcb' && <JlcpcbChecklistPanel />}
       </div>
     </aside>
   );
@@ -432,7 +435,7 @@ export function PcbInspector() {
             <Field label="Via drill">
               <NumberInput label="Via drill" min={0.2} value={pcb.rules.viaDrill} onCommit={(viaDrill) => updateRules({ viaDrill })} />
             </Field>
-            <p className="text-[10px] leading-snug text-muted">JLCPCB 2-layer minimums: 0.127 mm track/clearance, 0.3 mm via drill (0.2 mm at extra cost).</p>
+            <p className="text-[10px] leading-snug text-muted">JLCPCB 2-layer minimums: 0.1 mm track and clearance, 0.15/0.25 mm via; drills under 0.3 mm cost extra unless 0.2 mm+ with a 0.45 mm+ via. The JLCPCB tab checks the whole board.</p>
           </section>
         </>
       )}
@@ -756,7 +759,7 @@ function TextEditor({ text }: { text: SilkText }) {
         <NumberInput label="Text height" step={0.1} min={0.5} value={text.size} onCommit={(size) => set({ size })} />
       </Field>
       <Field label="Line width">
-        <NumberInput label="Line width" step={0.01} min={0.1} value={text.stroke ?? Math.max(0.12, text.size * 0.15)} onCommit={(stroke) => set({ stroke })} />
+        <NumberInput label="Line width" step={0.01} min={0.1} value={text.stroke ?? strokeFor(text.size)} onCommit={(stroke) => set({ stroke })} />
       </Field>
       <Field label="Rotation">
         <NumberInput label="Text rotation" step={90} value={text.rotation} onCommit={(rotation) => set({ rotation: ((rotation % 360) + 360) % 360 })} />

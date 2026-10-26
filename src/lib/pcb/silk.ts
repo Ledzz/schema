@@ -10,13 +10,13 @@ import { placementToWorld, rotateDeg, worldToPlacement, type Box } from './geome
 import type { FillArea } from './pour';
 import type { CopperLayer, Pcb, SilkLogo, SilkText } from './types';
 
-/** Default designator height (JLCPCB prints down to about 0.8 mm legibly). */
-export const DESIGNATOR_SIZE = 0.8;
+/** Default designator height: JLCPCB's minimum for legible text. */
+export const DESIGNATOR_SIZE = 1;
 /** Default height of free text: JLCPCB asks for 1 mm or more. */
 export const TEXT_SIZE = 1.5;
 
-/** Line width for text of a given height (0.12 mm at 0.8 mm, at least JLCPCB's 0.12 mm minimum). */
-export const strokeFor = (size: number) => Math.max(0.12, Math.round(size * 0.15 * 1000) / 1000);
+/** Line width for text of a given height: 15% of it, and never under JLCPCB's 0.15 mm minimum. */
+export const strokeFor = (size: number) => Math.max(0.15, Math.round(size * 0.15 * 1000) / 1000);
 
 /** Default designator position: centred just above the part's bounding box. */
 export function designatorAnchor(box: Box, size = DESIGNATOR_SIZE): Vec {

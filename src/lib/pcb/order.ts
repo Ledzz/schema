@@ -8,6 +8,7 @@ import { useEditor } from '../../store/editor';
 import { buildBom, type BomSummary } from '../schematic/bom';
 import type { Component, Project } from '../schematic/types';
 import { checkPcb, exportFabrication, throughHoleParts } from './actions';
+import { checklistReady, jlcpcbChecklist, type CheckItem } from './jlcpcb';
 
 export const JLCPCB_QUOTE_URL = 'https://cart.jlcpcb.com/quote';
 export const ORDER_QUANTITIES = [5, 10, 15, 20, 30, 50, 100];
@@ -35,6 +36,8 @@ export interface OrderSummary {
   viasInPads: boolean;
   /** Parts whose orientation is worth a look in JLCPCB's placement preview. */
   checkOrientation: string[];
+  /** The JLCPCB manufacturing checklist for these options; failures block the order. */
+  checklist: CheckItem[];
 }
 
 const POLARIZED_FOOTPRINT = /(^|[-_])(BD\d|CASE|ELEC|TANT|SOD|SMA|SMB|LED)/i;
@@ -55,6 +58,7 @@ export function orderSummary(project: Project, opts: OrderOptions): OrderSummary
       bottomSide: false,
       viasInPads: false,
       checkOrientation: [],
+      checklist: [],
     };
   }
   const { issues, board } = checkPcb(project);
@@ -63,8 +67,10 @@ export function orderSummary(project: Project, opts: OrderOptions): OrderSummary
   const placed = board.parts.map((p) => p.component);
   const assembled = opts.assembly ? placed.filter((c) => !skipped.has(c.id)) : [];
   const errors = issues.filter((i) => i.severity === 'error').map((i) => i.message);
+  const checklist = jlcpcbChecklist(project, { assembly: opts.assembly, skip: skipped, quantity: opts.quantity });
   return {
-    ready: errors.length === 0,
+    ready: checklistReady(checklist),
+    checklist,
     width: pcb.board.width,
     height: pcb.board.height,
     errors,

@@ -135,8 +135,8 @@ interface EditorState {
   setPcbHighlightNet: (net: string | null) => void;
   pcbCursor: Vec;
   setPcbCursor: (p: Vec) => void;
-  pcbLeftTab: 'parts' | 'nets' | 'drc';
-  setPcbLeftTab: (tab: 'parts' | 'nets' | 'drc') => void;
+  pcbLeftTab: 'parts' | 'nets' | 'drc' | 'jlcpcb';
+  setPcbLeftTab: (tab: 'parts' | 'nets' | 'drc' | 'jlcpcb') => void;
   pcbCanvasSize: { width: number; height: number };
   setPcbCanvasSize: (size: { width: number; height: number }) => void;
   pcbIssues: DrcIssue[];

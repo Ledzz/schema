@@ -190,7 +190,7 @@ describe('silkscreen tools', () => {
     const moved = await runTool(tool('pcb_set_designator'), { designator: 'R2', x: 12, y: 8, rotation: 90, size: 1 });
     expect(moved).toMatchObject({ designator: 'R2', x: 12, y: 8, rotation: 90, size: 1, hidden: false });
     const reset = (await runTool(tool('pcb_set_designator'), { designator: 'R2', reset: true })) as { y: number; size: number };
-    expect(reset.size).toBe(0.8);
+    expect(reset.size).toBe(1);
     expect(reset.y).toBeLessThan(5);
     await expect(runTool(tool('pcb_set_designator'), { designator: 'R2', x: 3 })).rejects.toThrow('Give both x and y');
   });
