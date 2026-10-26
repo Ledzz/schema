@@ -150,6 +150,9 @@ interface EditorState {
   setOrderOpen: (open: boolean) => void;
   /** The circuit block picker is open. */
   blocksOpen: boolean;
+  /** The quick add box: where it places (world) and the pin under it, if any. */
+  quickAdd: { at: Vec; pin: string | null; pinLabel?: string } | null;
+  setQuickAdd: (quickAdd: { at: Vec; pin: string | null; pinLabel?: string } | null) => void;
   partsEditor: PartsEditorState | null;
   setPartsEditor: (partsEditor: PartsEditorState | null) => void;
   setBlocksOpen: (open: boolean) => void;
@@ -326,6 +329,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   orderOpen: false,
   setOrderOpen: (orderOpen) => set({ orderOpen }),
   blocksOpen: false,
+  quickAdd: null,
+  setQuickAdd: (quickAdd) => set({ quickAdd }),
   partsEditor: null,
   setPartsEditor: (partsEditor) => set({ partsEditor }),
   setBlocksOpen: (blocksOpen) => set({ blocksOpen }),

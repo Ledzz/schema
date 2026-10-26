@@ -45,6 +45,11 @@ Checks: `pnpm typecheck`, `pnpm test`.
 - **Schematic editor**
   - Places real EasyEDA library symbols, including multi-unit parts.
   - Drawing tools: wires, net labels, power and ground flags, hierarchical ports (`H`), no-connect markers.
+  - **Quick add** (`A`, the toolbar, Place menu or right-click): type at the cursor and press Enter to place it right there.
+    - Passives by value and size ("10k", "100n 0402", "10uF 16V 0805", "LED red").
+    - Rails and ground ("3v3" becomes `+3V3`, "gnd"), net labels (existing nets are offered as you type), and "nc" for a no-connect.
+    - Another copy of a part already in the design, your custom parts, circuit blocks, and JLCPCB parts by keyword, with Basic and Preferred parts first.
+    - Over a pin, a name labels that pin and a rail or GND flags it, on a stub leading away from the part. The last query is offered again, so repeating a placement is `A`, Enter.
   - **Wiring.** Drag from a pin end (or click it) to draw a wire without switching tools. Ending on another pin routes the wire around parts; otherwise it bends at right angles, leaving a pin along the pin and turning at each corner. `/` flips the next bend and Backspace takes off the last corner.
   - **Labels and flags.** Name them in the placement bar before placing (`Tab` jumps to the name); power and ground flags suggest the project's own rails and the common ones. Dropped on a pin, a label or flag gets a short stub leading away from the part, placed clear of other wiring. Wiring or labelling a pin removes its no-connect marker.
   - **Wire editing.** Drag a wire's segment sideways (its neighbours stretch) or its corner anywhere; an end that sits on a pin, label or other wire keeps its place with a jog, and labels and branching wires on the moved stretch come along. Dragging a wire's end moves it to another pin or wire. Moving a selection keeps the wires that lead to parts left behind connected.

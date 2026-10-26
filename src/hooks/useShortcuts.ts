@@ -25,6 +25,7 @@ import { changeRouteMode, currentPcb, deleteSelectedCopper, finishDraft, finishS
 import { copperLayers } from '../lib/pcb/types';
 import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
 import { crossProbe } from '../lib/crossprobe';
+import { openQuickAdd } from '../lib/quickadd';
 
 const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
 
@@ -228,6 +229,9 @@ export function useShortcuts() {
           break;
         case 'b':
           s.setBlocksOpen(true);
+          break;
+        case 'a':
+          openQuickAdd();
           break;
         case '/':
           if (s.tool === 'wire' && s.wireDraft) s.toggleWireFlip();

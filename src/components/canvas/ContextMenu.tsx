@@ -4,6 +4,7 @@ import { addPort, commitAttach, connectivity, disconnectPin, endByKey, findNoFee
 import { addDecoupling, supplyPins } from '../../lib/decoupling';
 import { editFootprintOf, editSymbolOf } from '../../lib/library';
 import { partsOnNet, showOnPcb } from '../../lib/crossprobe';
+import { openQuickAdd } from '../../lib/quickadd';
 import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, openSheet, paste, rotateSelection, selectAll } from '../../lib/editing';
 import { samePoint } from '../../lib/schematic/geometry';
 import { sheetsOf, sheetView } from '../../lib/schematic/sheets';
@@ -130,6 +131,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
     s.setSelection([]);
     return {
       items: [
+        { label: 'Quick add here…', shortcut: 'A', onSelect: () => openQuickAdd(w) },
         { label: 'Paste here', shortcut: '⌘V', disabled: !hasClipboard(), onSelect: () => paste(w) },
         { label: 'Select all', shortcut: '⌘A', onSelect: selectAll },
         { label: 'Circuit block…', shortcut: 'B', separatorBefore: true, onSelect: () => s.setBlocksOpen(true) },

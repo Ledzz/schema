@@ -9,11 +9,12 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 1. **Length tuning and differential pairs** — for USB and other matched signals.
 2. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
-3. **Quick add** — type a part or passive by name at the cursor instead of going through the
-   library panel.
 
 ## Done
 
+- **Quick add** (2026-10-27): `A` opens a box at the cursor that places a passive by value, a
+  rail, ground, net label or no-connect (on the pin under the cursor when there is one), another
+  copy of a part in the design, a custom part, a circuit block or a JLCPCB part by keyword.
 - **Cross-probing** (2026-10-27): part selection and the highlighted net are shared by the
   schematic and the PCB; ⇧X (or the right-click menu and PCB inspector) shows them in the other
   editor, and the two can be shown side by side, each keeping what the other selects in view.

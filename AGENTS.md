@@ -43,6 +43,8 @@ lazy-loaded modules changed.
   `revertHistory` to become one undo step, or nothing if a step fails.
 - `src/lib/library.ts` – symbols, footprints and parts made in the project (`user:` keys), used
   by the parts editor (`components/library/PartsEditor.tsx`) and the custom-part tools.
+- `src/lib/quickadd.ts` – quick add: typed text to ranked suggestions (`quickSuggestions`) and
+  placing one (`placeQuickItem`); the box is `components/canvas/QuickAdd.tsx`.
 - `src/lib/crossprobe.ts` – cross-probing: the store keeps part selection and the highlighted net
   in step between the editors (`partsIn`); this shows them in the other editor and keeps them in
   view side by side (`split`).

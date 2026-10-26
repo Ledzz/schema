@@ -11,6 +11,7 @@ import {
   Moon,
   MousePointer2,
   PanelBottom,
+  Plus,
   Redo2,
   RotateCcw,
   Sun,
@@ -40,6 +41,7 @@ import {
 } from '../lib/editing';
 import { formatNetlist } from '../lib/schematic/netlist';
 import { crossProbe } from '../lib/crossprobe';
+import { openQuickAdd } from '../lib/quickadd';
 import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
@@ -52,14 +54,14 @@ import { PASSIVES, type PassiveKind } from '../shared/passives';
 
 const mod = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
-function PowerIcon() {
+export function PowerIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
       <path d="M12 20V8M6 8h12" />
     </svg>
   );
 }
-function GroundIcon() {
+export function GroundIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
       <path d="M12 4v9M5 13h14M8 16.5h8M10.5 20h3" />
@@ -154,6 +156,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
         <MenuButton
           label="Place"
           items={[
+            { label: 'Quick add at the cursor…', shortcut: 'A', onSelect: () => (s().setMode('schematic'), openQuickAdd()) },
             { label: 'Part from library…', shortcut: '/', onSelect: focusLibrarySearch },
             { label: 'Circuit block…', shortcut: 'B', onSelect: () => s().setBlocksOpen(true) },
             { label: 'Custom part…', onSelect: () => s().setPartsEditor({ tab: 'part' }) },
@@ -323,6 +326,9 @@ export function SchematicToolbar() {
           {t.icon}
         </IconButton>
       ))}
+      <IconButton label="Quick add: a value, rail, net or part at the cursor" shortcut="A" className="shrink-0" onClick={() => openQuickAdd()}>
+        <Plus className="h-4 w-4" />
+      </IconButton>
       <IconButton label="Circuit block" shortcut="B" className="shrink-0" onClick={() => s().setBlocksOpen(true)}>
         <Blocks className="h-4 w-4" />
       </IconButton>

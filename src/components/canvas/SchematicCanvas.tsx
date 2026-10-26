@@ -15,6 +15,7 @@ import { BlockGraphic, ComponentGraphic, PortGraphic } from './graphics';
 import { SheetTabs } from './SheetTabs';
 import { cx, inputClass, Kbd } from '../ui';
 import { QuickEdit } from '../passives/QuickEdit';
+import { QuickAdd } from './QuickAdd';
 import { ContextMenu, schematicMenu, type ContextMenuState } from './ContextMenu';
 import { PassiveEditor } from '../passives/PassiveEditor';
 import { pickPlacingPart, updatePlacingPassive } from '../../lib/passives';
@@ -530,6 +531,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
       <QuickEdit />
+      <QuickAdd />
       <SheetTabs />
       {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
       {isNamedPortTool(tool) && <PortNameBar kind={tool} />}
