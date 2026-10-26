@@ -9,7 +9,7 @@ import type { DrcIssue } from './drc';
 import { shellAreas } from './drc';
 import { textStrokes } from './font';
 import { boardSvgPath } from './outline';
-import { designatorAnchor } from './gerber';
+import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
 import { areasToSvgPath } from './pour';
 import type { CopperLayer, Pcb } from './types';
 
@@ -58,6 +58,14 @@ function hole(h: { center: Vec; w: number; h: number; rotation: number }): strin
   return `<line x1="${n(h.center[0] - dx)}" y1="${n(h.center[1] - dy)}" x2="${n(h.center[0] + dx)}" y2="${n(h.center[1] + dy)}" stroke="${COLORS.hole}" stroke-width="${n(d)}" stroke-linecap="round"/>`;
 }
 
+/** Free text and logos on one side, as SVG elements. */
+function freeSilk(pcb: Pcb, side: CopperLayer, color: string): string[] {
+  const out: string[] = [];
+  for (const l of (pcb.logos ?? []).filter((l) => l.side === side)) out.push(`<path d="${areasToSvgPath(logoAreas(l))}" fill-rule="evenodd" fill="${color}"/>`);
+  for (const t of (pcb.texts ?? []).filter((t) => t.side === side)) out.push(strokes(textItemStrokes(t), color, textStroke(t)));
+  return out;
+}
+
 /** Colours of a finished JLCPCB board: green mask, HASL pads, white silkscreen. */
 const FINISH = {
   mask: '#14532d',
@@ -88,8 +96,10 @@ export function renderBoardFace(pcb: Pcb, board: BoardModel, side: CopperLayer, 
           : `<polyline points="${pts(gr.points)}" fill="none" stroke="${FINISH.silk}" stroke-width="${n(gr.width)}" stroke-linecap="round" stroke-linejoin="round"/>`,
       );
     }
-    out.push(strokes(textStrokes(part.component.designator, designatorAnchor(part.box), 0.8, 0, side === 'bottom'), FINISH.silk, 0.12));
+    const label = designatorLabel(part);
+    out.push(strokes(labelStrokes(label), FINISH.silk, strokeFor(label.size)));
   }
+  out.push(...freeSilk(pcb, side, FINISH.silk));
   const heightPx = Math.round((widthPx * b.height) / b.width);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="${n(b.x)} ${n(b.y)} ${n(b.width)} ${n(b.height)}">${out.join('')}</svg>`;
   return { svg, widthPx, heightPx };
@@ -177,10 +187,11 @@ export function renderPcbSvg(
   for (const part of board.parts) {
     const side = part.placement.side;
     const silk = side === 'top' ? COLORS.silkTop : COLORS.silkBottom;
-    const label = textStrokes(part.component.designator, designatorAnchor(part.box), 0.8, 0, side === 'bottom');
+    const label = designatorLabel(part);
+    const labelSvg = strokes(labelStrokes(label), silk, strokeFor(label.size));
     if (!layers.includes(side)) {
       // Parts on the hidden side keep a faint label for orientation.
-      out.push(`<g opacity="0.35">${strokes(label, silk, 0.12)}</g>`);
+      out.push(`<g opacity="0.35">${labelSvg}</g>`);
       continue;
     }
     for (const gr of part.graphics) {
@@ -195,8 +206,9 @@ export function renderPcbSvg(
           : `<polyline points="${pts(gr.points)}" fill="none" stroke="${silk}" stroke-width="${n(gr.width)}" stroke-linecap="round" stroke-linejoin="round"/>`,
       );
     }
-    out.push(strokes(label, silk, 0.12));
+    out.push(labelSvg);
   }
+  for (const side of layers) out.push(...freeSilk(pcb, side, side === 'top' ? COLORS.silkTop : COLORS.silkBottom));
 
   for (const a of conn.airwires) {
     if (hi && a.net !== hi) continue;

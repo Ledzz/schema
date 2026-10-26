@@ -328,6 +328,7 @@ function PcbStatusBar() {
     cutout: `Cutout: ${area}`,
     zone: `Pour zone on the active layer: ${area}`,
     outline: `Board outline: ${area}`,
+    text: 'Click to place silkscreen text on the active side, then type it in the panel on the right',
   }[tool];
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-panel px-3 text-[11px] text-muted">

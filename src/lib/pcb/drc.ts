@@ -2,6 +2,7 @@ import type { Vec } from '../schematic/types';
 import type { BoardModel, BoardPart, PcbConnectivity } from './board';
 import { pointInPolygon, pointShapeDistance, shapeDistance, type CopperItem, type WorldPad } from './geometry';
 import { boardEdges, insideBoard, keepoutAreas, shapeEdgeDistance } from './outline';
+import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
 import type { CopperLayer, Pcb } from './types';
 
 export interface DrcIssue {
@@ -144,6 +145,44 @@ function keepoutViolations(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): 
   return issues;
 }
 
+/**
+ * Silkscreen JLCPCB would not print: text, logos and designators running off the board, or lying
+ * on pads (silkscreen is trimmed from exposed copper, so the text comes out broken).
+ */
+export function silkIssues(board: BoardModel, pcb: Pcb): DrcIssue[] {
+  const issues: DrcIssue[] = [];
+  const edges = boardEdges(pcb);
+  const padsOn = (side: CopperLayer) => board.pads.filter((p) => p.layers.includes(side));
+  const strokeHits = (strokes: Vec[][], width: number, pads: WorldPad[]) =>
+    pads.filter((pad) => strokes.some((st) => st.slice(1).some((q, i) => shapeDistance({ kind: 'capsule', a: st[i], b: q, r: width / 2 }, pad.shape) === 0)));
+  const offBoard = (points: Vec[]) => points.some((p) => !insideBoard(p, edges));
+  const padNames = (pads: WorldPad[]) => pads.slice(0, 3).map((p) => `${p.designator}.${p.number}`).join(', ') + (pads.length > 3 ? ` and ${pads.length - 3} more` : '');
+
+  for (const t of pcb.texts ?? []) {
+    const strokes = textItemStrokes(t);
+    const name = `Silkscreen text "${t.text.replace(/\n/g, ' ')}"`;
+    if (offBoard(strokes.flat())) issues.push({ severity: 'warning', message: `${name} runs off the board`, at: [t.x, t.y], refs: [t.id] });
+    const hits = strokeHits(strokes, textStroke(t), padsOn(t.side));
+    if (hits.length) issues.push({ severity: 'warning', message: `${name} lies on pad ${padNames(hits)}; JLCPCB trims silkscreen over pads`, at: [t.x, t.y], refs: [t.id] });
+  }
+  for (const l of pcb.logos ?? []) {
+    const areas = logoAreas(l);
+    if (offBoard(areas.flatMap((a) => a.outer))) issues.push({ severity: 'warning', message: `Logo "${l.name}" runs off the board`, at: [l.x, l.y], refs: [l.id] });
+    const hits = padsOn(l.side).filter((pad) => areas.some((a) => shapeDistance({ kind: 'poly', points: a.outer }, pad.shape) === 0 && !a.holes.some((h) => pointInPolygon(pad.center, h))));
+    if (hits.length) issues.push({ severity: 'warning', message: `Logo "${l.name}" lies on pad ${padNames(hits)}; JLCPCB trims silkscreen over pads`, at: [l.x, l.y], refs: [l.id] });
+  }
+  for (const part of board.parts) {
+    if (!part.fp) continue;
+    const label = designatorLabel(part);
+    const strokes = labelStrokes(label);
+    if (!strokes.length) continue;
+    if (offBoard(strokes.flat())) issues.push({ severity: 'warning', message: `Designator ${label.text} runs off the board; move it with pcb_set_designator or hide it`, at: label.at, refs: [part.component.id] });
+    const hits = strokeHits(strokes, strokeFor(label.size), padsOn(label.side));
+    if (hits.length) issues.push({ severity: 'warning', message: `Designator ${label.text} lies on pad ${padNames(hits)}; move it so it stays readable`, at: label.at, refs: [part.component.id] });
+  }
+  return issues;
+}
+
 export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcIssue[] {
   const issues: DrcIssue[] = [];
   const { clearance } = pcb.rules;
@@ -193,6 +232,7 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
     }
   }
   issues.push(...keepoutViolations(board, pcb, conn));
+  issues.push(...silkIssues(board, pcb));
 
   // Vias in SMD pads, one line per pad (a grid of thermal vias would otherwise flood the list).
   const smdPads = board.items.filter((it) => it.type === 'pad' && it.layers.length === 1);

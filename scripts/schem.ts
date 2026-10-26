@@ -28,6 +28,53 @@ Object.defineProperty(globalThis, 'localStorage', {
   },
 });
 
+/** Pixel size of a PNG or JPEG, read from its header. */
+function rasterSize(data: Buffer): { width: number; height: number } | null {
+  if (data.subarray(1, 4).toString('latin1') === 'PNG') return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+  if (data[0] === 0xff && data[1] === 0xd8) {
+    // JPEG: walk the segments to the frame header (SOF0–SOF15 except DHT, JPG and DAC).
+    for (let i = 2; i + 9 < data.length; ) {
+      if (data[i] !== 0xff) return null;
+      const marker = data[i + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { width: data.readUInt16BE(i + 7), height: data.readUInt16BE(i + 5) };
+      i += 2 + data.readUInt16BE(i + 2);
+    }
+  }
+  return null;
+}
+
+/** Rasterises a logo image (file path, SVG markup or data: URL) with resvg for tracing. */
+async function rasterizeImage(image: string, maxSide: number) {
+  let svg: string;
+  if (image.trimStart().startsWith('<')) svg = image;
+  else {
+    let data: Buffer;
+    let mime: string;
+    const dataUrl = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(image);
+    if (dataUrl) {
+      mime = dataUrl[1];
+      data = dataUrl[2] ? Buffer.from(dataUrl[3], 'base64') : Buffer.from(decodeURIComponent(dataUrl[3]));
+    } else {
+      const path = resolve(image);
+      if (!existsSync(path)) throw new Error(`No image file at ${path}`);
+      data = readFileSync(path);
+      mime = /\.svg$/i.test(path) ? 'image/svg+xml' : /\.jpe?g$/i.test(path) ? 'image/jpeg' : 'image/png';
+    }
+    if (mime === 'image/svg+xml') svg = data.toString('utf8');
+    else {
+      const size = rasterSize(data);
+      if (!size) throw new Error('Use a PNG, JPEG or SVG image');
+      const real = data[0] === 0xff ? 'image/jpeg' : 'image/png';
+      svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><image href="data:${real};base64,${data.toString('base64')}" width="${size.width}" height="${size.height}"/></svg>`;
+    }
+  }
+  const { Resvg } = await import('@resvg/resvg-js');
+  const probe = new Resvg(svg);
+  const mode = probe.width >= probe.height ? 'width' : 'height';
+  const img = new Resvg(svg, { fitTo: { mode, value: maxSide } }).render();
+  return { width: img.width, height: img.height, data: new Uint8Array(img.pixels) };
+}
+
 function fail(message: string, code = 1): never {
   process.stdout.write(JSON.stringify({ error: message }, null, 2) + '\n');
   process.exit(code);
@@ -50,7 +97,8 @@ async function main() {
   }) as typeof fetch;
 
   const { useEditor, emptyProject } = await import('../src/store/editor');
-  const { TOOLS, runTool, validateInput, pcbPicture, throughHoleIds } = await import('../src/lib/webmcp');
+  const { TOOLS, runTool, validateInput, pcbPicture, placeTracedLogo, throughHoleIds } = await import('../src/lib/webmcp');
+  const { TRACE_RESOLUTION } = await import('../src/lib/pcb/logo');
   const { connectivity } = await import('../src/lib/actions');
   const { buildBom, bomToJlcpcbCsv } = await import('../src/lib/schematic/bom');
   const { formatNetlist } = await import('../src/lib/schematic/netlist');
@@ -113,6 +161,7 @@ async function main() {
       const skip = input.hand_solder_through_hole ? throughHoleIds() : new Set<string>();
       return { files: exportTo(dir, skip), drc_errors: errors, hand_soldered: st().project.components.filter((c) => skip.has(c.id)).map((c) => c.designator) };
     },
+    pcb_add_logo: async (input) => placeTracedLogo(input, await rasterizeImage(String(input.image), TRACE_RESOLUTION)),
     pcb_render: async (input) => {
       const { svg, widthPx, heightPx } = pcbPicture(input);
       const { Resvg } = await import('@resvg/resvg-js');

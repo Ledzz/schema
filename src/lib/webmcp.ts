@@ -32,12 +32,16 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addCutout, addKeepout, addMountingHoles, addPours, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updatePlacement } from './pcb/actions';
+import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
+import { supportedChar } from './pcb/font';
+import { rasterizeInBrowser, traceBitmap, type Bitmap } from './pcb/logo';
+import type { Box } from './pcb/geometry';
 import { boardEdges, circlePolygon, cornerHolePositions, edgeDistance, insideBoard, rectOutline, selfIntersects } from './pcb/outline';
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
 import { fitPcbView } from './pcb/view';
-import { DEFAULT_HOLE, type CopperLayer, type Pcb, type Pour } from './pcb/types';
+import { DEFAULT_HOLE, type CopperLayer, type Pcb, type Pour, type SilkText } from './pcb/types';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -138,6 +142,41 @@ function areaInput(input: Record<string, unknown>, what: string, required = true
   }
   if (required) throw new Error(`Give the ${what} as outline (points) or rect ([x1, y1, x2, y2])`);
   return null;
+}
+
+/** Silkscreen that would be cut off: corners of `box` outside the board. */
+function offBoard(box: Box): boolean {
+  const edges = boardEdges(currentPcb());
+  return !([[box.x1, box.y1], [box.x2, box.y1], [box.x2, box.y2], [box.x1, box.y2]] as [number, number][]).every((p) => insideBoard(p, edges));
+}
+
+const sideOf = (v: unknown): CopperLayer | undefined => (v === 'top' || v === 'bottom' ? v : undefined);
+
+/** Traces a rasterised image and places it as a logo; shared by the browser and the command line. */
+export function placeTracedLogo(input: Record<string, unknown>, bitmap: Bitmap) {
+  const { shapes, aspect } = traceBitmap(bitmap, { invert: !!input.invert, threshold: input.threshold === undefined ? undefined : Number(input.threshold) });
+  const b = currentPcb().board;
+  const width = Number(input.width);
+  const logo = addLogo({
+    name: input.name ? String(input.name) : 'logo',
+    x: input.x === undefined ? b.x + b.width / 2 : Number(input.x),
+    y: input.y === undefined ? b.y + b.height / 2 : Number(input.y),
+    width,
+    height: width * aspect,
+    rotation: input.rotation === undefined ? 0 : Number(input.rotation),
+    side: sideOf(input.side) ?? 'top',
+    shapes,
+  });
+  const box = logoBox(logo);
+  const r = (v: number) => Math.round(v * 1000) / 1000;
+  return {
+    id: logo.id,
+    width: logo.width,
+    height: r(logo.height),
+    bbox: { x1: r(box.x1), y1: r(box.y1), x2: r(box.x2), y2: r(box.y2) },
+    shapes: shapes.length,
+    warning: offBoard(box) ? 'Part of the logo is off the board and will be cut off; move it or make it smaller.' : undefined,
+  };
 }
 
 const roundPts = (pts: [number, number][]) => pts.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]);
@@ -647,10 +686,13 @@ export const TOOLS: ToolDefinition[] = [
           footprint: pcb.footprints[pcb.footprintOf[p.component.id] ?? '']?.title ?? null,
           bbox: p.fp ? { x1: round(p.box.x1), y1: round(p.box.y1), x2: round(p.box.x2), y2: round(p.box.y2) } : null,
           metal_shell: shelled.has(p.component.id) || undefined,
+          label: p.fp ? (({ at, size, rotation, hidden }) => ({ x: round(at[0]), y: round(at[1]), size, rotation, hidden: hidden || undefined }))(designatorLabel(p)) : undefined,
           pads: input.include_pads ? p.pads.map((pad) => ({ number: pad.number, net: pad.net, x: round(pad.center[0]), y: round(pad.center[1]) })) : undefined,
         })),
         holes: pcb.holes?.length ? pcb.holes : undefined,
         keepouts: pcb.keepouts?.length ? pcb.keepouts : undefined,
+        texts: pcb.texts?.length ? pcb.texts : undefined,
+        logos: pcb.logos?.length ? pcb.logos.map(({ shapes: _shapes, ...l }) => ({ ...l, height: round(l.height) })) : undefined,
         pours: board.fills.map((f) => ({
           id: f.pour.id,
           net: f.pour.net,
@@ -812,15 +854,144 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: 'pcb_remove_features',
-    title: 'Remove holes, keepouts, cutouts or pours',
-    description: 'Remove mounting holes, keepout areas, cutouts or copper pours by id (ids are in pcb_get_state).',
+    title: 'Remove holes, keepouts, cutouts, pours, text or logos',
+    description: 'Remove mounting holes, keepout areas, cutouts, copper pours, silkscreen text or logos by id (ids are in pcb_get_state).',
     inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' }, minItems: 1 } }, required: ['ids'] },
     annotations: { consequentialHint: true },
     execute: async (input) => {
       const ids = new Set((input.ids as string[]).map(String));
       const removed = removePcbItems(ids);
-      if (!removed) throw new Error('None of those ids is a mounting hole, keepout, cutout or pour; see pcb_get_state');
+      if (!removed) throw new Error('None of those ids is a mounting hole, keepout, cutout, pour, text or logo; see pcb_get_state');
       return { removed };
+    },
+  },
+  {
+    name: 'pcb_add_text',
+    title: 'Add silkscreen text',
+    description:
+      'Print text on the board’s silkscreen: a board name and version, connector pin labels ("GND", "5V", "TX"), polarity marks or a URL. x/y is the centre of the text block; "\\n" starts a new line. Letters, digits and common punctuation (including ° µ Ω) are supported. JLCPCB prints text 1 mm or taller reliably (default 1.5 mm). Bottom-side text is mirrored so it reads correctly from below.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', minLength: 1 },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        size: { type: 'number', minimum: 0.5, maximum: 20, description: `Cap height in mm (default ${TEXT_SIZE}).` },
+        rotation: { type: 'number', description: 'Degrees counter-clockwise (default 0).' },
+        side: { type: 'string', enum: ['top', 'bottom'], description: 'Default top.' },
+        stroke_width: { type: 'number', minimum: 0.1, maximum: 2, description: 'Line width in mm (default 15% of the size, at least 0.12).' },
+      },
+      required: ['text', 'x', 'y'],
+    },
+    execute: async (input) => {
+      const value = String(input.text);
+      const opts: Partial<SilkText> = { side: sideOf(input.side) ?? 'top' };
+      if (input.size !== undefined) opts.size = Number(input.size);
+      if (input.rotation !== undefined) opts.rotation = Number(input.rotation);
+      if (input.stroke_width !== undefined) opts.stroke = Number(input.stroke_width);
+      const t = addText(value, [Number(input.x), Number(input.y)], opts);
+      const box = silkTextBox(t);
+      const unsupported = [...new Set([...value].filter((ch) => !supportedChar(ch)))];
+      const warnings = [
+        ...(unsupported.length ? [`These characters print as "?": ${unsupported.join(' ')}`] : []),
+        ...(offBoard(box) ? ['Part of the text is off the board and will be cut off.'] : []),
+        ...(t.size < 1 ? ['Text under 1 mm may not be legible after printing.'] : []),
+      ];
+      const r = (v: number) => Math.round(v * 1000) / 1000;
+      return { id: t.id, bbox: { x1: r(box.x1), y1: r(box.y1), x2: r(box.x2), y2: r(box.y2) }, warnings: warnings.length ? warnings : undefined };
+    },
+  },
+  {
+    name: 'pcb_add_logo',
+    title: 'Add a silkscreen logo',
+    description:
+      'Trace an image into silkscreen artwork: dark, opaque areas print (set invert for light artwork on a dark background). `image` is SVG markup, a data: URL or an image URL the page can load (on the command line also a PNG, JPEG or SVG file path). The logo is cropped to its artwork and scaled to `width` mm, keeping its aspect ratio; it is centred on x/y (default the board centre). Lines thinner than about 0.15 mm on the board may not print.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'SVG markup, data: URL or image URL (file path on the command line).' },
+        width: { type: 'number', minimum: 1, maximum: 200, description: 'Width on the board in mm.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        rotation: { type: 'number' },
+        side: { type: 'string', enum: ['top', 'bottom'], description: 'Default top.' },
+        invert: { type: 'boolean', description: 'Trace light areas instead of dark ones.' },
+        threshold: { type: 'number', minimum: 1, maximum: 254, description: 'Brightness (0–255) below which a pixel counts as dark (default 128).' },
+        name: { type: 'string' },
+      },
+      required: ['image', 'width'],
+    },
+    execute: async (input) => placeTracedLogo(input, await rasterizeInBrowser(String(input.image))),
+  },
+  {
+    name: 'pcb_update_silkscreen',
+    title: 'Change silkscreen text or a logo',
+    description: 'Move, resize, rotate, re-word or flip a silkscreen text or logo by id (from pcb_add_text, pcb_add_logo or pcb_get_state). For logos, size sets the width.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        text: { type: 'string', minLength: 1 },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        size: { type: 'number', minimum: 0.5, maximum: 200 },
+        rotation: { type: 'number' },
+        side: { type: 'string', enum: ['top', 'bottom'] },
+      },
+      required: ['id'],
+    },
+    execute: async (input) => {
+      const id = String(input.id);
+      const pcb = currentPcb();
+      const num = (k: string) => (input[k] === undefined ? undefined : Number(input[k]));
+      const common = Object.fromEntries(Object.entries({ x: num('x'), y: num('y'), rotation: num('rotation'), side: sideOf(input.side) }).filter(([, v]) => v !== undefined));
+      if (pcb.texts?.some((t) => t.id === id)) {
+        updateText(id, { ...common, ...(input.text !== undefined ? { text: String(input.text) } : {}), ...(input.size !== undefined ? { size: Number(input.size) } : {}) });
+        return currentPcb().texts!.find((t) => t.id === id);
+      }
+      if (pcb.logos?.some((l) => l.id === id)) {
+        if (input.text !== undefined) throw new Error('A logo has no text; give size, x, y, rotation or side');
+        updateLogo(id, { ...common, ...(input.size !== undefined ? { width: Number(input.size) } : {}) });
+        const { shapes: _shapes, ...logo } = currentPcb().logos!.find((l) => l.id === id)!;
+        return logo;
+      }
+      throw new Error(`No silkscreen text or logo with id ${id}; see pcb_get_state`);
+    },
+  },
+  {
+    name: 'pcb_set_designator',
+    title: 'Move or style a designator',
+    description:
+      'Move a part’s printed designator (R1, U2 …) to x/y on the board, rotate or resize it, or hide it. The position is kept relative to the part, so it follows when the part moves. Use reset to go back to the default spot above the part. pcb_get_state lists each part’s current label position.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        designator: { type: 'string' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        rotation: { type: 'number', description: 'Degrees counter-clockwise as seen on the board.' },
+        size: { type: 'number', minimum: 0.5, maximum: 5, description: 'Text height in mm (default 0.8).' },
+        hidden: { type: 'boolean' },
+        reset: { type: 'boolean' },
+      },
+      required: ['designator'],
+    },
+    execute: async (input) => {
+      const c = byDesignator(String(input.designator));
+      const { board } = boardModel();
+      const part = board.parts.find((p) => p.component.id === c.id);
+      if (!part?.fp) throw new Error(`${c.designator} is not on the PCB (or has no footprint); run pcb_update first`);
+      if ((input.x === undefined) !== (input.y === undefined)) throw new Error('Give both x and y to move the designator');
+      if (input.reset) updateLabel(c.id, null);
+      const patch: Parameters<typeof updateLabel>[1] = {};
+      if (input.x !== undefined) patch.at = [Number(input.x), Number(input.y)];
+      if (input.rotation !== undefined) patch.rotation = Number(input.rotation);
+      if (input.size !== undefined) patch.size = Number(input.size);
+      if (input.hidden !== undefined) patch.hidden = Boolean(input.hidden);
+      if (Object.keys(patch).length) updateLabel(c.id, patch);
+      const l = designatorLabel(boardModel().board.parts.find((p) => p.component.id === c.id)!);
+      const r = (v: number) => Math.round(v * 1000) / 1000;
+      return { designator: c.designator, x: r(l.at[0]), y: r(l.at[1]), size: l.size, rotation: l.rotation, hidden: l.hidden };
     },
   },
   {

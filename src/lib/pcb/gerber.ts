@@ -6,7 +6,7 @@ import type { Vec } from '../schematic/types';
 import type { BoardModel } from './board';
 import { padOutline, rotateDeg, type WorldPad } from './geometry';
 import { boardEdges } from './outline';
-import { textStrokes } from './font';
+import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
 import type { Board, CopperLayer, Pcb } from './types';
 
 export interface FabFile {
@@ -102,11 +102,6 @@ function emitPad(g: Gerber, pad: WorldPad, grow: number, pcbPlacement: Parameter
 }
 
 
-/** Designator position: above the part's bounding box. */
-export function designatorAnchor(box: { x1: number; y1: number; x2: number; y2: number }): Vec {
-  return [(box.x1 + box.x2) / 2, box.y1 - 0.8];
-}
-
 export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): FabFile[] {
   const b = pcb.board;
   const layers: Record<string, Gerber> = {
@@ -137,6 +132,19 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
     }
   }
 
+  // Logos first: their holes are drawn in clear polarity, which must not erase other silkscreen.
+  for (const logo of pcb.logos ?? []) {
+    const silk = layers[logo.side === 'top' ? 'F_Silkscreen.gto' : 'B_Silkscreen.gbo'];
+    for (const area of logoAreas(logo)) {
+      silk.region(area.outer);
+      if (area.holes.length) {
+        silk.setPolarity(false);
+        for (const h of area.holes) silk.region(h);
+        silk.setPolarity(true);
+      }
+    }
+  }
+
   for (const part of board.parts) {
     for (const pad of part.pads) {
       for (const l of pad.layers) {
@@ -152,10 +160,14 @@ export function generateGerbers(pcb: Pcb, board: BoardModel, baseName: string): 
       else silk.stroke(gfx.width, gfx.points);
     }
     if (part.fp) {
-      const bottom = part.placement.side === 'bottom';
-      const silk = layers[bottom ? 'B_Silkscreen.gbo' : 'F_Silkscreen.gto'];
-      for (const s of textStrokes(part.component.designator, designatorAnchor(part.box), 0.8, 0, bottom)) silk.stroke(0.12, s);
+      const label = designatorLabel(part);
+      const silk = layers[label.side === 'bottom' ? 'B_Silkscreen.gbo' : 'F_Silkscreen.gto'];
+      for (const s of labelStrokes(label)) silk.stroke(strokeFor(label.size), s);
     }
+  }
+  for (const t of pcb.texts ?? []) {
+    const silk = layers[t.side === 'top' ? 'F_Silkscreen.gto' : 'B_Silkscreen.gbo'];
+    for (const s of textItemStrokes(t)) silk.stroke(textStroke(t), s);
   }
   for (const t of pcb.tracks) copper(t.layer).stroke(t.width, t.points);
   for (const v of pcb.vias) {

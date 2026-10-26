@@ -10,13 +10,14 @@ import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
-import { pointShapeDistance, shapeDistance, type CopperItem, type CopperShape } from './geometry';
+import { pointShapeDistance, shapeDistance, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
 import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from './outline';
 import { edgeField, routeConnection, simplifyPath } from './router';
-import { DEFAULT_HOLE, DEFAULT_POUR, emptyPcb, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type StoredFootprint, type Track, type Via } from './types';
+import { DEFAULT_HOLE, DEFAULT_POUR, emptyPcb, type CopperLayer, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
+import { labelId, TEXT_SIZE } from './silk';
 import { fitPcbView } from './view';
 
 const st = () => useEditor.getState();
@@ -179,13 +180,24 @@ export function pcbOutOfDate(project: Project): boolean {
 
 /* ---------- editing ---------- */
 
-/** Moves selected parts, mounting holes, keepouts and cutouts. */
+/**
+ * Moves selected parts, designators, text, logos, mounting holes, keepouts, cutouts and zones. A
+ * designator moves only with an explicit position (see pinLabels) and not when its part moves too.
+ */
 export function movePlacements(pcb: Pcb, ids: ReadonlySet<string>, dx: number, dy: number): Pcb {
   const shift = (outline: Vec[]) => outline.map(([x, y]) => [x + dx, y + dy] as Vec);
   const cutouts = pcb.board.cutouts?.map((c) => (ids.has(c.id) ? { ...c, outline: shift(c.outline) } : c));
+  const moveLabel = (p: Placement): Placement => {
+    const l = p.label;
+    if (!ids.has(labelId(p.componentId)) || l?.x === undefined || l?.y === undefined) return p;
+    const [ux, uy] = worldToPlacement({ x: 0, y: 0, rotation: p.rotation, side: p.side }, [dx, dy]);
+    return { ...p, label: { ...l, x: l.x + ux, y: l.y + uy } };
+  };
   return {
     ...pcb,
-    placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, x: p.x + dx, y: p.y + dy } : p)),
+    placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, x: p.x + dx, y: p.y + dy } : moveLabel(p))),
+    texts: pcb.texts?.map((t) => (ids.has(t.id) ? { ...t, x: t.x + dx, y: t.y + dy } : t)),
+    logos: pcb.logos?.map((l) => (ids.has(l.id) ? { ...l, x: l.x + dx, y: l.y + dy } : l)),
     holes: pcb.holes?.map((h) => (ids.has(h.id) ? { ...h, x: h.x + dx, y: h.y + dy } : h)),
     keepouts: pcb.keepouts?.map((k) => (ids.has(k.id) ? { ...k, outline: shift(k.outline) } : k)),
     pours: pcb.pours?.map((z) => (ids.has(z.id) && z.outline ? { ...z, outline: shift(z.outline) } : z)),
@@ -193,10 +205,12 @@ export function movePlacements(pcb: Pcb, ids: ReadonlySet<string>, dx: number, d
   };
 }
 
-/** Ids that move with movePlacements: parts, mounting holes, keepouts, cutouts and zones. */
+/** Ids that move with movePlacements: parts, designators, text, logos, holes, keepouts, cutouts and zones. */
 export function movableIds(pcb: Pcb, ids: Iterable<string>): Set<string> {
   const movable = new Set([
-    ...pcb.placements.map((p) => p.componentId),
+    ...pcb.placements.flatMap((p) => [p.componentId, labelId(p.componentId)]),
+    ...(pcb.texts ?? []).map((t) => t.id),
+    ...(pcb.logos ?? []).map((l) => l.id),
     ...(pcb.holes ?? []).map((h) => h.id),
     ...(pcb.keepouts ?? []).map((k) => k.id),
     ...(pcb.board.cutouts ?? []).map((c) => c.id),
@@ -278,13 +292,21 @@ export function updateMechanical(id: string, patch: Partial<MountingHole> & Part
   }));
 }
 
-/** Removes mounting holes, keepouts, cutouts, pours, tracks or vias by id; returns how many went. */
+/**
+ * Removes mounting holes, keepouts, cutouts, pours, text, logos, tracks or vias by id, and hides
+ * the designators whose label ids are given; returns how many items that affected.
+ */
 export function removePcbItems(ids: ReadonlySet<string>): number {
   const pcb = currentPcb();
-  const count = [pcb.holes ?? [], pcb.keepouts ?? [], pcb.board.cutouts ?? [], pcb.pours ?? [], pcb.tracks, pcb.vias].flat().filter((x) => ids.has(x.id)).length;
+  const items = [pcb.holes ?? [], pcb.keepouts ?? [], pcb.board.cutouts ?? [], pcb.pours ?? [], pcb.texts ?? [], pcb.logos ?? [], pcb.tracks, pcb.vias].flat();
+  const labels = pcb.placements.filter((p) => ids.has(labelId(p.componentId)) && !p.label?.hidden).length;
+  const count = items.filter((x) => ids.has(x.id)).length + labels;
   if (count) {
     commitPcb((p) => ({
       ...p,
+      placements: p.placements.map((q) => (ids.has(labelId(q.componentId)) ? { ...q, label: { ...q.label, hidden: true } } : q)),
+      texts: (p.texts ?? []).filter((t) => !ids.has(t.id)),
+      logos: (p.logos ?? []).filter((l) => !ids.has(l.id)),
       tracks: p.tracks.filter((t) => !ids.has(t.id)),
       vias: p.vias.filter((v) => !ids.has(v.id)),
       pours: (p.pours ?? []).filter((z) => !ids.has(z.id)),
@@ -296,14 +318,78 @@ export function removePcbItems(ids: ReadonlySet<string>): number {
   return count;
 }
 
+const turn = (deg: number, step: number) => (((deg + step) % 360) + 360) % 360;
+
+/** Rotates the selected parts, designators, text and logos. */
 export function rotateSelected(step = 90) {
   const ids = new Set(st().pcbSelection);
-  commitPcb((pcb) => ({ ...pcb, placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, rotation: (((p.rotation + step) % 360) + 360) % 360 } : p)) }));
+  commitPcb((pcb) => ({
+    ...pcb,
+    placements: pcb.placements.map((p) =>
+      ids.has(p.componentId)
+        ? { ...p, rotation: turn(p.rotation, step) }
+        : ids.has(labelId(p.componentId))
+          ? { ...p, label: { ...p.label, rotation: turn(p.label?.rotation ?? 0, step) } }
+          : p,
+    ),
+    texts: pcb.texts?.map((t) => (ids.has(t.id) ? { ...t, rotation: turn(t.rotation, step) } : t)),
+    logos: pcb.logos?.map((l) => (ids.has(l.id) ? { ...l, rotation: turn(l.rotation, step) } : l)),
+  }));
 }
 
+/** Moves the selected parts, text and logos to the other side of the board. */
 export function flipSelected() {
   const ids = new Set(st().pcbSelection);
-  commitPcb((pcb) => ({ ...pcb, placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, side: p.side === 'top' ? 'bottom' : 'top' } : p)) }));
+  const other = (side: CopperLayer): CopperLayer => (side === 'top' ? 'bottom' : 'top');
+  commitPcb((pcb) => ({
+    ...pcb,
+    placements: pcb.placements.map((p) => (ids.has(p.componentId) ? { ...p, side: other(p.side) } : p)),
+    texts: pcb.texts?.map((t) => (ids.has(t.id) ? { ...t, side: other(t.side) } : t)),
+    logos: pcb.logos?.map((l) => (ids.has(l.id) ? { ...l, side: other(l.side) } : l)),
+  }));
+}
+
+/* ---------- silkscreen ---------- */
+
+export function addText(text: string, at: Vec, opts: Partial<Omit<SilkText, 'id' | 'text' | 'x' | 'y'>> = {}): SilkText {
+  const t: SilkText = { id: newId('txt'), text, x: at[0], y: at[1], size: TEXT_SIZE, rotation: 0, side: st().activeLayer, ...opts };
+  commitPcb((pcb) => ({ ...pcb, texts: [...(pcb.texts ?? []), t] }));
+  return t;
+}
+
+export function updateText(id: string, patch: Partial<Omit<SilkText, 'id'>>) {
+  commitPcb((pcb) => ({ ...pcb, texts: pcb.texts?.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
+}
+
+export function addLogo(logo: Omit<SilkLogo, 'id'>): SilkLogo {
+  const l: SilkLogo = { ...logo, id: newId('logo') };
+  commitPcb((pcb) => ({ ...pcb, logos: [...(pcb.logos ?? []), l] }));
+  return l;
+}
+
+/** Changes a logo; a new width scales the height with it. */
+export function updateLogo(id: string, patch: Partial<Pick<SilkLogo, 'x' | 'y' | 'width' | 'rotation' | 'side' | 'name'>>) {
+  commitPcb((pcb) => ({
+    ...pcb,
+    logos: pcb.logos?.map((l) => (l.id === id ? { ...l, ...patch, height: patch.width ? (l.height * patch.width) / l.width : l.height } : l)),
+  }));
+}
+
+/**
+ * Changes a part's designator. `at` is a board position (stored relative to the part); null
+ * resets the label to its default place and size.
+ */
+export function updateLabel(componentId: string, patch: (Omit<DesignatorLabel, 'x' | 'y'> & { at?: Vec }) | null) {
+  commitPcb((pcb) => ({
+    ...pcb,
+    placements: pcb.placements.map((p) => {
+      if (p.componentId !== componentId) return p;
+      if (!patch) return { ...p, label: undefined };
+      const { at, ...rest } = patch;
+      const local = at ? worldToPlacement(p, at) : null;
+      return { ...p, label: { ...p.label, ...rest, ...(local ? { x: local[0], y: local[1] } : {}) } };
+    }),
+  }));
 }
 
 /** Deletes the selected tracks, vias, pours, mounting holes, keepouts and cutouts (not parts). */

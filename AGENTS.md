@@ -32,7 +32,8 @@ lazy-loaded modules changed.
 - `src/lib/pcb/` – PCB model (`types.ts`), board model and connectivity (`board.ts`), board shape,
   holes and keepouts (`outline.ts`), pours (`pour.ts`, Clipper), DRC (`drc.ts`), A* router
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
-  (`render.ts`), 3D (`model3d.ts`, `viewer3d.ts`), ordering (`order.ts`).
+  (`render.ts`), silkscreen text, logos and designator labels (`silk.ts`, `font.ts`, `logo.ts`),
+  3D (`model3d.ts`, `viewer3d.ts`), ordering (`order.ts`).
 - `src/lib/actions.ts`, `src/lib/passives.ts` – schematic actions shared by the UI and the tools.
 - `src/lib/webmcp.ts` – every agent tool (`TOOLS`), input validation and `runTool`.
 - `scripts/schem.ts` – the CLI: browser shims, then the same `TOOLS`, with CLI overrides for tools
@@ -57,6 +58,9 @@ lazy-loaded modules changed.
   millimetres, y down, origin at the board's top-left. EasyEDA footprints are mil with y up
   (converted in `pcb/footprint.ts`); Gerber, drill and CPL are mm with y up from the board's
   bottom-left (converted in `gerber.ts`).
+- **Silkscreen comes from one place.** Designators, text and logos are positioned and stroked by
+  `pcb/silk.ts`; Gerbers, pictures, the 3D texture, DRC and the canvas all call it, so draw new
+  silkscreen through it rather than calling `textStrokes` directly.
 - **The board is not a rectangle.** Ask `pcb/outline.ts` (`boardEdges`, `insideBoard`,
   `edgeDistance`, `keepoutAreas`) instead of using `board.x/y/width/height`, which are only the
   bounding box when a custom outline is set.

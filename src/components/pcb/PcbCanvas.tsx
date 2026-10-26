@@ -5,10 +5,10 @@ import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
 import { pointInPolygon, pointSegDist, type WorldPad } from '../../lib/pcb/geometry';
 import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
-import { textStrokes } from '../../lib/pcb/font';
-import { designatorAnchor } from '../../lib/pcb/gerber';
+import { designatorLabel, labelBox, labelComponent, labelId, labelStrokes, logoAreas, logoBox, pinLabels, silkTextBox, strokeFor, textItemStrokes, textStroke } from '../../lib/pcb/silk';
+import type { Box } from '../../lib/pcb/geometry';
 import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
-import { addVia, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
+import { addText, addVia, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
 import { emptyPcb, type CopperLayer, type Pcb } from '../../lib/pcb/types';
 import { Kbd } from '../ui';
@@ -17,7 +17,8 @@ const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', bottom
 const other = (l: CopperLayer): CopperLayer => (l === 'top' ? 'bottom' : 'top');
 const pts = (p: Vec[]) => p.map((q) => `${q[0]},${q[1]}`).join(' ');
 
-type Hit = { kind: 'part' | 'track' | 'via' | 'pour' | 'hole' | 'keepout' | 'cutout'; id: string } | null;
+type Hit = { kind: 'part' | 'track' | 'via' | 'pour' | 'hole' | 'keepout' | 'cutout' | 'label' | 'text' | 'logo'; id: string } | null;
+const inBox = (p: Vec, b: Box) => p[0] >= b.x1 && p[0] <= b.x2 && p[1] >= b.y1 && p[1] <= b.y2;
 const KEEPOUT_COLOR = '#ef4444';
 
 function padAt(board: BoardModel, p: Vec, layer?: CopperLayer): WorldPad | null {
@@ -110,8 +111,16 @@ export function PcbCanvas() {
     for (const t of tracks) for (let i = 1; i < t.points.length; i++) if (pointSegDist(p, t.points[i - 1], t.points[i]) <= t.width / 2 + tol) return { kind: 'track', id: t.id };
     const holes = pcb.holes ?? [];
     for (const h of holes) if (Math.hypot(h.x - p[0], h.y - p[1]) <= h.diameter / 2 + tol) return { kind: 'hole', id: h.id };
+    // Silkscreen on the active side first.
+    const front = <T extends { side: CopperLayer }>(list: T[]) => [...list].sort((a) => (a.side === activeLayer ? -1 : 1));
+    for (const t of front(pcb.texts ?? [])) if (inBox(p, silkTextBox(t))) return { kind: 'text', id: t.id };
+    for (const part of [...model.board.parts].sort((a) => (a.placement.side === activeLayer ? -1 : 1))) {
+      const l = designatorLabel(part);
+      if (part.fp && !l.hidden && inBox(p, labelBox(l))) return { kind: 'label', id: labelId(part.component.id) };
+    }
     const parts = [...model.board.parts].sort((a) => (a.placement.side === activeLayer ? -1 : 1));
     for (const part of parts) if (p[0] >= part.box.x1 && p[0] <= part.box.x2 && p[1] >= part.box.y1 && p[1] <= part.box.y2) return { kind: 'part', id: part.component.id };
+    for (const l of front(pcb.logos ?? [])) if (inBox(p, logoBox(l))) return { kind: 'logo', id: l.id };
     for (const k of pcb.keepouts ?? []) if (pointInPolygon(p, k.outline)) return { kind: 'keepout', id: k.id };
     for (const c of pcb.board.cutouts ?? []) if (pointInPolygon(p, c.outline)) return { kind: 'cutout', id: c.id };
     for (const h of holes) if (Math.hypot(h.x - p[0], h.y - p[1]) <= h.keepout / 2) return { kind: 'hole', id: h.id };
@@ -187,6 +196,12 @@ export function PcbCanvas() {
       placeMountingHole(snap(w));
       return;
     }
+    if (s.pcbTool === 'text') {
+      const t = addText('TEXT', snap(w));
+      s.setPcbTool('select');
+      s.setPcbSelection([t.id]);
+      return;
+    }
     if (s.pcbTool === 'via') {
       const pad = padAt(model.board, w);
       addVia(snap(w), pad?.net ?? null);
@@ -232,7 +247,9 @@ export function PcbCanvas() {
       const delta: Vec = [p[0] - it.start[0], p[1] - it.start[1]];
       if (delta[0] !== it.delta[0] || delta[1] !== it.delta[1]) {
         it.delta = delta;
-        s.updateTransient((base) => ({ ...base, pcb: movePlacements(base.pcb ?? emptyPcb(), it.ids, delta[0], delta[1]) }));
+        // Designators at their default spot get an explicit position before they can move.
+        const labels = new Set([...it.ids].map(labelComponent).filter((c): c is string => !!c));
+        s.updateTransient((base) => ({ ...base, pcb: movePlacements(pinLabels(base.pcb ?? emptyPcb(), model.board, labels), it.ids, delta[0], delta[1]) }));
       }
     } else if (it.mode === 'box') setBox({ a: it.start, b: w });
     else if (it.mode === 'shape') setBox({ a: it.start, b: snap(w) });
@@ -263,6 +280,7 @@ export function PcbCanvas() {
         ...pcb.tracks.filter((t) => t.points.some((q) => q[0] >= x1 && q[0] <= x2 && q[1] >= y1 && q[1] <= y2)).map((t) => t.id),
         ...pcb.vias.filter((v) => v.x >= x1 && v.x <= x2 && v.y >= y1 && v.y <= y2).map((v) => v.id),
         ...(pcb.holes ?? []).filter((h) => h.x >= x1 && h.x <= x2 && h.y >= y1 && h.y <= y2).map((h) => h.id),
+        ...[...(pcb.texts ?? []), ...(pcb.logos ?? [])].filter((t) => t.x >= x1 && t.x <= x2 && t.y >= y1 && t.y <= y2).map((t) => t.id),
         // Areas only when the box encloses them, so selecting parts doesn't pick up a large keepout.
         ...[...(pcb.keepouts ?? []), ...(pcb.board.cutouts ?? []), ...(pcb.pours ?? []).filter((z) => z.outline)]
           .filter((a) => a.outline!.every((q) => q[0] >= x1 && q[0] <= x2 && q[1] >= y1 && q[1] <= y2))
@@ -480,9 +498,7 @@ const BoardLayers = memo(function BoardLayers({
                 <polyline key={i} points={pts(g.points)} fill="none" stroke={silk} strokeWidth={g.width} strokeLinecap="round" strokeLinejoin="round" />
               ),
             )}
-            {textStrokes(part.component.designator, designatorAnchor(part.box), 0.8, 0, side === 'bottom').map((s, i) => (
-              <polyline key={`t${i}`} points={pts(s)} fill="none" stroke={silk} strokeWidth={0.12} strokeLinecap="round" strokeLinejoin="round" />
-            ))}
+            <Label part={part} color={silk} selected={selected.has(labelId(part.component.id))} />
             {!part.fp && (
               <g>
                 <rect x={part.box.x1} y={part.box.y1} width={part.box.x2 - part.box.x1} height={part.box.y2 - part.box.y1} fill="none" stroke="var(--unconnected)" strokeWidth={0.1} strokeDasharray="0.3 0.2" />
@@ -504,9 +520,63 @@ const BoardLayers = memo(function BoardLayers({
           </g>
         );
       })}
+      {(['bottom', 'top'] as CopperLayer[]).map((side) => {
+        const silk = side === 'top' ? 'var(--pcb-silk-top)' : 'var(--pcb-silk-bottom)';
+        return (
+          <g key={side} opacity={side === activeLayer ? 1 : 0.5}>
+            {(pcb.logos ?? [])
+              .filter((l) => l.side === side)
+              .map((l) => (
+                <g key={l.id}>
+                  <path d={areasToSvgPath(logoAreas(l))} fillRule="evenodd" fill={silk} />
+                  {selected.has(l.id) && <SelectBox box={logoBox(l)} />}
+                </g>
+              ))}
+            {(pcb.texts ?? [])
+              .filter((t) => t.side === side)
+              .map((t) => (
+                <g key={t.id}>
+                  {textItemStrokes(t).map((st, i) => (
+                    <polyline key={i} points={pts(st)} fill="none" stroke={silk} strokeWidth={textStroke(t)} strokeLinecap="round" strokeLinejoin="round" />
+                  ))}
+                  {selected.has(t.id) && <SelectBox box={silkTextBox(t)} />}
+                </g>
+              ))}
+          </g>
+        );
+      })}
     </>
   );
 });
+
+function SelectBox({ box }: { box: Box }) {
+  return (
+    <rect
+      x={box.x1 - 0.15}
+      y={box.y1 - 0.15}
+      width={box.x2 - box.x1 + 0.3}
+      height={box.y2 - box.y1 + 0.3}
+      fill="var(--select)"
+      fillOpacity={0.12}
+      stroke="var(--select)"
+      strokeWidth={0.06}
+      strokeDasharray="0.25 0.15"
+    />
+  );
+}
+
+function Label({ part, color, selected }: { part: BoardModel['parts'][number]; color: string; selected: boolean }) {
+  const label = designatorLabel(part);
+  if (!part.fp || label.hidden) return null;
+  return (
+    <g>
+      {labelStrokes(label).map((st, i) => (
+        <polyline key={i} points={pts(st)} fill="none" stroke={color} strokeWidth={strokeFor(label.size)} strokeLinecap="round" strokeLinejoin="round" />
+      ))}
+      {selected && <SelectBox box={labelBox(label)} />}
+    </g>
+  );
+}
 
 /** Mounting holes, keepout areas, cutout outlines and pour zone borders. */
 const Mechanical = memo(function Mechanical({ pcb, activeLayer, selected, zoom, showPours }: { pcb: Pcb; activeLayer: CopperLayer; selected: Set<string>; zoom: number; showPours: boolean }) {

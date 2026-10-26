@@ -11,6 +11,52 @@ export interface Placement {
   /** Counter-clockwise degrees as seen from the top. */
   rotation: number;
   side: CopperLayer;
+  /** Designator overrides; without them it sits centred above the part, 0.8 mm high. */
+  label?: DesignatorLabel;
+}
+
+/** Where and how a part's designator is printed. Missing fields keep the default. */
+export interface DesignatorLabel {
+  /** Centre in the footprint's own frame, so the label follows the part when it moves or turns. */
+  x?: number;
+  y?: number;
+  /** Degrees counter-clockwise as seen on the board (not relative to the part). */
+  rotation?: number;
+  /** Text height in mm. */
+  size?: number;
+  hidden?: boolean;
+}
+
+/** Free silkscreen text. */
+export interface SilkText {
+  id: string;
+  text: string;
+  /** Centre of the text block, mm. */
+  x: number;
+  y: number;
+  /** Cap height in mm. */
+  size: number;
+  /** Degrees counter-clockwise. */
+  rotation: number;
+  side: CopperLayer;
+  /** Line width in mm (default from the size). */
+  stroke?: number;
+}
+
+/** Silkscreen artwork traced from an image. */
+export interface SilkLogo {
+  id: string;
+  name: string;
+  /** Centre, mm. */
+  x: number;
+  y: number;
+  /** Size on the board in mm; height keeps the image's aspect ratio. */
+  width: number;
+  height: number;
+  rotation: number;
+  side: CopperLayer;
+  /** Filled shapes in a unit frame: centred on 0, 1 wide. */
+  shapes: { outer: Vec[]; holes: Vec[][] }[];
 }
 
 export interface Track {
@@ -125,6 +171,8 @@ export interface Pcb {
   pours?: Pour[];
   holes?: MountingHole[];
   keepouts?: Keepout[];
+  texts?: SilkText[];
+  logos?: SilkLogo[];
   /** Footprint documents keyed like "lcsc:C25804" or "builtin:0603". */
   footprints: Record<string, StoredFootprint>;
   /** componentId -> footprint key (null: no footprint available). */

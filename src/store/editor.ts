@@ -6,7 +6,7 @@ import type { CopperLayer } from '../lib/pcb/types';
 import type { DrcIssue } from '../lib/pcb/drc';
 
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
-export type PcbTool = 'select' | 'route' | 'via' | 'hole' | 'keepout' | 'cutout' | 'zone' | 'outline';
+export type PcbTool = 'select' | 'route' | 'via' | 'hole' | 'keepout' | 'cutout' | 'zone' | 'outline' | 'text';
 /** PCB tools that draw an area: drag a rectangle, or click corners and close the shape. */
 export const SHAPE_TOOLS: readonly PcbTool[] = ['keepout', 'cutout', 'zone', 'outline'];
 

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, FlipHorizontal2, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, Eye, EyeOff, FlipHorizontal2, Image as ImageIcon, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Type, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
+  addLogo,
   addMountingHoles,
   addPours,
   autoroute,
@@ -20,13 +21,18 @@ import {
   setBoardOutline,
   syncPcb,
   updateBoard,
+  updateLabel,
+  updateLogo,
   updateMechanical,
   updatePlacement,
   updateRules,
+  updateText,
   updateTrack,
 } from '../../lib/pcb/actions';
+import { DESIGNATOR_SIZE, designatorLabel, labelComponent } from '../../lib/pcb/silk';
+import { rasterizeInBrowser, traceBitmap } from '../../lib/pcb/logo';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
-import { DEFAULT_HOLE, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Pour } from '../../lib/pcb/types';
+import { DEFAULT_HOLE, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
 import { cornerHolePositions } from '../../lib/pcb/outline';
 import type { PourFill } from '../../lib/pcb/pour';
 import { Field, IconButton, Tabs, cx, inputClass } from '../ui';
@@ -208,13 +214,18 @@ export function PcbInspector() {
   const [busy, setBusy] = useState(false);
 
   const one = selection.length === 1 ? selection[0] : null;
-  const placement = one ? pcb.placements.find((p) => p.componentId === one) : undefined;
+  // A selected designator shows its part.
+  const labelOf = one ? labelComponent(one) : null;
+  const placement = one ? pcb.placements.find((p) => p.componentId === (labelOf ?? one)) : undefined;
   const track = one ? pcb.tracks.find((t) => t.id === one) : undefined;
   const via = one ? pcb.vias.find((v) => v.id === one) : undefined;
   const pour = one ? pcb.pours?.find((z) => z.id === one) : undefined;
   const hole = one ? pcb.holes?.find((h) => h.id === one) : undefined;
   const keepout = one ? pcb.keepouts?.find((k) => k.id === one) : undefined;
   const cutout = one ? pcb.board.cutouts?.find((c) => c.id === one) : undefined;
+  const text = one ? pcb.texts?.find((t) => t.id === one) : undefined;
+  const logo = one ? pcb.logos?.find((l) => l.id === one) : undefined;
+  const part = placement ? board.parts.find((p) => p.component.id === placement.componentId) : undefined;
   const component = placement ? project.components.find((c) => c.id === placement.componentId) : undefined;
   const unrouted = [...conn.unrouted.values()].reduce((a, b) => a + b, 0);
 
@@ -310,6 +321,7 @@ export function PcbInspector() {
               {pcb.footprints[pcb.footprintOf[component.id] ?? '']?.title ?? 'none'}
             </span>
           </Field>
+          {part?.fp && <LabelEditor placement={placement} at={designatorLabel(part).at} />}
         </section>
       )}
       {track && (
@@ -353,6 +365,8 @@ export function PcbInspector() {
       {hole && <HoleEditor hole={hole} />}
       {keepout && <KeepoutEditor keepout={keepout} />}
       {cutout && <CutoutEditor cutout={cutout} />}
+      {text && <TextEditor text={text} />}
+      {logo && <LogoEditor logo={logo} />}
 
       {!one && (
         <>
@@ -399,7 +413,7 @@ export function PcbInspector() {
             >
               <CircleDot className="h-3.5 w-3.5" /> Mounting holes in the corners
             </button>
-            <p className="text-[10px] leading-snug text-muted">Draw an outline, keepouts, cutouts and pour zones with the tools on the left.</p>
+            <p className="text-[10px] leading-snug text-muted">Draw an outline, keepouts, cutouts and pour zones, or add text and logos, with the tools on the left.</p>
           </section>
           <section className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Design rules</h3>
@@ -664,6 +678,143 @@ function CutoutEditor({ cutout }: { cutout: Cutout }) {
   );
 }
 
+/* ---------- silkscreen ---------- */
+
+function SideButtons({ side, onChange }: { side: CopperLayer; onChange: (side: CopperLayer) => void }) {
+  return (
+    <div className="flex gap-1">
+      {(['top', 'bottom'] as CopperLayer[]).map((l) => (
+        <button key={l} onClick={() => onChange(l)} className={cx('h-7 flex-1 rounded-md border capitalize', side === l ? 'border-indigo-500 bg-indigo-500/10' : 'border-line')}>
+          {l}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function LabelEditor({ placement, at }: { placement: Placement; at: [number, number] }) {
+  const l = placement.label ?? {};
+  const set = (patch: Parameters<typeof updateLabel>[1]) => updateLabel(placement.componentId, patch);
+  return (
+    <div className="space-y-1.5 border-t border-line pt-2">
+      <h4 className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted">
+        Designator
+        <span className="flex items-center gap-1 normal-case tracking-normal">
+          <button onClick={() => set({ hidden: !l.hidden })} className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 hover:bg-black/5 dark:hover:bg-white/5" title={l.hidden ? 'Show on the board' : 'Hide from the board'}>
+            {l.hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />} {l.hidden ? 'Hidden' : 'Shown'}
+          </button>
+          {placement.label && (
+            <button onClick={() => set(null)} className="text-indigo-500 hover:underline">
+              Reset
+            </button>
+          )}
+        </span>
+      </h4>
+      <Field label="Text height">
+        <NumberInput label="Designator height" step={0.1} min={0.5} value={l.size ?? DESIGNATOR_SIZE} onCommit={(size) => set({ size })} />
+      </Field>
+      <Field label="Rotation">
+        <NumberInput label="Designator rotation" step={90} value={l.rotation ?? 0} onCommit={(rotation) => set({ rotation: ((rotation % 360) + 360) % 360 })} />
+      </Field>
+      <Field label="Position">
+        <span className="tabular text-muted">
+          {at[0].toFixed(2)}, {at[1].toFixed(2)} mm · drag it on the board
+        </span>
+      </Field>
+    </div>
+  );
+}
+
+function TextEditor({ text }: { text: SilkText }) {
+  const set = (patch: Partial<SilkText>) => updateText(text.id, patch);
+  const [draft, setDraft] = useState(text.text);
+  useEffect(() => setDraft(text.text), [text.text]);
+  const commit = () => draft !== text.text && set({ text: draft || ' ' });
+  return (
+    <section className="space-y-1.5">
+      <h3 className="flex items-center justify-between text-sm font-semibold">
+        Text <DeleteButton id={text.id} what="text" />
+      </h3>
+      <textarea
+        aria-label="Text"
+        autoFocus={text.text === 'TEXT'}
+        onFocus={(e) => e.target.select()}
+        className={cx(inputClass, 'h-auto min-h-[52px] resize-y py-1 font-mono')}
+        rows={Math.min(4, draft.split('\n').length + 1)}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            (e.target as HTMLTextAreaElement).blur();
+          }
+        }}
+      />
+      <Field label="Height (mm)">
+        <NumberInput label="Text height" step={0.1} min={0.5} value={text.size} onCommit={(size) => set({ size })} />
+      </Field>
+      <Field label="Line width">
+        <NumberInput label="Line width" step={0.01} min={0.1} value={text.stroke ?? Math.max(0.12, text.size * 0.15)} onCommit={(stroke) => set({ stroke })} />
+      </Field>
+      <Field label="Rotation">
+        <NumberInput label="Text rotation" step={90} value={text.rotation} onCommit={(rotation) => set({ rotation: ((rotation % 360) + 360) % 360 })} />
+      </Field>
+      <Field label="Side">
+        <SideButtons side={text.side} onChange={(side) => set({ side })} />
+      </Field>
+      <p className="text-[10px] leading-snug text-muted">Shift+Enter starts a new line. JLCPCB prints text 1 mm or taller with 0.15 mm lines reliably.</p>
+    </section>
+  );
+}
+
+function LogoEditor({ logo }: { logo: SilkLogo }) {
+  const set = (patch: Parameters<typeof updateLogo>[1]) => updateLogo(logo.id, patch);
+  return (
+    <section className="space-y-1.5">
+      <h3 className="flex items-center justify-between text-sm font-semibold">
+        <span className="truncate">Logo · {logo.name}</span> <DeleteButton id={logo.id} what="logo" />
+      </h3>
+      <Field label="Width (mm)">
+        <NumberInput label="Logo width" step={0.5} min={1} value={logo.width} onCommit={(width) => set({ width })} />
+      </Field>
+      <Field label="Height">
+        <span className="text-muted">{logo.height.toFixed(2)} mm</span>
+      </Field>
+      <Field label="Rotation">
+        <NumberInput label="Logo rotation" step={90} value={logo.rotation} onCommit={(rotation) => set({ rotation: ((rotation % 360) + 360) % 360 })} />
+      </Field>
+      <Field label="Side">
+        <SideButtons side={logo.side} onChange={(side) => set({ side })} />
+      </Field>
+      <p className="text-[10px] leading-snug text-muted">Traced from the image's dark areas. Very thin lines (under 0.15 mm on the board) may not print.</p>
+    </section>
+  );
+}
+
+/** Traces an image file into a logo in the middle of the board and selects it. */
+async function importLogo(file: File) {
+  const s = useEditor.getState();
+  try {
+    const url = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('Could not read the file'));
+      r.readAsDataURL(file);
+    });
+    const { shapes, aspect } = traceBitmap(await rasterizeInBrowser(url));
+    const b = currentPcb().board;
+    const width = Math.round(Math.min(15, b.width / 3, (b.height / 3) / aspect) * 10) / 10;
+    const logo = addLogo({ name: file.name.replace(/\.[^.]+$/, ''), x: b.x + b.width / 2, y: b.y + b.height / 2, width, height: width * aspect, rotation: 0, side: s.activeLayer, shapes });
+    s.setPcbTool('select');
+    s.setPcbSelection([logo.id]);
+    s.notify(`Logo traced (${shapes.length} shape${shapes.length === 1 ? '' : 's'}); drag it into place and set its width on the right`);
+  } catch (err) {
+    s.notify(`Logo import failed: ${(err as Error).message}`, 'error');
+  }
+}
+
 /* ---------- tool rail ---------- */
 
 export function PcbToolRail() {
@@ -672,9 +823,10 @@ export function PcbToolRail() {
   const hasSelection = useEditor((s) => s.pcbSelection.length > 0);
   const showPours = useEditor((s) => s.showPours);
   const pcb3d = useEditor((s) => s.pcb3d);
+  const logoInput = useRef<HTMLInputElement>(null);
   const s = useEditor.getState;
   return (
-    <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="PCB tools">
+    <div className="flex w-11 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-line bg-panel py-2" role="toolbar" aria-orientation="vertical" aria-label="PCB tools">
       <IconButton label="Select" shortcut="Esc" active={tool === 'select'} onClick={() => s().setPcbTool('select')}>
         <MousePointer2 className="h-4 w-4" />
       </IconButton>
@@ -703,6 +855,23 @@ export function PcbToolRail() {
       <IconButton label="Pour zone" active={tool === 'zone'} onClick={() => s().setPcbTool('zone')}>
         <PaintBucket className="h-4 w-4" />
       </IconButton>
+      <IconButton label="Silkscreen text" active={tool === 'text'} onClick={() => s().setPcbTool('text')}>
+        <Type className="h-4 w-4" />
+      </IconButton>
+      <IconButton label="Logo from an image (PNG, JPEG, SVG)" onClick={() => logoInput.current?.click()}>
+        <ImageIcon className="h-4 w-4" />
+      </IconButton>
+      <input
+        ref={logoInput}
+        type="file"
+        accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void importLogo(f);
+          e.target.value = '';
+        }}
+      />
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
       {(['top', 'bottom'] as CopperLayer[]).map((l, i) => (
         <button
@@ -723,13 +892,13 @@ export function PcbToolRail() {
         <Box className="h-4 w-4" />
       </IconButton>
       <div className="my-1 h-px w-6 bg-[var(--line)]" />
-      <IconButton label="Rotate" shortcut="R" onClick={() => rotateSelected()} disabled={!hasSelection}>
+      <IconButton label="Rotate part, text, logo or designator" shortcut="R" onClick={() => rotateSelected()} disabled={!hasSelection}>
         <RotateCcw className="h-4 w-4" />
       </IconButton>
       <IconButton label="Flip to other side" shortcut="X" onClick={flipSelected} disabled={!hasSelection}>
         <FlipHorizontal2 className="h-4 w-4" />
       </IconButton>
-      <IconButton label="Delete track, via, hole, keepout or cutout" shortcut="Del" onClick={deleteSelectedCopper} disabled={!hasSelection}>
+      <IconButton label="Delete track, via, hole, keepout, cutout, text or logo (hides a designator)" shortcut="Del" onClick={deleteSelectedCopper} disabled={!hasSelection}>
         <Trash2 className="h-4 w-4" />
       </IconButton>
       <div className="mt-auto flex flex-col items-center gap-1">

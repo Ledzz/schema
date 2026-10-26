@@ -1,6 +1,6 @@
 ---
 name: pcb-layout
-description: Turn a schematic made in this repo's Schematics app into a manufacturable 2-layer PCB for JLCPCB. Loads JLCPCB footprints, sizes the board, places parts sensibly, adds GND copper pours, routes (auto-router plus clean-up), runs DRC and exports Gerbers, drill, BOM and pick-and-place files. Use this whenever the user wants a PCB, board layout, placement, routing, a ground plane or pour, Gerbers, or to "get the board ready to order" — including right after a schematic was designed with the schematic-design skill.
+description: Turn a schematic made in this repo's Schematics app into a manufacturable 2-layer PCB for JLCPCB. Loads JLCPCB footprints, sizes the board, places parts sensibly, adds GND copper pours, routes (auto-router plus clean-up), tidies the silkscreen (designators, board name, pin labels, logos), runs DRC and exports Gerbers, drill, BOM and pick-and-place files. Use this whenever the user wants a PCB, board layout, placement, routing, a ground plane or pour, mounting holes, silkscreen text or a logo on the board, Gerbers, or to "get the board ready to order" — including right after a schematic was designed with the schematic-design skill.
 ---
 
 # PCB layout
@@ -132,14 +132,30 @@ Then run it once more without a net for the rest. Check `failed` in the result a
   `pcb_get_state`) where it can. When it can't, DRC warns that a track runs under the shell; move
   the connector or the parts next to it, clear that net and route again.
 
-### 6. Design rule check
+### 6. Silkscreen
+
+Finish the printing once parts and routing are settled:
+
+- Fix designators that `pcb_check` reports on pads or off the board: `pcb_set_designator` moves
+  one to x/y (the `label` positions in `pcb_get_state` show where they are now), rotates or
+  resizes it, or hides it when there is no room. Labels stay with their part afterwards.
+- Add a board name and version, and label connector pins people wire up (`GND`, `VIN`, `A1`…)
+  with `pcb_add_text`: 1–1.5 mm high, in a free spot next to what it describes; it returns the
+  text's bounding box and warns when the text runs off the board. Put longer notes on the bottom
+  side when the top is crowded.
+- If the user gives a logo, `pcb_add_logo` traces it (SVG markup or a PNG/JPEG/SVG file path on
+  the command line) to a given width in mm.
+- Render the board and check that nothing overlaps; `pcb_update_silkscreen` moves or changes text
+  and logos by id.
+
+### 7. Design rule check
 
 `pcb_check` must report no errors before you export. Read the warnings too: a pad with fewer
 than two thermal spokes may solder poorly or lose its GND connection, and a track under a metal
-shell is only insulated by solder mask. Overlapping parts and vias in pads are worth fixing.
-The render circles each problem, which makes it easy to see what to move.
+shell is only insulated by solder mask. Overlapping parts, vias in pads and silkscreen on pads are
+worth fixing. The render circles each problem, which makes it easy to see what to move.
 
-### 7. Export and hand off
+### 8. Export and hand off
 
 `pcb_export` writes `designs/<slug>-fab/`:
 

@@ -6,15 +6,21 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Silkscreen text and logos, movable designators.**
-2. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
-3. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
-4. **STEP export of the assembled board** — the 3D view already has the models; enclosure
+1. **4-layer boards** — cheap at JLCPCB and much easier to route for MCU boards.
+2. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
+3. **STEP export of the assembled board** — the 3D view already has the models; enclosure
    design needs the board as a STEP file.
-5. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
+4. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
+5. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
+   other.
 
 ## Done
 
+- **Silkscreen text and logos, movable designators** (2026-10-26): text on either side with a
+  fuller stroke font (lowercase, symbols, several lines, proportional spacing), logos traced from
+  PNG/JPEG/SVG images, and designators that can be moved, rotated, resized or hidden. Gerbers,
+  board pictures, the 3D view and DRC (silkscreen on pads or off the board) include them; agents
+  have `pcb_add_text`, `pcb_add_logo`, `pcb_update_silkscreen` and `pcb_set_designator`.
 - **Custom board outlines, mounting holes, keepouts and pour zones** (2026-10-25): polygon
   outlines with rounded corners, milled cutouts, NPTH mounting holes with a copper-free ring,
   keepouts for tracks, vias, pours or parts per layer, and drawn pour zones that take priority
@@ -50,7 +56,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - ★ More than 2 layers: 4/6-layer stackups, layer stack manager, JLC impedance calculator,
   blind and buried vias.
 - Align and distribute, part locking, rooms, measure tool, dimension lines, grid setting.
-- ★ Silkscreen text, logos and images; movable designators.
+- Multi-colour or greyscale artwork (logos are traced to one colour), TrueType fonts.
 - Test points, fiducials, tooling holes, panelization (V-cuts, tabs).
 
 ## PCB: routing
@@ -64,7 +70,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - Zone priorities beyond "zones before whole-board pours", and cutouts inside a single zone.
 - Per-net and net-class rules, rule areas.
 - Per-pad thermal settings; stitching-via arrays in the UI (an agent tool only today).
-- More DRC: silkscreen over pads, annular ring, drill-to-copper, courtyard overlap (approximated
+- More DRC: silkscreen over mask openings rather than pads, annular ring, drill-to-copper, courtyard overlap (approximated
   with bounding boxes today), checks against JLC's limits.
 
 ## Outputs and ordering
