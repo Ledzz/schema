@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
 import { addPort, commitAttach, connectivity, disconnectPin, endByKey, findNoFeeAlternative, markNoConnect, nameNet, pinByKey, planAttach, renameNet, type PinEnd } from '../../lib/actions';
 import { addDecoupling, supplyPins } from '../../lib/decoupling';
+import { editFootprintOf, editSymbolOf } from '../../lib/library';
 import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, openSheet, paste, rotateSelection, selectAll } from '../../lib/editing';
 import { samePoint } from '../../lib/schematic/geometry';
 import { sheetsOf, sheetView } from '../../lib/schematic/sheets';
@@ -158,6 +159,8 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
         ...(component.partClass === 'extended' ? [{ label: 'Find a no-fee alternative…', onSelect: () => findNoFeeAlternative(component) }] : []),
         ...(hasSupply ? [{ label: 'Add decoupling', onSelect: () => addDecoupling(component.id, { rail: mostUsedRail(project) }).then((r) => s.notify(`Added ${r.caps.length} capacitors`)) }] : []),
         ...(datasheet && /^https?:\/\//.test(datasheet) ? [{ label: 'Open datasheet', onSelect: () => window.open(datasheet, '_blank', 'noopener') }] : []),
+        { label: 'Edit symbol…', separatorBefore: true, onSelect: () => editSymbolOf(component) },
+        { label: 'Edit footprint…', onSelect: () => editFootprintOf(component).catch((err: Error) => s.notify(err.message, 'error')) },
         saveBlock,
         remove,
       ],

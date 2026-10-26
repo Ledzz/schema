@@ -31,6 +31,11 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - Category tree and package filters. A chip size typed in the query ("10uF 0805") becomes an exact package filter.
   - Detail pane: symbol, footprint and photo previews, price breaks, parameters, datasheet link.
   - Placing: double-click or Enter. "Replace" swaps the part on a selected component.
+- **Parts editor** (Place → Custom part…, or Symbol… / Footprint… on a selected part) — for parts the library lacks or gets wrong. What you make is saved in the project.
+  - **Symbols:** typed as a pin list (number, name, side) and drawn as a box sized to the names, or drawn and edited with pins, rectangles, lines, circles and text on the grid, with undo. Editing a library part's symbol starts from a copy of it.
+  - **Footprints:** generated from a package name with IPC-7351 land patterns at nominal density (chips, SOT-23/-223, SOIC, SSOP/TSSOP/MSOP, QFP, QFN/DFN with exposed pad, pin headers, DIP), using the datasheet's lead sizes when given. They can then be edited pad by pad, with silkscreen lines.
+  - **Parts** pair a symbol with a footprint and carry value, MPN, manufacturer, datasheet and an optional LCSC number. The editor warns about pins without pads.
+  - Placed copies share their symbol and footprint: redrawing a symbol updates every copy and keeps wires on pins of the same number (it warns if that joins nets), and a footprint made in the project can replace a library one on any placed part.
 - **Quick passives** — tools for resistor, capacitor, inductor, ferrite bead, diode and LED
   (`⇧R` `⇧C` `⇧L` `⇧F` `⇧D` `⇧E`).
   - Type a value as you would write it ("4k7", "100R", "0.1u", "10u 16V", "22uH") and pick a size (0402…1206, SOD-123, SMA…).
@@ -53,7 +58,7 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Sheets and hierarchical blocks.** Tabs along the bottom of the canvas add, switch, rename (double-click) and delete sheets. Labels and power flags of the same name connect across sheets. A hierarchical block (Place menu) stands for another sheet and gets a pin for each hierarchical port on it; wire or label its pins like a part's, and double-click it to open its sheet. Pins keep their places when ports are added or renamed, and a removed port's place stays empty while wiring still ends there. A net named only by hierarchical ports is called `Sheet/port`, so the same port name on two sheets stays two nets.
   - **Add decoupling** (inspector of a selected IC): 100 nF per supply pin, 1 µF + 10 nF on analog supplies (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags. Capacitors on rails above 5 V get a voltage rating; supply pins not yet on a rail get connected to the one you choose.
 - **PCB editor** (Schematic / PCB switch in the top bar)
-  - **Sync from the schematic.** Loads each part's JLCPCB footprint, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
+  - **Sync from the schematic.** Loads each part's footprint: one made in the project, the JLCPCB one, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
   - **2 or 4 copper layers** (Board panel or `pcb_set_board`). A 4-layer board adds Inner 1 and Inner 2: a whole-board pour on an inner layer makes it a plane, which auto-routing leaves alone and joins each surface-mount pad of that net to through a short stub and via. Gerbers gain `In1_Cu`/`In2_Cu` layers, and the JLCPCB checklist switches to the multilayer limits.
   - **Interactive routing** (`W`) with 45° corners on any copper layer (`1` top, `2` bottom, `⇧1`/`⇧2` inner layers). Press `V` to drop a via and continue on the other outer layer, or a layer key to jump to that one. Power nets get wider tracks automatically.
@@ -83,7 +88,7 @@ corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms
 
 ## WebMCP
 
-On load the app registers 51 tools. It uses `document.modelContext` (current spec) when present,
+On load the app registers 58 tools. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
@@ -92,6 +97,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `insert_block` (circuit blocks), `add_decoupling`, `rename_net`
   - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
   - `list_sheets`, `add_sheet`, `switch_sheet`, `place_block` (hierarchical block for a sheet)
+- **Custom parts:** `create_symbol` (from a pin list), `create_footprint` (IPC-7351 from a package name, or pad by pad), `create_part`, `place_custom_part`, `set_footprint` (a project footprint for placed parts), `list_custom_parts`, `delete_custom_item`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
 - **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board` (size or custom outline with arcs), `pcb_import_dxf` (outline, cutouts and holes from a DXF drawing), `pcb_add_mounting_holes`, `pcb_add_keepout`, `pcb_add_cutout`, `pcb_add_text`, `pcb_add_logo`, `pcb_update_silkscreen`, `pcb_set_designator`, `pcb_remove_features`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour` (whole board or a zone), `pcb_remove_pours`, `pcb_check`, `pcb_jlcpcb_check` (JLCPCB manufacturing checklist), `pcb_render` (board picture with mm rulers), `pcb_export_step` (assembled board as STEP), `pcb_export` (optionally without through-hole parts in the assembly files)
 

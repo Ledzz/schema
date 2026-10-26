@@ -14,6 +14,11 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Symbol, footprint and part editors** (2026-10-26): symbols from a pin list or drawn on the
+  grid, footprints from IPC-7351 land patterns for common packages or pad by pad, and parts that
+  pair them with their fields, all saved in the project. Library parts' symbols and footprints can
+  be edited as copies; redrawn symbols keep their wires. Agents use `create_symbol`,
+  `create_footprint`, `create_part`, `place_custom_part` and `set_footprint`.
 - **Multiple sheets and hierarchical blocks** (2026-10-26): sheet tabs (add, rename, delete),
   labels and power flags joining nets across sheets, hierarchical ports, and blocks standing for
   a sheet with a pin per port that keep their places as ports change. Agents use `list_sheets`,
@@ -83,9 +88,10 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Libraries
 
-- ★ Symbol, footprint and device editors, including an IPC footprint generator (parts come only
-  from the JLC/EasyEDA library and the built-in passives).
-- Personal and team libraries; importing libraries from KiCad or Altium.
+- Personal and team libraries (parts made in the editor are saved per project); importing
+  libraries from KiCad or Altium.
+- Multi-unit symbols in the symbol editor (it edits the units a library symbol has but cannot add
+  any), BGA and other packages the footprint generator doesn't know.
 - Choosing or editing a footprint's 3D model (EasyEDA's assignment is used as is).
 
 ## PCB: board and placement

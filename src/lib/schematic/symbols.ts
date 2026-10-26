@@ -5,6 +5,7 @@ const parsed = new Map<string, { source: StoredSymbol; def: SymbolDef }>();
 
 export function resolveSymbol(stored: StoredSymbol | undefined): SymbolDef {
   if (!stored) return genericSymbol('?', 2);
+  if (stored.def) return stored.def;
   if (stored.source === 'generic' || !stored.dataStr) return genericSymbol(stored.title, stored.pinCount ?? 2);
   return parseSymbol(stored.dataStr, stored.title);
 }

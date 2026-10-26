@@ -1,4 +1,5 @@
 import type { Vec } from '../schematic/types';
+import type { FootprintGeom } from './footprint';
 
 /** PCB units are millimetres, y grows downwards (screen convention). */
 
@@ -185,7 +186,9 @@ export interface DesignRules {
 export interface StoredFootprint {
   title: string;
   dataStr: string;
-  source: 'easyeda' | 'builtin';
+  source: 'easyeda' | 'builtin' | 'user';
+  /** The footprint itself, for footprints made in the app (no EasyEDA document). */
+  geom?: FootprintGeom;
 }
 
 export interface Pcb {

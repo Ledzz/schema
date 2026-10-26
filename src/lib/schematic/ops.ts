@@ -6,7 +6,7 @@ import type { SymbolResolver } from './symbols';
 import { blockPins, blockSlot, hierNames, sheetOf } from './sheets';
 import type { Component, NetPort, Project, SheetBlock, Vec, Wire } from './types';
 
-export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'pcb' | 'sheets' | 'blocks'>;
+export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'footprints' | 'parts' | 'pcb' | 'sheets' | 'blocks'>;
 
 let counter = 0;
 export function newId(prefix: string): string {
@@ -470,20 +470,69 @@ export function syncBlocks<T extends Pick<Project, 'wires' | 'ports' | 'sheets' 
     return next;
   });
   if (!changed) return doc;
-  if (!moves.length) return { ...doc, blocks };
-  const moveAt = (item: { sheet?: string }, at: Vec) => moves.find((m) => m.sheet === sheetOf(item, doc) && samePoint(m.from, at));
+  return followPins({ ...doc, blocks }, moves);
+}
+
+/** A connection point that moved, on one sheet. */
+export interface PinMove {
+  sheet: string;
+  from: Vec;
+  to: Vec;
+}
+
+/**
+ * Keeps wiring on connection points that moved without the wires being dragged (a block's pins
+ * re-ordering, a symbol redrawn): wire ends at `from` go to `to` with a jog, and labels or markers
+ * sitting on the point go with it.
+ */
+export function followPins<T extends Pick<Project, 'wires' | 'ports' | 'sheets'>>(doc: T, moves: PinMove[]): T {
+  const real = moves.filter((m) => !samePoint(m.from, m.to));
+  if (!real.length) return doc;
+  const sheet = (item: { sheet?: string }) => sheetOf(item, doc);
+  const moveAt = (item: { sheet?: string }, at: Vec) => real.find((m) => m.sheet === sheet(item) && samePoint(m.from, at));
+  const portsAt = (s: string, at: Vec) => doc.ports.filter((p) => sheet(p) === s && samePoint([p.x, p.y], at));
+  const touchesOther = (w: Wire, at: Vec) =>
+    doc.wires.some((o) => o !== w && sheet(o) === sheet(w) && o.points.some((q, i) => (i ? onSegment(at, o.points[i - 1], q) : samePoint(at, q))));
+  // Labels carried along at the far end of a stub that moves as a whole.
+  const carried = new Map<string, Vec>();
   const wires = doc.wires.map((w) => {
     if (w.points.length < 2) return w;
-    let out = w;
-    for (const end of [0, w.points.length - 1]) {
-      const m = moveAt(w, w.points[end]);
-      if (m) out = dragWireEnd(out, end === 0 ? 0 : out.points.length - 1, m.to);
+    const last = w.points.length - 1;
+    const [ma, mb] = [moveAt(w, w.points[0]), moveAt(w, w.points[last])];
+    // A stub from the pin to a label and nothing else: the label goes with the pin, no jog.
+    const m = ma && !mb ? ma : mb && !ma ? mb : null;
+    const far = ma && !mb ? w.points[last] : w.points[0];
+    const tags = m ? portsAt(sheet(w), far).filter((p) => p.kind !== 'noconnect') : [];
+    if (m && tags.length && !touchesOther(w, far)) {
+      const d: Vec = [m.to[0] - m.from[0], m.to[1] - m.from[1]];
+      for (const p of tags) carried.set(p.id, d);
+      return { ...w, points: w.points.map(([x, y]) => [x + d[0], y + d[1]] as Vec) };
     }
+    let out = w;
+    if (ma) out = dragWireEnd(out, 0, ma.to);
+    if (mb) out = dragWireEnd(out, out.points.length - 1, mb.to);
     return out;
   });
   const ports = doc.ports.map((p) => {
     const m = moveAt(p, [p.x, p.y]);
-    return m ? { ...p, x: m.to[0], y: m.to[1] } : p;
+    if (m) return { ...p, x: m.to[0], y: m.to[1] };
+    const d = carried.get(p.id);
+    return d ? { ...p, x: p.x + d[0], y: p.y + d[1] } : p;
   });
-  return { ...doc, blocks, wires, ports };
+  return { ...doc, wires, ports };
+}
+
+/** Where pins with the same number go when placed parts take another symbol (or a redrawn one). */
+export function symbolPinMoves(doc: Pick<Project, 'components' | 'sheets'>, ids: ReadonlySet<string>, before: SymbolResolver, after: SymbolResolver, newKey?: string): PinMove[] {
+  const moves: PinMove[] = [];
+  for (const c of doc.components) {
+    if (!ids.has(c.id)) continue;
+    const next = newKey ? { ...c, symbolKey: newKey, unit: 0 } : c;
+    const to = new Map(worldPins(next, after(next.symbolKey)).map((p) => [p.pin.number, p.at]));
+    for (const p of worldPins(c, before(c.symbolKey))) {
+      const at = to.get(p.pin.number);
+      if (at) moves.push({ sheet: sheetOf(c, doc), from: p.at, to: at });
+    }
+  }
+  return moves;
 }

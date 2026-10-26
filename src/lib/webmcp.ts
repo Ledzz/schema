@@ -39,6 +39,10 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { BLOCKS, insertBlock } from './blocks';
 import { addDecoupling } from './decoupling';
+import { deleteLibraryItem, deletePart, findCustomPart, partWarnings, placeCustomPart, saveFootprint, savePart, saveSymbol, setFootprint, symbolPinNumbers, userFootprints, userKey, userSymbols } from './library';
+import { dim, generateFootprint, packageSpec, PACKAGE_EXAMPLES, padNumbers } from './pcb/ipc';
+import type { FootprintGeom, PadGeom } from './pcb/footprint';
+import { icSymbol, type PinSpec } from './schematic/symbolgen';
 import { importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
@@ -95,6 +99,7 @@ function componentInfo(c: Component, withPins = true) {
     mpn: c.attrs['Manufacturer Part'] ?? null,
     package: c.attrs['Package'] ?? null,
     generic: c.generic ? `${c.generic.kind} ${c.generic.size}` : undefined,
+    footprint: c.footprint ? (project.footprints?.[c.footprint]?.title ?? c.footprint) : undefined,
     x: c.x,
     y: c.y,
     rotation: c.rotation,
@@ -102,6 +107,16 @@ function componentInfo(c: Component, withPins = true) {
     sheet: project.sheets && project.sheets.length > 1 ? sheetsOf(project).find((s) => s.id === sheetOf(c, project))?.name : undefined,
     pins,
   };
+}
+
+/** A symbol or footprint made in the project, by name or key. */
+function libraryKey(kind: 'symbol' | 'footprint', ref: string): string {
+  const project = st().project;
+  const items = kind === 'symbol' ? userSymbols(project) : userFootprints(project);
+  const hit = items.find(([key, item]) => key === ref || item.title.toLowerCase() === ref.trim().toLowerCase()) ?? items.find(([key]) => key === userKey(ref));
+  if (hit) return hit[0];
+  const known = items.map(([, item]) => item.title);
+  throw new Error(`No ${kind} "${ref}" in this project. ${known.length ? `${kind === 'symbol' ? 'Symbols' : 'Footprints'}: ${known.join(', ')}` : `Make one with create_${kind}.`}`);
 }
 
 /** A sheet by name or id. */
@@ -813,6 +828,266 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'create_symbol',
+    title: 'Create symbol',
+    description:
+      'Make a schematic symbol for a part the library lacks or draws badly: a rectangle with the given pins on its sides, sized to fit their names. Pins without a side go half on the left and half on the right, in order; a common layout is inputs and supplies on the left or top, outputs on the right, ground at the bottom. A symbol with the same name is replaced, which updates every placed part using it. Pair it with a footprint in create_part.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Symbol name, e.g. the chip\u2019s part number.' },
+        prefix: { type: 'string', description: 'Designator prefix (default "U").' },
+        pins: {
+          type: 'array',
+          minItems: 1,
+          items: {
+            type: 'object',
+            properties: {
+              number: { type: 'string', description: 'Pin number as on the footprint, e.g. "1" or "A3".' },
+              name: { type: 'string', description: 'Pin name, e.g. "VDD".' },
+              side: { type: 'string', enum: ['left', 'right', 'top', 'bottom'] },
+              type: { type: 'string', enum: ['Input', 'Output', 'Bidirectional', 'Power', 'Passive', 'Open Collector', 'Unspecified'] },
+            },
+            required: ['number'],
+          },
+        },
+      },
+      required: ['name', 'pins'],
+    },
+    execute: async (input) => {
+      const name = String(input.name);
+      const def = icSymbol(name, String(input.prefix ?? 'U'), input.pins as PinSpec[]);
+      const { key, joined } = saveSymbol(name, def);
+      const unit = def.units[0];
+      return {
+        symbol: name,
+        key,
+        size: [unit.bbox.x2 - unit.bbox.x1, unit.bbox.y2 - unit.bbox.y1],
+        pins: unit.pins.map((p) => `${p.number}${p.name !== p.number ? ` ${p.name}` : ''}`),
+        warnings: joined.length ? joined.map((j) => `Redrawing placed parts joined ${j}; check their wiring`) : undefined,
+      };
+    },
+  },
+  {
+    name: 'create_footprint',
+    title: 'Create footprint',
+    description: `Make a PCB footprint, either from a package name (IPC-7351 land pattern at nominal density, pin 1 top left, counter-clockwise numbering, exposed pad last) or pad by pad. Package forms: ${PACKAGE_EXAMPLES.join(', ')}; a size in the name ("QFN-24-4x4-0.5-EP2.6", "LQFP-64-10x10-0.5") overrides the usual one, and lead_span/lead_length/lead_width take the datasheet's [min, max] for a closer fit. A footprint with the same name is replaced, also on the board.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Footprint name, e.g. "SOIC-8" or "TPS62162 DSG".' },
+        package: { type: 'string', description: 'Package to generate, e.g. "SOIC-8", "QFN-32-5x5-0.5-EP3.45", "HDR-1x04".' },
+        lead_span: { ...pointSchema, description: 'Toe-to-toe span across the rows [min, max] in mm (datasheet E or HE).' },
+        lead_length: { ...pointSchema, description: 'Foot length [min, max] in mm (datasheet L).' },
+        lead_width: { ...pointSchema, description: 'Lead width [min, max] in mm (datasheet b).' },
+        pads: {
+          type: 'array',
+          minItems: 1,
+          description: 'Pads instead of a package, in mm from the part\u2019s centre (y down).',
+          items: {
+            type: 'object',
+            properties: {
+              number: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+              width: { type: 'number' },
+              height: { type: 'number' },
+              shape: { type: 'string', enum: ['rect', 'oval', 'circle'] },
+              layer: { type: 'string', enum: ['top', 'bottom', 'through'], description: 'Default top; through needs a drill.' },
+              drill: { type: 'number', description: 'Hole diameter for through-hole pads.' },
+            },
+            required: ['number', 'x', 'y', 'width', 'height'],
+          },
+        },
+        body: { ...pointSchema, description: 'Body size [width, length] in mm, drawn as the part outline (pads given one by one).' },
+      },
+      required: ['name'],
+    },
+    execute: async (input) => {
+      const name = String(input.name);
+      let geom: FootprintGeom;
+      if (input.package !== undefined) {
+        if (input.pads !== undefined) throw new Error('Give either package or pads, not both');
+        const spec = packageSpec(String(input.package));
+        const range = (v: unknown) => (Array.isArray(v) ? dim(Number(v[0]), Number(v[1])) : undefined);
+        geom = generateFootprint({ ...spec, span: range(input.lead_span) ?? spec.span, leadLength: range(input.lead_length) ?? spec.leadLength, leadWidth: range(input.lead_width) ?? spec.leadWidth });
+      } else if (Array.isArray(input.pads)) {
+        const pads = (input.pads as { number: string; x: number; y: number; width: number; height: number; shape?: string; layer?: string; drill?: number }[]).map((p): PadGeom => {
+          const layer = (p.layer ?? 'top') as PadGeom['layer'];
+          if (layer === 'through' && !(p.drill && p.drill > 0)) throw new Error(`Through-hole pad ${p.number} needs a drill`);
+          return {
+            number: String(p.number),
+            x: p.x,
+            y: p.y,
+            rotation: 0,
+            shape: (p.shape ?? 'rect') as PadGeom['shape'],
+            w: p.width,
+            h: p.height,
+            radius: 0,
+            points: [],
+            layer,
+            hole: layer === 'through' ? { w: p.drill!, h: p.drill!, rotation: 0, dx: 0, dy: 0 } : null,
+          };
+        });
+        const body = Array.isArray(input.body) ? (input.body as number[]) : null;
+        const outline = body ? [{ layer: 'outline' as const, width: 0.1, filled: false, points: [[-body[0] / 2, -body[1] / 2], [body[0] / 2, -body[1] / 2], [body[0] / 2, body[1] / 2], [-body[0] / 2, body[1] / 2], [-body[0] / 2, -body[1] / 2]] as [number, number][] }] : [];
+        const xs = [...pads.flatMap((p) => [p.x - p.w / 2, p.x + p.w / 2]), ...(body ? [-body[0] / 2, body[0] / 2] : [])];
+        const ys = [...pads.flatMap((p) => [p.y - p.h / 2, p.y + p.h / 2]), ...(body ? [-body[1] / 2, body[1] / 2] : [])];
+        geom = { pads, graphics: outline, bbox: { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) } };
+      } else throw new Error(`Give a package (e.g. ${PACKAGE_EXAMPLES.slice(4, 9).join(', ')}) or a list of pads`);
+      const key = saveFootprint(name, geom);
+      const b = geom.bbox;
+      return {
+        footprint: name,
+        key,
+        size: [Math.round((b.x2 - b.x1) * 100) / 100, Math.round((b.y2 - b.y1) * 100) / 100],
+        pads: geom.pads.map((p) => ({ number: p.number, x: p.x, y: p.y, width: p.w, height: p.h, layer: p.layer })),
+      };
+    },
+  },
+  {
+    name: 'create_part',
+    title: 'Create part',
+    description:
+      'Make a part from a symbol (create_symbol) and a footprint (create_footprint) so it can be placed with place_custom_part. Symbol pin numbers should match the footprint\u2019s pad numbers; warnings list the ones that don\u2019t. Give the LCSC number when JLCPCB stocks the part, so the BOM and assembly files carry it. A part with the same name is replaced; parts already placed keep their fields but share the symbol and footprint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        symbol: { type: 'string', description: 'Symbol name or key.' },
+        footprint: { type: 'string', description: 'Footprint name or key.' },
+        prefix: { type: 'string', description: 'Designator prefix (default the symbol\u2019s).' },
+        value: { type: 'string', description: 'Value shown on the schematic (default the name).' },
+        description: { type: 'string' },
+        manufacturer: { type: 'string' },
+        mpn: { type: 'string', description: 'Manufacturer part number.' },
+        lcsc: { type: 'string', description: 'LCSC number, e.g. "C2040".' },
+        datasheet: { type: 'string' },
+      },
+      required: ['name', 'symbol'],
+    },
+    execute: async (input) => {
+      const project = st().project;
+      const symbolKey = libraryKey('symbol', String(input.symbol));
+      const footprintKey = input.footprint !== undefined ? libraryKey('footprint', String(input.footprint)) : null;
+      const attrs: Record<string, string> = {};
+      if (input.description) attrs['Description'] = String(input.description);
+      if (input.manufacturer) attrs['Manufacturer'] = String(input.manufacturer);
+      if (input.mpn) attrs['Manufacturer Part'] = String(input.mpn);
+      if (input.datasheet) attrs['Datasheet'] = String(input.datasheet);
+      const part = savePart({
+        name: String(input.name),
+        symbolKey,
+        footprintKey,
+        prefix: String(input.prefix ?? symbolFor(project, symbolKey).prefix),
+        value: String(input.value ?? input.name),
+        lcsc: input.lcsc ? String(input.lcsc) : undefined,
+        attrs,
+      });
+      const warnings = partWarnings(part);
+      return { part: part.name, prefix: part.prefix, value: part.value, lcsc: part.lcsc ?? null, warnings: warnings.length ? warnings : undefined };
+    },
+  },
+  {
+    name: 'place_custom_part',
+    title: 'Place custom part',
+    description: 'Place a part made with create_part on the current sheet. Without x/y it goes to the right of the drawing. Returns its pins.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        part: { type: 'string', description: 'Part name.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        rotation: { type: 'number', enum: [0, 90, 180, 270] },
+        designator: { type: 'string' },
+      },
+      required: ['part'],
+    },
+    execute: async (input) => {
+      const c = placeCustomPart(String(input.part), {
+        x: input.x === undefined ? undefined : Number(input.x),
+        y: input.y === undefined ? undefined : Number(input.y),
+        rotation: (input.rotation ?? 0) as Rotation,
+        designator: input.designator ? String(input.designator) : undefined,
+      });
+      return componentInfo(c);
+    },
+  },
+  {
+    name: 'list_custom_parts',
+    title: 'List custom parts',
+    description: 'Parts, symbols and footprints made in this project, with each symbol\u2019s pins, each footprint\u2019s pads and what doesn\u2019t match.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const project = st().project;
+      return {
+        parts: (project.parts ?? []).map((p) => ({
+          name: p.name,
+          symbol: project.symbols[p.symbolKey]?.title ?? p.symbolKey,
+          footprint: p.footprintKey ? (project.footprints?.[p.footprintKey]?.title ?? p.footprintKey) : null,
+          prefix: p.prefix,
+          value: p.value,
+          lcsc: p.lcsc ?? null,
+          warnings: partWarnings(p, project),
+        })),
+        symbols: userSymbols(project).map(([key, s]) => ({ name: s.title, key, pins: symbolPinNumbers(symbolFor(project, key)) })),
+        footprints: userFootprints(project).map(([key, f]) => ({ name: f.title, key, pads: f.geom ? padNumbers(f.geom) : [] })),
+      };
+    },
+  },
+  {
+    name: 'set_footprint',
+    title: 'Set footprint',
+    description:
+      'Give placed parts a footprint made in this project (create_footprint), e.g. when the JLCPCB part has no footprint or a wrong one; omit footprint to go back to the library\u2019s. Pad numbers must match the parts\u2019 pin numbers. Run pcb_update afterwards.',
+    inputSchema: {
+      type: 'object',
+      properties: { designators: { type: 'array', items: { type: 'string' }, minItems: 1 }, footprint: { type: 'string', description: 'Footprint name or key.' } },
+      required: ['designators'],
+    },
+    execute: async (input) => {
+      const parts = (input.designators as string[]).map(byDesignator);
+      const key = input.footprint !== undefined ? libraryKey('footprint', String(input.footprint)) : null;
+      setFootprint(
+        parts.map((c) => c.id),
+        key,
+      );
+      const project = st().project;
+      const fp = key ? project.footprints?.[key]?.geom : undefined;
+      const warnings = fp
+        ? parts.flatMap((c) => {
+            const pads = padNumbers(fp);
+            const missing = symbolPinNumbers(symbolFor(project, c.symbolKey)).filter((n) => !pads.includes(n));
+            return missing.length ? [`${c.designator}: pins without a pad: ${missing.join(', ')}`] : [];
+          })
+        : [];
+      return { footprint: key ? project.footprints?.[key]?.title : 'library', parts: parts.map((c) => c.designator), warnings: warnings.length ? warnings : undefined };
+    },
+  },
+  {
+    name: 'delete_custom_item',
+    title: 'Delete custom symbol, footprint or part',
+    description: 'Delete a symbol, footprint or part made in this project. Symbols and footprints still in use by a placed part or another part are refused.',
+    inputSchema: {
+      type: 'object',
+      properties: { kind: { type: 'string', enum: ['symbol', 'footprint', 'part'] }, name: { type: 'string' } },
+      required: ['kind', 'name'],
+    },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const name = String(input.name);
+      if (input.kind === 'part') {
+        const part = findCustomPart(name);
+        deletePart(part.id);
+        return { deleted: part.name };
+      }
+      const kind = input.kind as 'symbol' | 'footprint';
+      deleteLibraryItem(kind, libraryKey(kind, name));
+      return { deleted: name };
+    },
+  },
+  {
     name: 'pcb_update',
     title: 'Update PCB from schematic',
     description:
@@ -1458,11 +1733,21 @@ function checkValue(value: unknown, schema: JsonSchema): string | null {
       if (problem) return `has an item that ${problem}`;
     }
   }
+  if (type === 'object' && schema.properties) {
+    const props = schema.properties as Record<string, JsonSchema>;
+    const fields = value as Record<string, unknown>;
+    for (const key of Object.keys(fields)) if (!(key in props)) return `has an unknown field "${key}" (valid: ${Object.keys(props).join(', ')})`;
+    for (const key of (schema.required as string[] | undefined) ?? []) if (fields[key] === undefined) return `is missing "${key}"`;
+    for (const [key, field] of Object.entries(fields)) {
+      const problem = field === undefined ? null : checkValue(field, props[key]);
+      if (problem) return `has "${key}" that ${problem}`;
+    }
+  }
   return null;
 }
 
 /**
- * Checks input against the tool's schema (top-level fields and array items), so a misspelt or
+ * Checks input against the tool's schema (fields, array items and nested objects), so a misspelt or
  * missing field fails with the list of valid ones instead of the tool acting on undefined.
  */
 export function validateInput(tool: ToolDefinition, input: unknown): Record<string, unknown> {

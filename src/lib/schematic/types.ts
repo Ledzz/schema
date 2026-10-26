@@ -1,7 +1,7 @@
 import type { PartClass, PriceBreak } from '../../shared/parts';
 import type { PassiveKind } from '../../shared/passives';
-import type { Pcb } from '../pcb/types';
-import type { Vec } from '../easyeda/symbol';
+import type { Pcb, StoredFootprint } from '../pcb/types';
+import type { SymbolDef, Vec } from '../easyeda/symbol';
 
 export type { Vec };
 
@@ -28,6 +28,8 @@ export interface Component {
   attrs: Record<string, string>;
   /** Set for generic passives placed by value and size; the LCSC part is matched from these. */
   generic?: { kind: PassiveKind; size: string };
+  /** Footprint chosen in the project (a key into Project.footprints), used instead of the LCSC one. */
+  footprint?: string;
   /** Sheet it is drawn on (the first sheet when absent). */
   sheet?: string;
 }
@@ -83,8 +85,26 @@ export interface SheetBlock {
 export interface StoredSymbol {
   title: string;
   dataStr: string;
-  source: 'easyeda' | 'generic' | 'builtin';
+  source: 'easyeda' | 'generic' | 'builtin' | 'user';
   pinCount?: number;
+  /** The symbol itself, for symbols made or edited in the app (no EasyEDA document). */
+  def?: SymbolDef;
+}
+
+/** A part made in the project: a symbol, an optional footprint, and what placed copies carry. */
+export interface CustomPart {
+  id: string;
+  name: string;
+  /** Key into Project.symbols. */
+  symbolKey: string;
+  /** Key into Project.footprints; null when the part has no footprint yet. */
+  footprintKey: string | null;
+  prefix: string;
+  value: string;
+  /** LCSC number, when JLCPCB stocks the part: the BOM and assembly files use it. */
+  lcsc?: string;
+  /** Description, Manufacturer, Manufacturer Part, Datasheet … */
+  attrs: Record<string, string>;
 }
 
 export interface Project {
@@ -99,6 +119,10 @@ export interface Project {
   sheets?: Sheet[];
   blocks?: SheetBlock[];
   symbols: Record<string, StoredSymbol>;
+  /** Footprints made in the app, keyed like symbols ("user:…"). */
+  footprints?: Record<string, StoredFootprint>;
+  /** Parts made in the app. */
+  parts?: CustomPart[];
   pcb?: Pcb;
 }
 

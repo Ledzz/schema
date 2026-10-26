@@ -28,18 +28,21 @@ lazy-loaded modules changed.
 
 ## Where things are
 
-- `src/lib/schematic/` – schematic model, geometry, netlist, ops, wire router, BOM.
+- `src/lib/schematic/` – schematic model, geometry, netlist, ops, wire router, BOM, sheets
+  (`sheets.ts`) and generated symbols (`symbolgen.ts`).
 - `src/lib/pcb/` – PCB model (`types.ts`), board model and connectivity (`board.ts`), board shape,
   holes and keepouts (`outline.ts`), pours (`pour.ts`, Clipper), DRC (`drc.ts`), A* router
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
   (`render.ts`), push-and-shove and segment dragging (`shove.ts`), silkscreen text, logos and
   designator labels (`silk.ts`, `font.ts`, `logo.ts`),
-  3D (`model3d.ts`, `viewer3d.ts`), STEP export (`step.ts`), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
+  3D (`model3d.ts`, `viewer3d.ts`), STEP export (`step.ts`), IPC-7351 footprints (`ipc.ts`), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
   whose `JLC` constants hold JLCPCB's published limits).
 - `src/lib/actions.ts`, `src/lib/passives.ts` – schematic actions shared by the UI and the tools;
   `src/lib/blocks.ts` (circuit blocks, as data plus `insertBlock`) and `src/lib/decoupling.ts`
   build on them. Multi-step edits use the store's `historyMark` / `squashHistory` /
   `revertHistory` to become one undo step, or nothing if a step fails.
+- `src/lib/library.ts` – symbols, footprints and parts made in the project (`user:` keys), used
+  by the parts editor (`components/library/PartsEditor.tsx`) and the custom-part tools.
 - `src/lib/webmcp.ts` – every agent tool (`TOOLS`), input validation and `runTool`.
 - `scripts/schem.ts` – the CLI: browser shims, then the same `TOOLS`, with CLI overrides for tools
   that would download files in a browser (`pcb_export`, `pcb_render`, …).

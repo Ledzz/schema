@@ -24,6 +24,7 @@ const parsed = new WeakMap<StoredFootprint, FootprintGeom>();
 
 export function footprintGeom(stored: StoredFootprint | undefined): FootprintGeom | null {
   if (!stored) return null;
+  if (stored.geom) return stored.geom;
   let g = parsed.get(stored);
   if (!g) {
     g = parsePcbFootprint(stored.dataStr);

@@ -80,6 +80,12 @@ export async function syncPcb(): Promise<SyncReport> {
   const footprintOf: Record<string, string | null> = {};
 
   const keys = await mapLimit(project.components, 4, async (c): Promise<string | null> => {
+    // A footprint chosen in the project, always in its latest edit.
+    const own = c.footprint ? project.footprints?.[c.footprint] : undefined;
+    if (own) {
+      fetched[c.footprint!] = own;
+      return c.footprint!;
+    }
     if (c.lcsc) {
       const key = `lcsc:${c.lcsc.toUpperCase()}`;
       if (pcb.footprints[key] || fetched[key]) return key;
@@ -173,7 +179,8 @@ export async function enterPcb() {
 }
 
 /** What decides a part's footprint; a change means the PCB needs syncing. */
-const partSignature = (c: Component) => `${c.lcsc ?? ''}|${c.generic?.size ?? ''}`;
+// The footprint goes last and only when set, so boards synced before it existed stay in date.
+const partSignature = (c: Component) => `${c.lcsc ?? ''}|${c.generic?.size ?? ''}${c.footprint ? `|${c.footprint}` : ''}`;
 
 /** True when parts were added, removed or re-assigned since the last sync. */
 export function pcbOutOfDate(project: Project): boolean {

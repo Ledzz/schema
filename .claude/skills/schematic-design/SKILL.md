@@ -79,6 +79,13 @@ placing an IC, `add_decoupling` adds its supply-pin capacitors and bulk capacito
   come from the EasyEDA library and names and numbering vary between vendors.
 - **Designators:** library parts bring their own prefixes ("USB", "H", "LED", even "U" for a
   header), so pass `designator` explicitly for connectors (`J1`) and anything else that matters.
+- **Parts the library lacks** (or draws badly): make them in the project. `create_symbol` takes
+  the pins from the datasheet (number, name, side); `create_footprint` generates an IPC-7351 land
+  pattern from the package name ("SOIC-8", "QFN-24-4x4-0.5-EP2.6", "SOT-23-5", "HDR-1x04"), with
+  the datasheet's lead sizes as `[min, max]` for a closer fit; `create_part` pairs them (give the
+  LCSC number if JLCPCB stocks the part) and `place_custom_part` places it. Symbol pin numbers
+  must match the footprint's pad numbers; `create_part` warns when they don't. Without an LCSC
+  number JLCPCB can't assemble the part, so say so in the hand-off.
 
 ### 4. Place parts in a tidy grid
 
@@ -154,7 +161,8 @@ Offer the **pcb-layout** skill as the next step when they want a board.
 
 - The JLCPCB keyword search treats words loosely. Be specific ("AMS1117-3.3", "Type-C 6P"), and
   note that a chip size typed in the query ("10uF 0805") is applied as an exact package filter.
-- Parts without an LCSC number cannot be assembled by JLCPCB and get no footprint on the PCB.
-  Every placed part should come from `place_part` / `place_passive`.
+- Parts without an LCSC number cannot be assembled by JLCPCB. Place parts from the library
+  (`place_part` / `place_passive`) whenever one fits; a part made with `create_part` gets its
+  footprint from the project but is hand-soldered or consigned unless it has an LCSC number.
 - `place_part` without x/y drops the part to the right of the drawing. Give explicit positions
   so the layout stays readable.

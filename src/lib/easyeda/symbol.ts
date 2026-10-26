@@ -105,6 +105,26 @@ function grow(box: Box, x: number, y: number) {
   box.y2 = Math.max(box.y2, y);
 }
 
+/** Bounds of a unit's shapes and pin ends. */
+export function unitBox(u: Pick<SymbolUnit, 'shapes' | 'pins'>): Box {
+  const box: Box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const s of u.shapes) {
+    if (s.kind === 'rect') {
+      grow(box, s.x, s.y);
+      grow(box, s.x + s.w, s.y + s.h);
+    } else if (s.kind === 'ellipse') {
+      grow(box, s.cx - s.rx, s.cy - s.ry);
+      grow(box, s.cx + s.rx, s.cy + s.ry);
+    } else if (s.kind === 'poly') {
+      for (let i = 0; i < s.points.length; i += 2) grow(box, s.points[i], s.points[i + 1]);
+    } else if (s.kind === 'text') {
+      grow(box, s.x, s.y);
+    }
+  }
+  for (const p of u.pins) grow(box, p.x, p.y);
+  return Number.isFinite(box.x1) ? box : { x1: -10, y1: -10, x2: 10, y2: 10 };
+}
+
 export function parseSymbol(dataStr: string, title = ''): SymbolDef {
   const units: SymbolUnit[] = [];
   const attrs: Record<string, string> = {};
@@ -229,24 +249,8 @@ export function parseSymbol(dataStr: string, title = ''): SymbolDef {
 
   if (units.length === 0) units.push(emptyUnit(title || 'A'));
   for (const u of units) {
-    for (const s of u.shapes) {
-      if (s.kind === 'rect') {
-        grow(u.bbox, s.x, s.y);
-        grow(u.bbox, s.x + s.w, s.y + s.h);
-      } else if (s.kind === 'ellipse') {
-        grow(u.bbox, s.cx - s.rx, s.cy - s.ry);
-        grow(u.bbox, s.cx + s.rx, s.cy + s.ry);
-      } else if (s.kind === 'poly') {
-        for (let i = 0; i < s.points.length; i += 2) grow(u.bbox, s.points[i], s.points[i + 1]);
-      } else if (s.kind === 'text') {
-        grow(u.bbox, s.x, s.y);
-      }
-    }
-    for (const p of u.pins) {
-      if (!p.number) p.number = p.name || p.id;
-      grow(u.bbox, p.x, p.y);
-    }
-    if (!Number.isFinite(u.bbox.x1)) u.bbox = { x1: -10, y1: -10, x2: 10, y2: 10 };
+    for (const p of u.pins) if (!p.number) p.number = p.name || p.id;
+    u.bbox = unitBox(u);
   }
 
   const designator = attrs['Designator'] ?? '';

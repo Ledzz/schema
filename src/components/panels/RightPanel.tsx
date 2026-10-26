@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, ExternalLink, FlipHorizontal2, Play, Plus, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
+import { Bot, Box, ExternalLink, FlipHorizontal2, PenTool, Play, Plus, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import { useWebMcp } from '../../store/webmcp';
 import { connectivity, findNoFeeAlternative, nameNet, renameNet } from '../../lib/actions';
 import { alignSelection, deleteSelection, fitView, mirrorSelection, rotateSelection } from '../../lib/editing';
 import { ALIGN_ACTIONS } from '../align';
 import { addDecoupling, planDecoupling, supplyPins, type PlannedCap } from '../../lib/decoupling';
+import { editFootprintOf, editSymbolOf, setFootprint } from '../../lib/library';
 import { worldPins } from '../../lib/schematic/geometry';
 import { symbolFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
@@ -259,6 +260,25 @@ function ComponentInspector({ c }: { c: Component }) {
           </button>
         )}
       </div>
+      <div className="flex gap-1.5">
+        <button onClick={() => editSymbolOf(c)} className="inline-flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5">
+          <PenTool className="h-3.5 w-3.5" /> Symbol…
+        </button>
+        <button
+          onClick={() => editFootprintOf(c).catch((err: Error) => useEditor.getState().notify(err.message, 'error'))}
+          className="inline-flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
+        >
+          <Box className="h-3.5 w-3.5" /> Footprint…
+        </button>
+      </div>
+      {c.footprint && (c.lcsc || c.generic) && (
+        <div className="flex items-center justify-between gap-2 text-[11px]">
+          <span className="truncate text-muted">Footprint made in this project</span>
+          <button onClick={() => setFootprint([c.id], null)} className="shrink-0 text-indigo-500 hover:underline">
+            Use the library’s
+          </button>
+        </div>
+      )}
 
       {!c.generic && <DecouplingSection c={c} />}
 

@@ -13,6 +13,7 @@ import { TooltipLayer } from './components/Tooltip';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
 import { BlocksDialog, SaveBlockDialog } from './components/BlocksDialog';
+import { PartsEditor } from './components/library/PartsEditor';
 import { FindBox } from './components/FindBox';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
 
@@ -96,6 +97,7 @@ export default function App() {
       <TooltipLayer />
       <OrderDialog />
       <BlocksDialog />
+      <PartsEditor />
       <SaveBlockDialog />
     </div>
   );

@@ -153,6 +153,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           items={[
             { label: 'Part from library…', shortcut: '/', onSelect: focusLibrarySearch },
             { label: 'Circuit block…', shortcut: 'B', onSelect: () => s().setBlocksOpen(true) },
+            { label: 'Custom part…', onSelect: () => s().setPartsEditor({ tab: 'part' }) },
             ...PASSIVE_TOOLS.map((t, i) => ({ label: PASSIVES[t.kind].label, shortcut: t.key, separatorBefore: i === 0, onSelect: () => startPassive(t.kind) })),
             { label: 'Wire', shortcut: 'W', separatorBefore: true, onSelect: () => s().setTool('wire') },
             { label: 'Net label', shortcut: 'N', onSelect: () => s().startPort('label') },

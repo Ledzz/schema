@@ -42,17 +42,19 @@ a picture shows crossings, crowding and odd detours that the numbers don't.
 ## Before you start
 
 The schematic must be finished: `check_design` without errors, and every part placed from the
-JLCPCB library (`place_part` / `place_passive`), because only those have footprints and can be
-assembled. If the schematic isn't there yet, use the **schematic-design** skill first.
+JLCPCB library (`place_part` / `place_passive`) or made in the project with a footprint
+(`create_part`). Only parts with an LCSC number can be assembled by JLCPCB. If the schematic isn't
+there yet, use the **schematic-design** skill first.
 
 ## Workflow
 
 ### 1. Bring the parts onto the board
 
 `pcb_update` loads each part's footprint, sizes the board on first use and packs the parts in
-schematic order. Fix anything listed under `without_footprint` in the schematic (usually by
-replacing the part) and run it again. Re-run `pcb_update` whenever the schematic changes; it
-keeps existing positions and routing.
+schematic order. For anything listed under `without_footprint`, replace the part, or generate a
+footprint from its package with `create_footprint` and assign it with `set_footprint`; do the
+same for a library footprint that is wrong. Then run `pcb_update` again. Re-run it whenever the
+schematic changes; it keeps existing positions and routing.
 
 ### 2. Size the board
 

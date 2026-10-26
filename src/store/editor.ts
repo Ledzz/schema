@@ -5,6 +5,19 @@ import type { Component, NetPort, PortKind, Project, Rotation, Vec } from '../li
 import type { PartClass } from '../shared/parts';
 import type { CopperLayer } from '../lib/pcb/types';
 import type { DrcIssue } from '../lib/pcb/drc';
+import type { SymbolDef } from '../lib/easyeda/symbol';
+import type { FootprintGeom } from '../lib/pcb/footprint';
+
+/** What the parts editor shows. */
+export interface PartsEditorState {
+  tab: 'part' | 'symbol' | 'footprint';
+  /** Symbol or footprint key, or part id, to open; absent starts a new one. */
+  key?: string;
+  /** A copy to start from, such as a placed part's library symbol or footprint. */
+  draft?: { name: string; symbol?: SymbolDef; footprint?: FootprintGeom };
+  /** The placed part it was opened from, which is offered the result when it is saved. */
+  componentId?: string;
+}
 
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'hier' | 'place';
 /** How routing and track dragging treat other nets' tracks in the way. */
@@ -73,7 +86,7 @@ function loadProject(): Project {
   return emptyProject();
 }
 
-const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, pcb: p.pcb, sheets: p.sheets, blocks: p.blocks });
+const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, footprints: p.footprints, parts: p.parts, pcb: p.pcb, sheets: p.sheets, blocks: p.blocks });
 
 /** Symbols and footprints are append-only caches, so history never removes them. */
 function keepCaches(target: Doc, current: Project): Doc {
@@ -128,6 +141,8 @@ interface EditorState {
   setOrderOpen: (open: boolean) => void;
   /** The circuit block picker is open. */
   blocksOpen: boolean;
+  partsEditor: PartsEditorState | null;
+  setPartsEditor: (partsEditor: PartsEditorState | null) => void;
   setBlocksOpen: (open: boolean) => void;
   /** The ⌘F find box is open. */
   findOpen: boolean;
@@ -295,6 +310,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
   orderOpen: false,
   setOrderOpen: (orderOpen) => set({ orderOpen }),
   blocksOpen: false,
+  partsEditor: null,
+  setPartsEditor: (partsEditor) => set({ partsEditor }),
   setBlocksOpen: (blocksOpen) => set({ blocksOpen }),
   findOpen: false,
   setFindOpen: (findOpen) => set({ findOpen }),
@@ -395,7 +412,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const { past, project } = get();
     const i = past.findLastIndex((d) => d.components === mark.components && d.wires === mark.wires && d.ports === mark.ports);
     if (i < 0) return;
-    set({ project: { ...project, components: mark.components, wires: mark.wires, ports: mark.ports, sheets: mark.sheets, blocks: mark.blocks, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
+    const { components, wires, ports, sheets, blocks, footprints, parts } = mark;
+    set({ project: { ...project, components, wires, ports, sheets, blocks, footprints, parts, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
   },
   undo: () => {
     const { past, future, project } = get();
