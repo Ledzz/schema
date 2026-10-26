@@ -223,3 +223,75 @@ export function areasToSvgPath(areas: FillArea[]): string {
   const ring = (pts: Vec[]) => `M${pts.map((p) => `${p[0].toFixed(4)} ${p[1].toFixed(4)}`).join('L')}Z`;
   return areas.map((a) => ring(a.outer) + a.holes.map(ring).join('')).join('');
 }
+
+/** What mergeAreas joins: copper shapes, polylines stroked with round ends, and filled areas. */
+export interface MergeInput {
+  shapes?: CopperShape[];
+  strokes?: { points: Vec[]; width: number }[];
+  areas?: FillArea[];
+  /** Cut out of the result (drill holes). */
+  holes?: Vec[][];
+  /** Kept only inside this outline (the board). */
+  clip?: Vec[];
+  /** Drop outline points closer than this (mm) to the simplified outline; 0 keeps them all. */
+  tolerance?: number;
+}
+
+/** Douglas–Peucker on a closed ring: the fewest points within `tol` of the original. */
+function simplifyRing(ring: Vec[], tol: number): Vec[] {
+  if (ring.length <= 4 || tol <= 0) return ring;
+  const keep = new Uint8Array(ring.length);
+  const dist = (p: Vec, a: Vec, b: Vec) => {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const l = Math.hypot(dx, dy);
+    return l < 1e-12 ? Math.hypot(p[0] - a[0], p[1] - a[1]) : Math.abs(dx * (a[1] - p[1]) - dy * (a[0] - p[0])) / l;
+  };
+  const run = (i: number, j: number) => {
+    let far = -1;
+    let best = tol;
+    for (let k = i + 1; k < j; k++) {
+      const d = dist(ring[k], ring[i], ring[j % ring.length]);
+      if (d > best) {
+        best = d;
+        far = k;
+      }
+    }
+    if (far < 0) return;
+    keep[far] = 1;
+    run(i, far);
+    run(far, j);
+  };
+  // Split the ring at its first point and the point farthest from it.
+  let opposite = 1;
+  for (let k = 1; k < ring.length; k++) if (Math.hypot(ring[k][0] - ring[0][0], ring[k][1] - ring[0][1]) > Math.hypot(ring[opposite][0] - ring[0][0], ring[opposite][1] - ring[0][1])) opposite = k;
+  keep[0] = keep[opposite] = 1;
+  run(0, opposite);
+  run(opposite, ring.length);
+  const out = ring.filter((_, k) => keep[k]);
+  return out.length >= 3 ? out : ring;
+}
+
+/** Joins shapes, strokes and areas into areas with holes, e.g. a whole copper or silkscreen layer. */
+export function mergeAreas(input: MergeInput): FillArea[] {
+  const paths: Paths = [];
+  for (const s of input.shapes ?? []) paths.push(...grownShape(s, 0));
+  for (const st of input.strokes ?? []) {
+    if (st.points.length === 0) continue;
+    const pts = st.points.length === 1 ? [st.points[0], [st.points[0][0] + 1e-4, st.points[0][1]] as Vec] : st.points;
+    paths.push(...offset([pts.map(([x, y]) => ({ X: Math.round(x * S), Y: Math.round(y * S) }))], st.width / 2, ClipperLib.EndType.etOpenRound));
+  }
+  // An area's holes are cut from it alone, so they don't erase other copper under them.
+  for (const a of input.areas ?? []) paths.push(...difference([toPath(a.outer)], a.holes.map(toPath)));
+  let merged = union(paths);
+  if (input.holes?.length) merged = difference(merged, input.holes.map(toPath));
+  if (input.clip) merged = intersect(merged, [toPath(input.clip)]);
+  const c = new ClipperLib.Clipper();
+  c.AddPaths(merged, ClipperLib.PolyType.ptSubject, true);
+  const tree = new ClipperLib.PolyTree();
+  c.Execute(ClipperLib.ClipType.ctUnion, tree, ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+  const out: FillArea[] = [];
+  collectAreas(tree, out);
+  const tol = input.tolerance ?? 0;
+  return tol > 0 ? out.map((a) => ({ outer: simplifyRing(a.outer, tol), holes: a.holes.map((h) => simplifyRing(h, tol)) })) : out;
+}

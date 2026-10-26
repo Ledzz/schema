@@ -17,6 +17,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Copper and silkscreen in the STEP export** (2026-10-26): the outer copper and silkscreen as
+  thin coloured solids, a part per piece grouped by layer, read back with OpenCascade.
 - **Track corners, whole tracks and via pushing** (2026-10-26): corners drag with 45° bends,
   Alt-drag moves a whole track with its ends kept on their pads, and Push moves other nets' vias
   (with the tracks ending on them) as well as tracks. Moving copper is refused near other nets'
@@ -114,8 +116,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## 3D and mechanical
 
-- Height and clearance checks, enclosure design (the 3D view and STEP export are done); copper
-  and silkscreen in the STEP file (it has the bare board shape today).
+- Height and clearance checks, enclosure design (the 3D view and STEP export are done); solder
+  mask and inner layers in the STEP file.
 
 ## Simulation
 

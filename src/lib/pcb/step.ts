@@ -4,6 +4,8 @@
  * holes as true cylinders and slots and cutouts as polygon openings. Each part is EasyEDA's own
  * STEP model, merged in once per model file and placed with an assembly instance for every part
  * that uses it, the same way the 3D view places the models. Parts without a model get a block.
+ * The outer copper (pads, tracks, vias and pours, less the drill holes) and the silkscreen are
+ * thin solids on both faces, so the board looks like the real one in a CAD program.
  *
  * Coordinates are millimetres with z up and y up (the editor's y flipped), the board's bottom face
  * at z = 0.
@@ -14,7 +16,10 @@ import type { BoardModel, BoardPart } from './board';
 import { boardOutline } from './geometry';
 import { MIL } from './footprint';
 import { fallbackHeight } from './model3d';
-import type { Pcb } from './types';
+import { circlePolygon } from './outline';
+import { mergeAreas, type FillArea } from './pour';
+import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
+import type { Pcb, Side } from './types';
 
 export const BOARD_THICKNESS = 1.6;
 
@@ -37,10 +42,18 @@ export class StepFile {
   /** Data section chunks merged verbatim (model files), in order. */
   private chunks: { at: number; text: string }[] = [];
   next = 1;
+  /** Points, directions and vectors are plain values: identical ones are written once. */
+  private values = new Map<string, number>();
 
   add(text: string): number {
+    const value = /^(CARTESIAN_POINT|DIRECTION|VECTOR)\(/.test(text);
+    if (value) {
+      const known = this.values.get(text);
+      if (known !== undefined) return known;
+    }
     const id = this.next++;
     this.texts[id] = text;
+    if (value) this.values.set(text, id);
     return id;
   }
   reserve(): number {
@@ -231,6 +244,56 @@ export function boardOpenings(pcb: Pcb, board: BoardModel): Opening[] {
   return out;
 }
 
+/* ---------- copper and silkscreen ---------- */
+
+/** 1 oz copper; silkscreen ink is about 15 µm. */
+const COPPER = 0.035;
+const SILK = 0.015;
+/** Outline detail kept in the model: finer arcs only make the file bigger. */
+const DETAIL = 0.01;
+
+/** An outer face's copper (y down): pads, tracks, vias and pour fills, less the drill holes. */
+export function copperAreas(pcb: Pcb, board: BoardModel, side: Side): FillArea[] {
+  const holes = [
+    ...boardOpenings(pcb, board).map((o) => (o.kind === 'circle' ? circlePolygon([o.center[0], -o.center[1]], o.r) : o.points.map(([x, y]) => [x, -y] as Vec))),
+    ...pcb.vias.map((v) => circlePolygon([v.x, v.y], v.drill / 2)),
+  ];
+  return mergeAreas({
+    shapes: board.items.filter((it) => it.layers.includes(side)).map((it) => it.shape),
+    areas: board.fills.filter((fl) => fl.pour.layer === side).flatMap((fl) => fl.areas),
+    holes,
+    tolerance: DETAIL,
+  });
+}
+
+/** An outer face's silkscreen (y down): footprint drawings, designators, text and logos, on the board. */
+export function silkAreas(pcb: Pcb, board: BoardModel, side: Side): FillArea[] {
+  const layer = side === 'top' ? 'silkTop' : 'silkBottom';
+  const strokes: { points: Vec[]; width: number }[] = [];
+  const areas: FillArea[] = [];
+  for (const part of board.parts) {
+    for (const g of part.graphics) {
+      if (g.layer !== layer) continue;
+      if (g.filled) areas.push({ outer: g.points, holes: [] });
+      else strokes.push({ points: g.points, width: g.width });
+    }
+    if (!part.fp) continue;
+    const label = designatorLabel(part);
+    if ((label.side === 'bottom' ? 'bottom' : 'top') === side) for (const st of labelStrokes(label)) strokes.push({ points: st, width: strokeFor(label.size) });
+  }
+  for (const t of pcb.texts ?? []) if (t.side === side) for (const st of textItemStrokes(t)) strokes.push({ points: st, width: textStroke(t) });
+  for (const l of pcb.logos ?? []) if (l.side === side) areas.push(...logoAreas(l));
+  return mergeAreas({ strokes, areas, clip: boardOutline(pcb.board), tolerance: DETAIL });
+}
+
+/** Areas (y down) as outlines and openings for extrudedSolid (y up), leaving out slivers. */
+function areaSolids(areas: FillArea[]): { outer: Vec[]; holes: Opening[] }[] {
+  const flip = (p: Vec): Vec => [p[0], -p[1]];
+  return areas
+    .filter((a) => a.outer.length >= 3 && Math.abs(area(a.outer)) > 1e-6)
+    .map((a) => ({ outer: a.outer.map(flip), holes: a.holes.filter((h) => h.length >= 3 && Math.abs(area(h)) > 1e-6).map((h): Opening => ({ kind: 'poly', points: h.map(flip) })) }));
+}
+
 /* ---------- placing parts ---------- */
 
 const rx = (a: number): Mat3 => [[1, 0, 0], [0, Math.cos(a), -Math.sin(a)], [0, Math.sin(a), Math.cos(a)]];
@@ -379,29 +442,35 @@ export interface StepResult {
 export function boardStep({ pcb, board, name, models }: StepInput): StepResult {
   const f = new StepFile();
   const c = contexts(f);
-  const top = product(f, c, name);
-  const topOrigin = axis(f, [0, 0, 0]);
-  const topItems: number[] = [topOrigin];
-  const topRep = f.reserve();
-  shapeDefinition(f, top, topRep);
 
-  /** Places a child product's representation in the assembly. */
-  const instance = (label: string, child: { pd: number; rep: number; origin: number }, at: Placement3d) => {
+  /** An assembly: a product whose representation lists where its children are placed. */
+  type Assembly = { pd: number; rep: number; items: number[]; label: string };
+  const assembly = (label: string): Assembly => {
+    const pd = product(f, c, label);
+    const rep = f.reserve();
+    shapeDefinition(f, pd, rep);
+    return { pd, rep, items: [axis(f, [0, 0, 0])], label };
+  };
+  const finish = (a: Assembly) => f.set(a.rep, `SHAPE_REPRESENTATION(${str(a.label)},${list(a.items)},${ref(c.ctx)})`);
+  const top = assembly(name);
+
+  /** Places a child product's representation in an assembly (the top one by default). */
+  const instance = (label: string, child: { pd: number; rep: number; origin: number }, at: Placement3d, parent: Assembly = top) => {
     const zAxis = apply(at.rotation, [0, 0, 1]);
     const xAxis = apply(at.rotation, [1, 0, 0]);
     const placed = axis(f, at.translation, zAxis, xAxis);
-    topItems.push(placed);
+    parent.items.push(placed);
     const transform = f.add(`ITEM_DEFINED_TRANSFORMATION('','',${ref(child.origin)},${ref(placed)})`);
     const relation = f.add(
-      `(REPRESENTATION_RELATIONSHIP('','',${ref(child.rep)},${ref(topRep)})REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(${ref(transform)})SHAPE_REPRESENTATION_RELATIONSHIP())`,
+      `(REPRESENTATION_RELATIONSHIP('','',${ref(child.rep)},${ref(parent.rep)})REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(${ref(transform)})SHAPE_REPRESENTATION_RELATIONSHIP())`,
     );
-    const usage = f.add(`NEXT_ASSEMBLY_USAGE_OCCURRENCE(${str(label)},${str(label)},'',${ref(top)},${ref(child.pd)},$)`);
+    const usage = f.add(`NEXT_ASSEMBLY_USAGE_OCCURRENCE(${str(label)},${str(label)},'',${ref(parent.pd)},${ref(child.pd)},$)`);
     const shape = f.add(`PRODUCT_DEFINITION_SHAPE('Placement','Placement of an item',${ref(usage)})`);
     f.add(`CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(${ref(relation)},${ref(shape)})`);
   };
   const identity: Placement3d = { rotation: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], translation: [0, 0, 0] };
 
-  /** A product holding one solid, for the board and for stand-in blocks. */
+  /** A product holding one coloured solid: the board, a stand-in block, a piece of copper or silkscreen. */
   const solidProduct = (label: string, build: () => number, rgb: Vec3) => {
     const pd = product(f, c, label);
     const solid = build();
@@ -416,6 +485,25 @@ export function boardStep({ pcb, board, name, models }: StepInput): StepResult {
   const outline = boardOutline(pcb.board).map(([x, y]) => [x, -y] as Vec);
   const pcbSolid = solidProduct('PCB', () => extrudedSolid(f, 'PCB', outline, boardOpenings(pcb, board), 0, BOARD_THICKNESS), [0.08, 0.33, 0.17]);
   instance('PCB', pcbSolid, identity);
+
+  // Copper and silkscreen on both faces: a sub-assembly per layer with a solid per piece, since
+  // CAD programs show the colour of a part's solid more reliably than of solids within one part.
+  const T = BOARD_THICKNESS;
+  const layer = (label: string, areas: FillArea[], z0: number, z1: number, rgb: Vec3) => {
+    if (areas.length === 0) return;
+    const group = assembly(label);
+    areaSolids(areas).forEach((a, i) => {
+      const piece = `${label} ${i + 1}`;
+      instance(piece, solidProduct(piece, () => extrudedSolid(f, piece, a.outer, a.holes, z0, z1), rgb), identity, group);
+    });
+    finish(group);
+    instance(label, { pd: group.pd, rep: group.rep, origin: group.items[0] }, identity);
+  };
+  for (const side of ['top', 'bottom'] as const) {
+    const name = side === 'top' ? 'Top' : 'Bottom';
+    layer(`${name} copper`, copperAreas(pcb, board, side), ...(side === 'top' ? [T, T + COPPER] : [-COPPER, 0]) as [number, number], [0.8, 0.62, 0.25]);
+    layer(`${name} silkscreen`, silkAreas(pcb, board, side), ...(side === 'top' ? [T + COPPER, T + COPPER + SILK] : [-COPPER - SILK, -COPPER]) as [number, number], [0.95, 0.95, 0.95]);
+  }
 
   // Parts: each model file once, an instance per part.
   const merged = new Map<string, { pd: number; rep: number; origin: number; box: { min: Vec3; max: Vec3 } }>();
@@ -456,6 +544,6 @@ export function boardStep({ pcb, board, name, models }: StepInput): StepResult {
     }
   }
 
-  f.set(topRep, `SHAPE_REPRESENTATION(${str(name)},${list(topItems)},${ref(c.ctx)})`);
+  finish(top);
   return { step: f.toString(`${name}.step`), blocks, models: merged.size };
 }

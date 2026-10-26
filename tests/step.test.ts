@@ -74,8 +74,11 @@ describe('STEP export', () => {
     expect(coords.length).toBeGreaterThan(0);
     expect(coords.filter((v) => /^-?\d+$/.test(v))).toEqual([]);
     expect(blocks).toEqual(['R1', 'R2']);
-    // The board and two parts, each placed in the top assembly.
-    expect(step.match(/NEXT_ASSEMBLY_USAGE_OCCURRENCE/g)).toHaveLength(3);
+    // The board, a group per copper and silkscreen layer (a piece per pad or designator letter),
+    // and two parts, each placed in the top assembly.
+    const placed = [...step.matchAll(/NEXT_ASSEMBLY_USAGE_OCCURRENCE\('([^']*)'/g)].map((m) => m[1]);
+    expect(placed.filter((p) => !/ \d+$/.test(p))).toEqual(['PCB', 'Top copper', 'Top silkscreen', 'Bottom copper', 'Bottom silkscreen', 'R1', 'R2']);
+    expect(placed.filter((p) => p.startsWith('Top copper '))).toEqual(['Top copper 1', 'Top copper 2']);
   });
 
   it('makes the board a closed solid with round holes, slots and cutouts', () => {
@@ -89,6 +92,10 @@ describe('STEP export', () => {
     expect(step.match(/CYLINDRICAL_SURFACE/g)).toHaveLength(1);
     expect(closed(step, 'PCB')).toBe(true);
     expect(closed(step, 'R1')).toBe(true);
+    // Each pad is a copper solid on its face, the designators silkscreen solids.
+    expect(closed(step, 'Top copper 1')).toBe(true);
+    expect(closed(step, 'Bottom silkscreen 1')).toBe(true);
+    expect(step.match(/MANIFOLD_SOLID_BREP\('Top copper \d+'/g)).toHaveLength(2);
   });
 
   it('places a model centred on its footprint, on the right side of the board', () => {
@@ -109,7 +116,8 @@ describe('STEP export', () => {
     // Any STEP file works as a model; use an exported board (itself an assembly).
     const model = build(fixture()).step;
     const parsed = parseStep(model);
-    expect(parsed.min[2]).toBeCloseTo(0);
+    // Its lowest point is the underside of the bottom silkscreen.
+    expect(parsed.min[2]).toBeCloseTo(-0.05);
     const part: PartStep = { lcsc: 'C1', title: 'board', transform: [0, 0, 0, 0, 0, 0, 0, 0, 0], file: 'f1', step: model };
     const { step, models, blocks } = build(fixture(), new Map([['a', part], ['b', part]]));
     expect(models).toBe(1);
