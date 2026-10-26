@@ -257,6 +257,35 @@ describe('ordering', () => {
   });
 });
 
+describe('rip-up and retry', () => {
+  it('moves a track that walls a connection off, then routes both', () => {
+    // R1.1 and R2.1's outer pads are net OTHER, whose track snakes between the SIG pads from near
+    // the top edge to near the bottom; a keepout keeps everything off the bottom layer.
+    const base = fixture({
+      tracks: [{ id: 'wall', layer: 'top', width: 0.25, net: 'OTHER', points: [[4.2, 5], [4.2, 9.4], [8.5, 9.4], [8.5, 0.6], [12.8, 0.6], [12.8, 5]] }],
+      keepouts: [{ id: 'k', outline: [[0, 0], [20, 0], [20, 10], [0, 10]], layers: ['bottom'], tracks: true, vias: true, pours: false, parts: false }],
+    });
+    const project: Project = {
+      ...base,
+      ports: [...base.ports, { id: 'o1', kind: 'label', name: 'OTHER', x: -20, y: 0, rotation: 0 }, { id: 'o2', kind: 'label', name: 'OTHER', x: 120, y: 0, rotation: 0 }],
+    };
+    const before = buildBoard(project, project.pcb!);
+    expect(pcbConnectivity(before, project.pcb!).unrouted.get('SIG')).toBe(1);
+    expect(pcbConnectivity(before, project.pcb!).unrouted.get('OTHER')).toBeUndefined();
+
+    useEditor.getState().loadProject(project);
+    const report = autoroute();
+    expect(report.failed).toEqual([]);
+    const routed = useEditor.getState().project;
+    const board = buildBoard(routed, routed.pcb!);
+    const conn = pcbConnectivity(board, routed.pcb!);
+    expect([...conn.unrouted.keys()]).toEqual([]);
+    expect(runDrc(board, routed.pcb!, conn).filter((i) => i.severity === 'error').map((i) => i.message)).toEqual([]);
+    // The wall was ripped up and OTHER routed again another way.
+    expect(routed.pcb!.tracks.some((t) => t.id === 'wall')).toBe(false);
+  });
+});
+
 describe('auto-routing widths', () => {
   const widths = () => [...new Set(useEditor.getState().project.pcb!.tracks.map((t) => t.width))];
 

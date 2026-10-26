@@ -133,8 +133,10 @@ heater or relay drives — 0.5 mm carries about 1.5 A, 1 mm about 2.5 A on JLCPC
 Then run it once more without a net for the rest. Check `failed` in the result and `unrouted` in
 `pcb_get_state`:
 
-- If some connections fail, improve placement around them (move or rotate parts, give more
-  room), then `pcb_clear_routing` (optionally for one net) and route again.
+- The router already rips up and re-routes what blocks a failed connection (up to about 20
+  seconds), so anything left in `failed` really is short of room. Improve placement around it
+  (move or rotate parts, give more room), then `pcb_clear_routing` (optionally for one net) and
+  route again.
 - Two or three placement/route rounds are normal. If a dense board (fine-pitch ICs, more than ~40
   parts) still fails, tell the user which nets remain. They can finish those by hand in the
   app's PCB tab (press W to route, V to change layers).
@@ -208,9 +210,8 @@ Then tell the user:
 
 ## Limits worth knowing
 
-- The auto-router is a simple grid router meant for small boards. Good placement matters more
-  than anything else.
-- Outlines are straight-sided polygons (rounded corners, no arcs). There are no differential
-  pairs or length tuning yet.
+- The auto-router is a grid router with rip-up and retry, meant for small boards. Good placement
+  matters more than anything else.
+- There are no differential pairs or length tuning yet.
 - Keepouts don't move existing tracks: after adding one over routed copper, clear the nets
   `pcb_check` names and route them again.

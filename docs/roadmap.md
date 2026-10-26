@@ -8,14 +8,16 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 1. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
    other.
-2. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
-   router still leaves a connection or two for manual routing.
-3. **Length tuning and differential pairs** — for USB and other matched signals.
-4. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+2. **Length tuning and differential pairs** — for USB and other matched signals.
+3. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
 
 ## Done
 
+- **Rip-up and retry in the auto-router** (2026-10-26): connections the greedy pass leaves are
+  routed through other nets' copper at a cost, what is in the way is ripped up and routed again,
+  and a change is kept only when fewer connections are left; the STM32 board routes completely
+  from scratch on 2 and 4 layers.
 - **Curved outlines and DXF import** (2026-10-26): outline edges can be arcs (bent by a handle in
   the editor, or `outline_bulges` for agents), and an enclosure's DXF drawing gives the outline
   with exact arcs, cutouts and mounting holes (`pcb_import_dxf`).
@@ -97,7 +99,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 - Glossing (tidying routed tracks), pushing pads' parts, dragging vias with their tracks.
 - Differential pairs, length matching (serpentines), curved tracks, teardrops, BGA fanout.
-- A stronger auto-router (ours is a basic grid router).
+- Smarter routing still: negotiated congestion for whole boards, differential pairs and length
+  matching in the auto-router, BGA fanout.
 
 ## PCB: copper, rules, checks
 

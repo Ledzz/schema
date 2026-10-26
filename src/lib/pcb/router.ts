@@ -102,6 +102,12 @@ export interface RouteOptions {
    * any net; a layer change exactly on a via of this net reuses it instead of adding one.
    */
   holes?: DrillHole[];
+  /**
+   * Copper the route may run through at a price (`softCost` per grid step, default 25), e.g.
+   * other nets' tracks and vias that a rip-up could move; it is still an obstacle for vias.
+   */
+  soft?: (it: CopperItem) => boolean;
+  softCost?: number;
 }
 
 export interface EdgeField {
@@ -212,8 +218,10 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     for (let iy = iy0; iy <= iy1; iy++)
       for (let ix = ix0; ix <= ix1; ix++) if (pointShapeDistance([x0 + ix * STEP, y0 + iy * STEP], it.shape) < viaPadKeepout) viaBlocked[iy * cols + ix] = 1;
   }
+  const softened = LAYERS.map(() => new Uint8Array(cells));
   for (const it of opt.items) {
     if (opt.netOf(it) === opt.net && opt.net) continue;
+    const soft = opt.soft?.(it) ?? false;
     const inflate = Math.max(trackInflate, viaInflate);
     const ix0 = Math.max(0, Math.floor((it.box.x1 - inflate - x0) / STEP));
     const ix1 = Math.min(cols - 1, Math.ceil((it.box.x2 + inflate - x0) / STEP));
@@ -223,7 +231,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       for (let ix = ix0; ix <= ix1; ix++) {
         const i = iy * cols + ix;
         const d = pointShapeDistance([x0 + ix * STEP, y0 + iy * STEP], it.shape);
-        if (d < trackInflate) for (const l of it.layers) if (li(l) >= 0) blocked[li(l)][i] = 1;
+        if (d < trackInflate) for (const l of it.layers) if (li(l) >= 0) (soft ? softened : blocked)[li(l)][i] = 1;
         if (d < viaInflate) viaBlocked[i] = 1;
       }
     }
@@ -289,6 +297,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   const VIA = 12;
   /** Extra cost per step inside an avoided area (a step costs 1). */
   const AVOID = 4;
+  const SOFT = opt.softCost ?? 25;
   const N = cells * L * 8;
   const cost = new Float32Array(N).fill(Infinity);
   const prev = new Int32Array(N).fill(-1);
@@ -334,7 +343,7 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       if (blocked[l][nc]) continue;
       const diagonal = nd % 2 === 1;
       if (diagonal && (blocked[l][iy * cols + nx] || blocked[l][ny * cols + ix])) continue;
-      const step = (diagonal ? SQRT2 : 1) + (nd !== d ? BEND * (Math.min(Math.abs(nd - d), 8 - Math.abs(nd - d)) / 1) : 0) + (avoided[l][nc] ? AVOID : 0);
+      const step = (diagonal ? SQRT2 : 1) + (nd !== d ? BEND * (Math.min(Math.abs(nd - d), 8 - Math.abs(nd - d)) / 1) : 0) + (avoided[l][nc] ? AVOID : 0) + (softened[l][nc] ? SOFT : 0);
       const ns = state(nc, l, nd);
       if (base + step < cost[ns]) {
         cost[ns] = base + step;

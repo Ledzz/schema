@@ -10,7 +10,7 @@ import { bomToJlcpcbCsv, buildBom } from '../schematic/bom';
 import type { Component, Project, Vec } from '../schematic/types';
 import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
-import { pointShapeDistance, rotateDeg, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
+import { boxesOverlap, pointShapeDistance, rotateDeg, shapeBox, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { POUR_EDGE_CLEARANCE } from './pour';
 import { applyShove, firstCollision, posture, shove, trackMovers, type Mover, type ShoveResult } from './shove';
 export { posture } from './shove';
@@ -741,7 +741,11 @@ function endCopper(p: Vec, net: string, board: BoardModel, netOf: (it: CopperIte
     .map((it) => ({ size: (it.shape as { r: number }).r * 2, shape: point }));
 }
 
-function routeOne(project: Project, aw: Airwire, widthOverride?: number): { tracks: Track[]; vias: Via[] } | null {
+/**
+ * Routes one connection. With `soft`, other nets' tracks and vias cost a lot to cross instead of
+ * being walls: the route found then shows what a rip-up would have to move.
+ */
+function routeOne(project: Project, aw: Airwire, widthOverride?: number, soft = false, keep?: ReadonlySet<string>): { tracks: Track[]; vias: Via[] } | null {
   const pcb = currentPcb(project);
   const board = buildBoard(project, pcb);
   const conn = pcbConnectivity(board, pcb);
@@ -755,7 +759,23 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
   const avoid = shellAreas(board)
     .filter((a) => !a.nets.has(aw.net))
     .map(({ layer, outlines }) => ({ layer, outlines }));
-  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb), holes: drilledHoles(pcb, board, conn), layers: routingLayers(pcb) };
+  const movable = (it: (typeof board.items)[number]) => (it.type === 'track' || it.type === 'via') && !keep?.has(it.ref);
+  const holes = drilledHoles(pcb, board, conn);
+  const opts = {
+    net: aw.net,
+    width,
+    rules: pcb.rules,
+    board: pcb.board,
+    items: board.items,
+    netOf,
+    avoid,
+    edges: edgeField(pcb),
+    keepouts: keepoutAreas(pcb),
+    // Crossing another net's via means moving it, so its hole doesn't count either.
+    holes: soft ? holes.filter((h) => h.kind !== 'via' || h.net === aw.net) : holes,
+    layers: routingLayers(pcb),
+    soft: soft ? movable : undefined,
+  };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
   const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];
@@ -916,22 +936,107 @@ function routeAirwires(project: Project, want: (a: Airwire) => boolean, width: n
   return project;
 }
 
+/** Other nets' tracks and vias that a route's copper comes closer to than the clearance. */
+function routeConflicts(project: Project, route: { tracks: Track[]; vias: Via[] }, net: string): Set<string> {
+  const { pcb, board, conn } = boardModel(project);
+  const clearance = pcb.rules.clearance - 1e-6;
+  const shapes = [
+    ...route.tracks.flatMap((t) => t.points.slice(1).map((p, i) => ({ layers: [t.layer] as CopperLayer[], shape: { kind: 'capsule' as const, a: t.points[i], b: p, r: t.width / 2 } }))),
+    ...route.vias.map((v) => ({ layers: copperLayers(pcb), shape: { kind: 'capsule' as const, a: [v.x, v.y] as Vec, b: [v.x, v.y] as Vec, r: v.diameter / 2 } })),
+  ];
+  const out = new Set<string>();
+  for (const it of board.items) {
+    if ((it.type !== 'track' && it.type !== 'via') || (conn.itemNet.get(it.ref) ?? it.net) === net) continue;
+    if (shapes.some((s) => s.layers.some((l) => it.layers.includes(l)) && boxesOverlap(shapeBox(s.shape), it.box, pcb.rules.clearance) && shapeDistance(s.shape, it.shape) < clearance)) out.add(it.ref);
+  }
+  return out;
+}
+
+const unroutedCount = (project: Project, want: (a: Airwire) => boolean) => boardModel(project).conn.airwires.filter(want).length;
+
 /**
- * Auto-routes unrouted connections, optionally of one net and at a given width, as one undo step.
- * On boards with inner planes the other nets go first, then each pad of a plane net drops into its
- * plane through a via in the room left (vias placed first would block fine-pitch pins), and only
- * pads that found no room are routed with tracks.
+ * A second pass for connections the first one could not route: each is routed again with other
+ * nets' tracks and vias as costly rather than solid, what that route runs into is ripped up, the
+ * connection is routed properly, and everything ripped up is routed again. When that only trades
+ * one unrouted connection for another, the same is tried for the new one (a few steps deep,
+ * leaving the routes just made alone). A try is kept only if fewer connections end up unrouted;
+ * rounds repeat while they help, within `budgetMs`.
  */
+function ripUpAndRetry(project: Project, want: (a: Airwire) => boolean, width: number | undefined, budgetMs: number): Project {
+  const deadline = Date.now() + budgetMs;
+  const key = (a: Airwire) => `${a.net}|${a.a}|${a.b}`;
+  /** Rips up for one connection; returns the board with fewer unrouted connections, or null. */
+  const attempt = (from: Project, aw: Airwire, left: number, keep: Set<string>, depth: number): Project | null => {
+    if (Date.now() > deadline) return null;
+    const path = routeOne(from, aw, width, true, keep);
+    if (!path) return null;
+    const blocking = routeConflicts(from, path, aw.net);
+    const pcb = currentPcb(from);
+    const ripped: Project = { ...from, pcb: { ...pcb, tracks: pcb.tracks.filter((t) => !blocking.has(t.id)), vias: pcb.vias.filter((v) => !blocking.has(v.id)) } };
+    const r = routeOne(ripped, aw, width);
+    if (!r) return null;
+    const rp = currentPcb(ripped);
+    let next: Project = { ...ripped, pcb: { ...rp, tracks: [...rp.tracks, ...r.tracks], vias: [...rp.vias, ...r.vias] } };
+    next = routeAirwires(next, want, width, { routed: 0, failed: [], planes: 0, planeFailed: [] });
+    const failed = boardModel(next).conn.airwires.filter(want);
+    if (failed.length < left) return next;
+    if (failed.length > left || depth >= 3) return null;
+    // Traded for another connection: free that one too, keeping this route.
+    const kept = new Set([...keep, ...r.tracks.map((t) => t.id), ...r.vias.map((v) => v.id)]);
+    for (const other of failed) {
+      if (key(other) === key(aw)) continue;
+      const done = attempt(next, other, left, kept, depth + 1);
+      if (done) return done;
+    }
+    return null;
+  };
+
+  let best = project;
+  let left = unroutedCount(best, want);
+  for (let round = 0; round < 3 && left > 0 && Date.now() < deadline; round++) {
+    let improved = false;
+    for (const aw of boardModel(best).conn.airwires.filter(want)) {
+      if (left === 0 || Date.now() > deadline) break;
+      const next = attempt(best, aw, left, new Set(), 0);
+      if (!next) continue;
+      best = next;
+      left = unroutedCount(best, want);
+      improved = true;
+    }
+    if (!improved) break;
+  }
+  return best;
+}
+
+/** Time the rip-up pass may take; the greedy pass before it has no limit. */
+const RIP_UP_BUDGET_MS = 20_000;
+
 export function autoroute(net?: string, width?: number): AutorouteReport {
   const report: AutorouteReport = { routed: 0, failed: [], planes: 0, planeFailed: [] };
   const planeNets = new Set(planeLayers(currentPcb()).values());
   const wanted = (a: Airwire) => !net || a.net === net;
-  let project = routeAirwires(st().project, (a) => wanted(a) && !planeNets.has(a.net), width, report);
+  const signals = (a: Airwire) => wanted(a) && !planeNets.has(a.net);
+  const before = unroutedCount(st().project, signals);
+  let project = routeAirwires(st().project, signals, width, report);
+  // Rip up and retry what the first pass left.
+  if (report.failed.length) {
+    project = ripUpAndRetry(project, signals, width, RIP_UP_BUDGET_MS);
+    const { conn } = boardModel(project);
+    report.failed = conn.airwires.filter(signals).map((a) => ({ net: a.net, a: a.a, b: a.b }));
+    report.routed = Math.max(report.routed, before - report.failed.length);
+  }
   if (planeNets.size) {
     const fanout = fanoutToPlanes(project, net);
     report.planes = fanout.joined;
     report.planeFailed = fanout.failed;
-    project = routeAirwires(fanout.project, (a) => wanted(a) && planeNets.has(a.net), width, report);
+    const plane = (a: Airwire) => wanted(a) && planeNets.has(a.net);
+    const failedBefore = report.failed.length;
+    project = routeAirwires(fanout.project, plane, width, report);
+    if (report.failed.length > failedBefore) {
+      project = ripUpAndRetry(project, plane, width, RIP_UP_BUDGET_MS);
+      const { conn } = boardModel(project);
+      report.failed = [...report.failed.slice(0, failedBefore), ...conn.airwires.filter(plane).map((a) => ({ net: a.net, a: a.a, b: a.b }))];
+    }
   }
   if (report.routed > 0 || report.planes > 0) {
     const routedPcb = project.pcb!;
