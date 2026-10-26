@@ -307,11 +307,11 @@ export function SchematicToolbar() {
 }
 
 const TOOL_HINT: Record<Tool, string> = {
-  select: 'Click to select · drag to move · drag empty space to box-select',
-  wire: 'Click to add corners · click a pin or wire to finish · double-click / right-click ends',
-  label: 'Click a wire or pin to drop the label · R rotates',
-  power: 'Click to place a power flag · R rotates',
-  ground: 'Click to place a ground flag · R rotates',
+  select: 'Click to select · drag to move · drag from a pin end to draw a wire · drag empty space to box-select',
+  wire: 'Click to add corners · click a pin or wire to finish · / flips the bend · Backspace removes a corner · double-click / right-click ends',
+  label: 'Click a pin or wire to drop the label · Tab renames · R rotates',
+  power: 'Click a pin or wire to place a power flag · Tab renames · R rotates',
+  ground: 'Click a pin or wire to place a ground flag · Tab renames · R rotates',
   noconnect: 'Click a pin to mark it as not connected',
   place: 'Click to place · R rotate · X mirror · Esc to stop',
 };

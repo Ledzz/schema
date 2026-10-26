@@ -101,7 +101,8 @@ pitches and keep some pins between grid lines, which still connect fine.
 - If a connection is refused for lack of room, move the part with `update_component` (attached
   wires follow it; a move that would join two nets is refused) or use labels.
 - To undo a connection, `disconnect_pin` removes the wires ending on a pin and any label or flag
-  they leave dangling. There is no undo across commands otherwise.
+  they leave dangling. `delete_components` likewise removes the wiring that only connected to the
+  deleted parts. There is no undo across commands otherwise.
 - Mark intentionally unused IC pins with `mark_no_connect` so the check stays meaningful.
 
 ### 6. Check and improve

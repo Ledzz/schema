@@ -1,4 +1,4 @@
-import { nextRotation, rotate, samePoint, snap, worldPins } from './geometry';
+import { nextRotation, onSegment, rotate, samePoint, snap, worldPins } from './geometry';
 import { simplify } from './route';
 import type { SymbolResolver } from './symbols';
 import type { Component, NetPort, Project, Vec, Wire } from './types';
@@ -154,14 +154,69 @@ export function mirrorItems(doc: Doc, ids: ReadonlySet<string>, symbols: SymbolR
   return { ...doc, components, wires };
 }
 
-export function deleteItems(doc: Doc, ids: ReadonlySet<string>): Doc {
+/**
+ * Deletes the selected items. With `symbols`, deleting parts also removes the wiring left
+ * attached to nothing: wires, labels, flags and no-connect markers that touched a deleted part's
+ * pins and no longer reach any remaining pin.
+ */
+export function deleteItems(doc: Doc, ids: ReadonlySet<string>, symbols?: SymbolResolver): Doc {
   const keep = (item: { id: string }) => !ids.has(item.id);
-  return {
+  const out: Doc = {
     ...doc,
     components: doc.components.filter(keep),
     wires: doc.wires.filter(keep),
     ports: doc.ports.filter(keep),
   };
+  const removed = doc.components.filter(isSelected(ids));
+  if (!symbols || removed.length === 0) return out;
+  const orphans = orphanedWiring(
+    out,
+    removed.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)),
+    out.components.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)),
+  );
+  if (orphans.size === 0) return out;
+  return { ...out, wires: out.wires.filter((w) => !orphans.has(w.id)), ports: out.ports.filter((p) => !orphans.has(p.id)) };
+}
+
+/**
+ * Ids of the wires and ports in groups of touching wiring that reach one of the `freed` points
+ * and none of the remaining `pins`.
+ */
+function orphanedWiring(doc: Doc, freed: Vec[], pins: Vec[]): Set<string> {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (parent.has(r)) r = parent.get(r)!;
+    if (r !== x) parent.set(x, r);
+    return r;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  // Connection points of each item: wire ends and port anchors.
+  const items: { id: string; at: Vec[] }[] = [
+    ...doc.wires.filter((w) => w.points.length >= 2).map((w) => ({ id: w.id, at: [w.points[0], w.points[w.points.length - 1]] })),
+    ...doc.ports.map((p) => ({ id: p.id, at: [[p.x, p.y] as Vec] })),
+  ];
+  const onWire = (p: Vec, w: Wire) => w.points.some((q, i) => (i === 0 ? samePoint(p, q) : onSegment(p, w.points[i - 1], q)));
+  for (const it of items) {
+    for (const w of doc.wires) if (w.id !== it.id && it.at.some((p) => onWire(p, w))) union(it.id, w.id);
+    for (const other of items) if (other.id !== it.id && it.at.some((p) => other.at.some((q) => samePoint(p, q)))) union(it.id, other.id);
+  }
+  const touched = new Set<string>();
+  const anchored = new Set<string>();
+  for (const it of items) {
+    if (it.at.some((p) => freed.some((f) => samePoint(p, f)))) touched.add(find(it.id));
+    if (it.at.some((p) => pins.some((q) => samePoint(p, q)))) anchored.add(find(it.id));
+  }
+  const out = new Set<string>();
+  for (const it of items) {
+    const root = find(it.id);
+    if (touched.has(root) && !anchored.has(root)) out.add(it.id);
+  }
+  return out;
 }
 
 /** Removes `wireId`'s segment that contains `segIndex`, splitting the wire in two. */
@@ -209,6 +264,12 @@ export function duplicateItems(
     doc: { ...doc, components: [...doc.components, ...components], wires: [...doc.wires, ...wires], ports: [...doc.ports, ...ports] },
     newIds,
   };
+}
+
+/** Removes no-connect markers at `points`: a pin that gets wired or labelled is connected after all. */
+export function dropNoConnects(doc: Doc, points: Vec[]): Doc {
+  const drop = (p: NetPort) => p.kind === 'noconnect' && points.some((q) => samePoint(q, [p.x, p.y]));
+  return doc.ports.some(drop) ? { ...doc, ports: doc.ports.filter((p) => !drop(p)) } : doc;
 }
 
 /** Adds a wire after dropping duplicate and collinear points. */

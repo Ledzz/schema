@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { analyze } from '../src/lib/schematic/netlist';
-import { moveItems, rotateItems } from '../src/lib/schematic/ops';
+import { deleteItems, moveItems, rotateItems } from '../src/lib/schematic/ops';
 import { resolverFor } from '../src/lib/schematic/symbols';
-import { autoRoute, routePins, portRotationFor, simplify } from '../src/lib/schematic/route';
+import { autoRoute, routePins, portRotationFor, simplify, wireVerticalFirst } from '../src/lib/schematic/route';
 import { worldPins, toWorld } from '../src/lib/schematic/geometry';
 import { nextDesignator, annotate } from '../src/lib/schematic/designators';
 import { comp, project } from './fixtures';
@@ -131,6 +131,50 @@ describe('editing operations', () => {
     const end = rotated.wires[0].points.at(-1)!;
     const pins = worldPins(rotated.components[1], resolve('res')).map((p) => p.at);
     expect(pins).toContainEqual(end);
+  });
+});
+
+describe('deleting parts', () => {
+  // R1 pins at (-20, 0) and (20, 0); R2 at (80, 0) and (120, 0); R3 at (-20, 100) and (20, 100).
+  const base = project({
+    components: [comp('r1', 'res', 'R1', 0, 0), comp('r2', 'res', 'R2', 100, 0), comp('r3', 'res', 'R3', 0, 100)],
+    wires: [
+      { id: 'between', points: [[20, 0], [80, 0]] },
+      { id: 'stub1', points: [[-20, 0], [-40, 0]] },
+      { id: 'stub2', points: [[-40, 0], [-40, 20]] },
+      { id: 'loose', points: [[200, 200], [220, 200]] },
+    ],
+    ports: [
+      { id: 'sig', kind: 'label', name: 'SIG', x: -40, y: 20, rotation: 270 },
+      { id: 'vcc', kind: 'power', name: 'VCC', x: -20, y: 100, rotation: 0 },
+      { id: 'nc', kind: 'noconnect', name: '', x: 20, y: 100, rotation: 0 },
+    ],
+  });
+
+  it('removes the wiring that only connected to them', () => {
+    const after = deleteItems(base, new Set(['r1', 'r3']), resolve);
+    expect(after.components.map((c) => c.id)).toEqual(['r2']);
+    // The wire to R2 still leads somewhere; the unrelated loose wire was never touched.
+    expect(after.wires.map((w) => w.id)).toEqual(['between', 'loose']);
+    expect(after.ports).toEqual([]);
+  });
+
+  it('leaves wiring alone without symbols to find the pins', () => {
+    const after = deleteItems(base, new Set(['r1', 'r3']));
+    expect(after.wires).toHaveLength(4);
+    expect(after.ports).toHaveLength(3);
+  });
+});
+
+describe('drawing wires', () => {
+  it('leaves a pin along the pin, then turns at each corner', () => {
+    expect(wireVerticalFirst([[0, 0]], [30, 40], [1, 0])).toBe(false);
+    expect(wireVerticalFirst([[0, 0]], [30, 40], [0, 1])).toBe(true);
+    expect(wireVerticalFirst([[0, 0], [30, 0]], [60, 40], null)).toBe(true);
+    expect(wireVerticalFirst([[0, 0], [0, 30]], [40, 60], null)).toBe(false);
+    // Nothing to go by: along the longer distance first.
+    expect(wireVerticalFirst([[0, 0]], [10, 40], null)).toBe(true);
+    expect(wireVerticalFirst([[0, 0]], [30, 40], [1, 0], true)).toBe(true);
   });
 });
 

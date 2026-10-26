@@ -20,6 +20,20 @@ export function simplify(points: Vec[]): Vec[] {
   return out;
 }
 
+/**
+ * Which way the next bend of a wire being drawn goes: out along the pin it starts from, then
+ * turning at each corner (a horizontal segment is followed by a vertical one); with nothing to go
+ * by, along the longer distance first. `flip` swaps it.
+ */
+export function wireVerticalFirst(draft: Vec[], to: Vec, startDir: Vec | null, flip = false): boolean {
+  const last = draft[draft.length - 1];
+  let vertical: boolean;
+  if (draft.length >= 2) vertical = draft[draft.length - 2][1] === last[1];
+  else if (startDir) vertical = startDir[0] === 0;
+  else vertical = Math.abs(to[1] - last[1]) > Math.abs(to[0] - last[0]);
+  return vertical !== flip;
+}
+
 /** Orthogonal elbow from a to b; horizontal-first unless `verticalFirst`. */
 export function elbow(a: Vec, b: Vec, verticalFirst = false): Vec[] {
   if (a[0] === b[0] || a[1] === b[1]) return [a, b];
@@ -121,14 +135,14 @@ class MinHeap<T> {
 
 /**
  * Grid A* router between two pins that avoids component bodies, other connection points and
- * running along existing wires. Returns null when no route is found inside the search window.
+ * running along existing wires. Returns null when no route is found inside the search window,
+ * which reaches `margin` units beyond the two pins.
  */
-export function autoRoute(a: { at: Vec; dir: Vec }, b: { at: Vec; dir: Vec }, obstacles: RouteObstacles, stub = STUB): Vec[] | null {
+export function autoRoute(a: { at: Vec; dir: Vec }, b: { at: Vec; dir: Vec }, obstacles: RouteObstacles, stub = STUB, margin = 80): Vec[] | null {
   const outA: Vec = [-a.dir[0], -a.dir[1]];
   const outB: Vec = [-b.dir[0], -b.dir[1]];
   const sa = add(a.at, outA, stub);
   const sb = add(b.at, outB, stub);
-  const margin = 80;
   const x0 = snap(Math.min(sa[0], sb[0]) - margin, STEP);
   const y0 = snap(Math.min(sa[1], sb[1]) - margin, STEP);
   const cols = Math.round((snap(Math.max(sa[0], sb[0]) + margin, STEP) - x0) / STEP) + 1;

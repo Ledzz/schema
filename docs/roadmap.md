@@ -17,6 +17,11 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Easier schematic wiring and labelling** (2026-10-26): wires start by dragging from a pin
+  and route around parts from pin to pin, with automatic bends, `/` to flip one and Backspace to
+  take off a corner; labels and flags are named before placing (with the project's rails as
+  suggestions) and get a stub pointing away from the part when dropped on a pin; deleting a
+  part takes the wiring that only served it.
 - **STEP export of the assembled board** (2026-10-26): one AP214 file with the board solid
   (outline, cylindrical drill and mounting holes, slots, cutouts) and EasyEDA's STEP model of
   every part, each model included once and placed as in the 3D view; from the File menu, the 3D

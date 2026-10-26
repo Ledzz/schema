@@ -128,7 +128,7 @@ function ProjectSummary() {
       <div className="space-y-1.5 rounded-lg border border-line bg-panel-2 p-2.5 text-[11px] leading-relaxed text-muted">
         <div className="font-medium text-[var(--text)]">Tips</div>
         <p>Double-click a library result to place it; keep clicking to place more, Esc to stop.</p>
-        <p>Wires connect at pins and wire ends. Labels and power flags with the same name join nets.</p>
+        <p>Drag from a pin end to draw a wire; ending on another pin routes it around parts. Labels and power flags with the same name join nets.</p>
         <p>Middle-drag or Space-drag pans; scroll zooms; F fits the view.</p>
       </div>
     </div>

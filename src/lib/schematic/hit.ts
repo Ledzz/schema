@@ -59,9 +59,10 @@ export interface ConnectionPoint {
 export function connectionNear(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number): ConnectionPoint | null {
   let best: ConnectionPoint | null = null;
   let bestD = tol;
+  // On a tie the first kind wins, so a wired pin still reports the pin.
   const consider = (at: Vec, kind: ConnectionPoint['kind'], ref: string, label?: string) => {
     const d = Math.hypot(at[0] - p[0], at[1] - p[1]);
-    if (d <= bestD) {
+    if (best ? d < bestD : d <= bestD) {
       bestD = d;
       best = { at, kind, label, ref };
     }

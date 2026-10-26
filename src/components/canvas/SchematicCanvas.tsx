@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { MousePointerClick, Search } from 'lucide-react';
 import { useEditor } from '../../store/editor';
-import { addPort, placeComponent } from '../../lib/actions';
-import { finishWireDraft, fitView, zoomBy } from '../../lib/editing';
+import { addPort, commitAttach, pinByKey, placeComponent, planAttach } from '../../lib/actions';
+import { finishWireDraft, fitView, wireDraftTo, zoomBy } from '../../lib/editing';
 import { normBox, samePoint, snapVec } from '../../lib/schematic/geometry';
 import { connectionNear, hitTest, itemsInBox } from '../../lib/schematic/hit';
 import { analyze } from '../../lib/schematic/netlist';
 import { moveItems } from '../../lib/schematic/ops';
-import { elbow, simplify } from '../../lib/schematic/route';
+import { portRotationFor } from '../../lib/schematic/route';
 import { resolverFor } from '../../lib/schematic/symbols';
-import type { Component, NetPort, Vec } from '../../lib/schematic/types';
+import type { Component, NetPort, PortKind, Vec } from '../../lib/schematic/types';
 import { ComponentGraphic, PortGraphic } from './graphics';
-import { Kbd } from '../ui';
+import { cx, inputClass, Kbd } from '../ui';
 import { QuickEdit } from '../passives/QuickEdit';
 import { PassiveEditor } from '../passives/PassiveEditor';
 import { pickPlacingPart, updatePlacingPassive } from '../../lib/passives';
@@ -20,7 +20,14 @@ type Interaction =
   | { mode: 'none' }
   | { mode: 'pan'; start: Vec; view: { x: number; y: number } }
   | { mode: 'drag'; start: Vec; ids: Set<string>; delta: Vec }
-  | { mode: 'box'; start: Vec };
+  | { mode: 'box'; start: Vec }
+  /** A wire started by pressing on a pin in the select tool; releasing elsewhere places its next point. */
+  | { mode: 'wire'; start: Vec }
+  /** Pressed on a no-connect marker on a pin: a click selects the marker, a drag draws a wire. */
+  | { mode: 'press-pin'; start: Vec; at: Vec; portId: string };
+
+type NamedPort = Exclude<PortKind, 'noconnect'>;
+const isNamedPortTool = (tool: string): tool is NamedPort => tool === 'label' || tool === 'power' || tool === 'ground';
 
 function nextLabelName(name: string): string {
   const m = /^(.*?)(\d+)$/.exec(name);
@@ -38,6 +45,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const placementMirror = useEditor((s) => s.placementMirror);
   const highlightNet = useEditor((s) => s.highlightNet);
   const wireDraft = useEditor((s) => s.wireDraft);
+  const wireFlip = useEditor((s) => s.wireFlip);
   const canvasSize = useEditor((s) => s.canvasSize);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -137,8 +145,22 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     switch (s.tool) {
       case 'select': {
         const id = hitTest(project, symbols, w, tolerance());
+        const mod = e.shiftKey || e.metaKey || e.ctrlKey;
+        // Pressing on a pin end (not on a label or flag sitting there) starts a wire.
+        const port = project.ports.find((p) => p.id === id);
+        const near = !mod && (!port || port.kind === 'noconnect') ? connectionNear(project, symbols, w, tolerance()) : null;
+        if (near?.kind === 'pin' && port) {
+          interaction.current = { mode: 'press-pin', start: [e.clientX, e.clientY], at: near.at, portId: port.id };
+          return;
+        }
+        if (near?.kind === 'pin') {
+          s.setSelection([]);
+          s.startWire(near.at);
+          interaction.current = { mode: 'wire', start: [e.clientX, e.clientY] };
+          return;
+        }
         if (id) {
-          if (e.shiftKey || e.metaKey || e.ctrlKey) {
+          if (mod) {
             s.setSelection(selected.has(id) ? selection.filter((x) => x !== id) : [...selection, id]);
             return;
           }
@@ -154,24 +176,9 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         }
         return;
       }
-      case 'wire': {
-        const hit = connectionNear(project, symbols, w, tolerance());
-        const p = hit?.at ?? snapVec(w);
-        const draft = s.wireDraft;
-        if (!draft) {
-          s.setWireDraft([p]);
-          return;
-        }
-        const last = draft[draft.length - 1];
-        if (samePoint(last, p)) {
-          if (e.detail >= 2) finishWireDraft();
-          return;
-        }
-        const next = simplify([...draft, ...elbow(last, p).slice(1)]);
-        s.setWireDraft(next);
-        if (hit && !samePoint(hit.at, draft[0])) finishWireDraft();
+      case 'wire':
+        wireClick(w, e.detail >= 2);
         return;
-      }
       case 'place': {
         if (!s.placing) return;
         placeComponent(s.placing, snapVec(w), s.placementRotation, s.placementMirror);
@@ -182,11 +189,47 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       case 'ground':
       case 'noconnect': {
         const t = s.portTemplate;
-        addPort(s.tool, s.tool === 'noconnect' ? '' : t.name, cursorPoint(w), t.rotation);
-        if (s.tool === 'label') s.setPortTemplate({ name: nextLabelName(t.name) });
+        const kind = s.tool;
+        if (kind === 'noconnect') {
+          addPort(kind, '', cursorPoint(w), t.rotation);
+          return;
+        }
+        const name = t.name.trim();
+        if (!name) {
+          s.notify(`Type a name for the ${kind === 'label' ? 'label' : 'flag'} first`, 'error');
+          return;
+        }
+        const hit = connectionNear(project, symbols, w, tolerance());
+        const pin = hit?.kind === 'pin' && hit.ref ? pinByKey(hit.ref, project) : null;
+        if (pin) {
+          // On a pin: a short stub leading away from the part, the label or flag at its end.
+          const plan = planAttach(project, pin, kind, name);
+          if (plan) commitAttach(plan);
+          else addPort(kind, name, pin.at, portRotationFor(kind, [-pin.dir[0], -pin.dir[1]]));
+        } else addPort(kind, name, cursorPoint(w), t.rotation);
+        if (kind === 'label') s.setPortTemplate({ name: nextLabelName(name) });
         return;
       }
     }
+  };
+
+  /** A click with the wire tool: start, add a corner, or finish on a pin, wire or label. */
+  const wireClick = (w: Vec, double: boolean) => {
+    const s = useEditor.getState();
+    const hit = connectionNear(project, symbols, w, tolerance());
+    const p = hit?.at ?? snapVec(w);
+    const draft = s.wireDraft;
+    if (!draft) {
+      s.setWireDraft([p]);
+      return;
+    }
+    const last = draft[draft.length - 1];
+    if (samePoint(last, p)) {
+      if (double) finishWireDraft();
+      return;
+    }
+    s.setWireDraft(wireDraftTo(draft, p, project, s.wireFlip).points);
+    if (hit && !samePoint(hit.at, draft[0])) finishWireDraft();
   };
 
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -212,6 +255,11 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       setBox({ a: it.start, b: w });
       return;
     }
+    if (it.mode === 'press-pin' && Math.hypot(e.clientX - it.start[0], e.clientY - it.start[1]) >= 5) {
+      s.setSelection([]);
+      s.startWire(it.at);
+      interaction.current = { mode: 'wire', start: it.start };
+    }
     const hit = connectionNear(project, symbols, w, tolerance());
     if (hit?.kind === 'pin' && hit.ref) {
       const net = conn.pinNet.get(hit.ref);
@@ -227,6 +275,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
     if (it.mode === 'drag') s.endTransient();
+    if (it.mode === 'wire' && Math.hypot(e.clientX - it.start[0], e.clientY - it.start[1]) >= 5) wireClick(toWorld(e.clientX, e.clientY), false);
+    if (it.mode === 'press-pin') s.setSelection([it.portId]);
     if (it.mode === 'box') {
       const w = toWorld(e.clientX, e.clientY);
       setBox(null);
@@ -252,21 +302,32 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   };
 
   // Ghost previews.
-  const snapped = tool === 'select' || tool === 'place' ? snapVec(pointer) : cursorPoint(pointer);
+  const near = useMemo(() => (inside ? connectionNear(project, symbols, pointer, 6 / view.zoom) : null), [inside, project, symbols, pointer, view.zoom]);
+  const snapped = tool === 'select' || tool === 'place' ? snapVec(pointer) : (near?.at ?? snapVec(pointer));
   const ghostComponent: Component | null =
     tool === 'place' && placing && inside
       ? { ...placing.template, id: 'ghost', x: snapped[0], y: snapped[1], rotation: placementRotation, mirror: placementMirror, designator: `${placing.prefix}?` }
       : null;
+  // Over a pin, show where the stub and the label or flag will go.
+  const nearPin = near?.kind === 'pin' ? near.ref : undefined;
+  const attachPreview = useMemo(() => {
+    if (!isNamedPortTool(tool) || !nearPin || !portTemplate.name.trim()) return null;
+    const pin = pinByKey(nearPin, project);
+    return pin ? planAttach(project, pin, tool, portTemplate.name.trim()) : null;
+  }, [tool, nearPin, portTemplate.name, project]);
   const ghostPort: NetPort | null =
     (tool === 'label' || tool === 'power' || tool === 'ground' || tool === 'noconnect') && inside
-      ? { id: 'ghost', kind: tool, name: tool === 'noconnect' ? '' : portTemplate.name, x: snapped[0], y: snapped[1], rotation: portTemplate.rotation }
+      ? (attachPreview?.port ?? { id: 'ghost', kind: tool, name: tool === 'noconnect' ? '' : portTemplate.name, x: snapped[0], y: snapped[1], rotation: portTemplate.rotation })
       : null;
-  const draftPreview: Vec[] | null = wireDraft ? simplify([...wireDraft, ...elbow(wireDraft[wireDraft.length - 1], snapped).slice(1)]) : null;
+  const draftPreview = useMemo(
+    () => (wireDraft ? wireDraftTo(wireDraft, snapped, project, wireFlip) : null),
+    [wireDraft, snapped[0], snapped[1], project, wireFlip], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const gridStep = 10 * view.zoom;
   const showMinor = gridStep >= 7;
   const majorStep = (gridStep >= 7 ? 50 : 100) * view.zoom;
-  const cursor = tool === 'select' ? (interaction.current.mode === 'pan' ? 'grabbing' : 'default') : 'crosshair';
+  const cursor = tool === 'select' ? (interaction.current.mode === 'pan' ? 'grabbing' : near?.kind === 'pin' ? 'crosshair' : 'default') : 'crosshair';
   const empty = project.components.length === 0 && project.wires.length === 0 && project.ports.length === 0;
 
   return (
@@ -331,7 +392,16 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
               <circle key={`${u.componentId}:${u.pinId}`} cx={u.at[0]} cy={u.at[1]} r={1.3} fill="none" stroke="var(--unconnected)" strokeWidth={0.5} opacity={0.8} />
             ))}
             {draftPreview && (
-              <polyline points={draftPreview.map((p) => p.join(',')).join(' ')} fill="none" stroke="var(--wire)" strokeWidth={1.2} strokeDasharray="3 2" />
+              <polyline
+                points={draftPreview.points.map((p) => p.join(',')).join(' ')}
+                fill="none"
+                stroke={draftPreview.routed ? 'var(--select)' : 'var(--wire)'}
+                strokeWidth={1.2}
+                strokeDasharray="3 2"
+              />
+            )}
+            {attachPreview && (
+              <polyline points={attachPreview.points.map((p) => p.join(',')).join(' ')} fill="none" stroke="var(--wire)" strokeWidth={1.2} strokeDasharray="3 2" opacity={0.7} />
             )}
             {ghostComponent && <ComponentGraphic component={ghostComponent} symbol={symbols(ghostComponent.symbolKey)} ghost />}
             {ghostPort && <PortGraphic port={ghostPort} ghost />}
@@ -399,6 +469,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
       <QuickEdit />
+      {isNamedPortTool(tool) && <PortNameBar kind={tool} />}
       {tool === 'place' && placing?.template.generic && (
         <div className="absolute left-1/2 top-16 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
           <PassiveEditor
@@ -424,6 +495,62 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+const PORT_TITLES: Record<NamedPort, string> = { label: 'Net label', power: 'Power flag', ground: 'Ground flag' };
+const COMMON_NAMES: Record<NamedPort, string[]> = { label: [], power: ['+3V3', '+5V', '+12V', 'VBUS', 'VCC'], ground: ['GND', 'AGND', 'PGND'] };
+
+/** Name of the label or flag being placed, with the project's names of that kind as suggestions. */
+function PortNameBar({ kind }: { kind: NamedPort }) {
+  const name = useEditor((s) => s.portTemplate.name);
+  const ports = useEditor((s) => s.project.ports);
+  const suggestions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of ports) if (p.kind === kind && p.name.trim()) counts.set(p.name, (counts.get(p.name) ?? 0) + 1);
+    const used = [...counts].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+    return [...new Set([...used, ...COMMON_NAMES[kind]])];
+  }, [ports, kind]);
+  const set = (n: string) => useEditor.getState().setPortTemplate({ name: n });
+  return (
+    <div className="absolute left-1/2 top-16 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-2 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+      <span className="whitespace-nowrap font-medium">{PORT_TITLES[kind]}</span>
+      <input
+        id="port-name"
+        aria-label={`${PORT_TITLES[kind]} name`}
+        list="port-name-suggestions"
+        spellCheck={false}
+        autoComplete="off"
+        className={cx(inputClass, 'h-7 w-32 font-mono')}
+        value={name}
+        onChange={(e) => set(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur();
+        }}
+        onBlur={() => {
+          const s = useEditor.getState();
+          if (!name.trim()) set(s.portNames[kind] ?? suggestions[0] ?? (kind === 'label' ? 'NET1' : kind === 'power' ? 'VCC' : 'GND'));
+        }}
+      />
+      <datalist id="port-name-suggestions">
+        {suggestions.map((n) => (
+          <option key={n} value={n} />
+        ))}
+      </datalist>
+      {kind !== 'label' &&
+        suggestions.slice(0, 6).map((n) => (
+          <button
+            key={n}
+            onClick={() => set(n)}
+            className={cx('h-7 rounded-md border px-2 font-mono', n === name ? 'border-indigo-500 bg-indigo-500/10 text-indigo-500' : 'border-line hover:bg-black/5 dark:hover:bg-white/5')}
+          >
+            {n}
+          </button>
+        ))}
+      <span className="whitespace-nowrap text-muted">
+        click a pin or wire · <Kbd>Tab</Kbd> rename · <Kbd>R</Kbd> rotate · <Kbd>Esc</Kbd> done
+      </span>
     </div>
   );
 }

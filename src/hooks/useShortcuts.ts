@@ -8,6 +8,7 @@ import {
   fitView,
   mirrorSelection,
   paste,
+  removeWirePoint,
   rotateSelection,
   saveProjectFile,
   selectAll,
@@ -170,8 +171,16 @@ export function useShortcuts() {
           break;
         case 'delete':
         case 'backspace':
-          deleteSelection();
+          // While drawing a wire these take off its last corner, never the selection.
+          if (!removeWirePoint()) deleteSelection();
           break;
+        case 'tab': {
+          if (s.tool !== 'label' && s.tool !== 'power' && s.tool !== 'ground') return;
+          const input = document.getElementById('port-name') as HTMLInputElement | null;
+          input?.focus();
+          input?.select();
+          break;
+        }
         case 'r':
           rotateSelection();
           break;
@@ -204,7 +213,8 @@ export function useShortcuts() {
           s.setLibraryOpen(!s.libraryOpen);
           break;
         case '/':
-          focusLibrarySearch();
+          if (s.tool === 'wire' && s.wireDraft) s.toggleWireFlip();
+          else focusLibrarySearch();
           break;
         case '=':
         case '+':

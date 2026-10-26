@@ -97,6 +97,12 @@ interface EditorState {
   canvasSize: { width: number; height: number };
   cursor: Vec;
   wireDraft: Vec[] | null;
+  /** Swaps the direction of the next bend of the wire being drawn. */
+  wireFlip: boolean;
+  /** The wire was started from a pin in the select tool: go back to it when the wire ends. */
+  wireOneShot: boolean;
+  /** Last name used for each kind of label or flag, offered when the tool starts again. */
+  portNames: Partial<Record<PortKind, string>>;
   theme: 'dark' | 'light';
   libraryOpen: boolean;
   libraryHeight: number;
@@ -162,6 +168,9 @@ interface EditorState {
   setTool: (tool: Tool) => void;
   startPlacing: (placing: Placing) => void;
   startPort: (kind: PortKind, name?: string) => void;
+  /** Starts a wire at a pin from the select tool; the editor returns to select when it ends. */
+  startWire: (at: Vec) => void;
+  toggleWireFlip: () => void;
   setPortTemplate: (patch: Partial<PortTemplate>) => void;
   rotatePlacement: () => void;
   mirrorPlacement: () => void;
@@ -195,6 +204,16 @@ const initialTheme = (): 'dark' | 'light' => {
 
 let toastId = 0;
 
+/** A new label or flag's name: the project's most used power or ground net, or NET1 for labels. */
+function defaultPortName(kind: PortKind, project: Project): string {
+  if (kind === 'noconnect') return '';
+  if (kind === 'label') return 'NET1';
+  const counts = new Map<string, number>();
+  for (const p of project.ports) if (p.kind === kind && p.name.trim()) counts.set(p.name, (counts.get(p.name) ?? 0) + 1);
+  const used = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return used ?? (kind === 'power' ? 'VCC' : 'GND');
+}
+
 export const useEditor = create<EditorState>()((set, get) => ({
   project: loadProject(),
   past: [],
@@ -210,6 +229,9 @@ export const useEditor = create<EditorState>()((set, get) => ({
   canvasSize: { width: 800, height: 520 },
   cursor: [0, 0],
   wireDraft: null,
+  wireFlip: false,
+  wireOneShot: false,
+  portNames: {},
   theme: initialTheme(),
   libraryOpen: true,
   libraryHeight: 360,
@@ -357,13 +379,18 @@ export const useEditor = create<EditorState>()((set, get) => ({
   loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null }),
   renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
 
-  setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null }),
+  setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null, wireFlip: false, wireOneShot: false }),
   startPlacing: (placing) => set({ tool: 'place', placing, placementRotation: 0, placementMirror: false, selection: [] }),
   startPort: (kind, name) => {
-    const defaults: Record<PortKind, string> = { label: get().portTemplate.name || 'NET1', power: 'VCC', ground: 'GND', noconnect: '' };
-    set({ tool: kind, placing: null, portTemplate: { kind, name: name ?? defaults[kind], rotation: 0 } });
+    const { portNames, project } = get();
+    set({ tool: kind, placing: null, wireDraft: null, portTemplate: { kind, name: name ?? portNames[kind] ?? defaultPortName(kind, project), rotation: 0 } });
   },
-  setPortTemplate: (patch) => set({ portTemplate: { ...get().portTemplate, ...patch } }),
+  startWire: (at) => set({ tool: 'wire', placing: null, wireDraft: [at], wireFlip: false, wireOneShot: true }),
+  toggleWireFlip: () => set({ wireFlip: !get().wireFlip }),
+  setPortTemplate: (patch) => {
+    const portTemplate = { ...get().portTemplate, ...patch };
+    set({ portTemplate, portNames: patch.name ? { ...get().portNames, [portTemplate.kind]: patch.name } : get().portNames });
+  },
   rotatePlacement: () => {
     const { tool } = get();
     if (tool === 'place') set({ placementRotation: (((get().placementRotation + 90) % 360) as Rotation) });
@@ -375,7 +402,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setView: (view) => set({ view }),
   setCanvasSize: (canvasSize) => set({ canvasSize }),
   setCursor: (cursor) => set({ cursor }),
-  setWireDraft: (wireDraft) => set({ wireDraft }),
+  setWireDraft: (wireDraft) => set({ wireDraft, wireFlip: false }),
   toggleTheme: () => {
     const theme = get().theme === 'dark' ? 'light' : 'dark';
     try {

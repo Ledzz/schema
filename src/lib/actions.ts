@@ -8,7 +8,7 @@ import { nextDesignator } from './schematic/designators';
 import { boxContains, boxIntersects, componentBox, normBox, onSegment, samePoint, snap, worldPins, type WorldPin } from './schematic/geometry';
 import { portBox } from './schematic/hit';
 import { analyze } from './schematic/netlist';
-import { newId } from './schematic/ops';
+import { dropNoConnects, newId } from './schematic/ops';
 import { autoRoute, portRotationFor, routePins, type RouteObstacles } from './schematic/route';
 import { resolverFor, symbolFor } from './schematic/symbols';
 import type { Component, NetPort, PortKind, Project, Rotation, StoredSymbol, Vec } from './schematic/types';
@@ -178,6 +178,14 @@ export function findPin(ref: string, project: Project = state().project): Resolv
   return { ...pin, component };
 }
 
+/** Resolves a `${componentId}:${pinId}` key, as hit testing and connectivity report pins. */
+export function pinByKey(key: string, project: Project = state().project): ResolvedPin | null {
+  const i = key.indexOf(':');
+  const component = project.components.find((c) => c.id === key.slice(0, i));
+  const pin = component && worldPins(component, symbolFor(project, component.symbolKey)).find((p) => p.pin.id === key.slice(i + 1));
+  return component && pin ? { ...pin, component } : null;
+}
+
 function routeObstacles(project: Project, except: Vec[]): RouteObstacles {
   const resolve = resolverFor(project);
   const keep = (p: Vec) => !except.some((e) => samePoint(e, p));
@@ -192,31 +200,36 @@ function routeObstacles(project: Project, except: Vec[]): RouteObstacles {
   };
 }
 
-export function connectPins(a: string, b: string): { wireId: string; points: Vec[] } {
-  const pa = findPin(a);
-  const pb = findPin(b);
-  const project = state().project;
+/**
+ * A wire between two pins that keeps clear of part bodies and doesn't touch other connections,
+ * or null when there is no such route.
+ */
+export function planPinRoute(project: Project, pa: WorldPin, pb: WorldPin): Vec[] | null {
   const obstacles = routeObstacles(project, [pa.at, pb.at]);
   const resolve = resolverFor(project);
   const bodiesOnly: RouteObstacles = { boxes: project.components.map((c) => componentBox(c, resolve(c.symbolKey))), points: [], segments: obstacles.segments };
   const attempts = [
     () => autoRoute(pa, pb, obstacles),
     () => autoRoute(pa, pb, obstacles, 5),
+    // Around a big part, e.g. between opposite sides of an IC.
+    () => autoRoute(pa, pb, obstacles, 10, 300),
     // Crowded around the pins: only keep clear of part bodies.
     () => autoRoute(pa, pb, bodiesOnly, 5),
+    () => autoRoute(pa, pb, bodiesOnly, 5, 300),
     () => routePins(pa, pb),
   ];
-  let points: Vec[] | null = null;
   for (const attempt of attempts) {
     const r = attempt();
-    if (r && !createsContact(project, r, [pa.at, pb.at])) {
-      points = r;
-      break;
-    }
+    if (r && !createsContact(project, r, [pa.at, pb.at])) return r;
   }
+  return null;
+}
+
+export function connectPins(a: string, b: string): { wireId: string; points: Vec[] } {
+  const points = planPinRoute(state().project, findPin(a), findPin(b));
   if (!points) throw new Error(`Cannot wire ${a} to ${b} without touching other connections; use net labels on both pins instead`);
   const id = newId('w');
-  state().commit((doc) => ({ ...doc, wires: [...doc.wires, { id, points }] }));
+  state().commit((doc) => dropNoConnects({ ...doc, wires: [...doc.wires, { id, points }] }, [points[0], points[points.length - 1]]));
   return { wireId: id, points };
 }
 
@@ -308,10 +321,12 @@ function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, se
   return conflicts;
 }
 
-/** Adds a short wire stub from a pin with a label, power or ground flag at its end. */
-export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>, name: string): NetPort {
-  const pin = findPin(pinRef);
-  const project = state().project;
+/**
+ * Where a label, power or ground flag goes on a pin: a short stub leading away from the part and
+ * the flag at its end, placed clear of other parts and wiring. Null when every layout would touch
+ * another net.
+ */
+export function planAttach(project: Project, pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>, name: string): { points: Vec[]; port: NetPort } | null {
   const toPort = (l: FlagLayout): NetPort => {
     const end = l.points[l.points.length - 1];
     return { id: newId('n'), kind, name, x: end[0], y: end[1], rotation: l.rotation };
@@ -336,17 +351,31 @@ export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>,
     }
     if (n === 0) break;
   }
-  if (best === Infinity) {
+  return best === Infinity ? null : { points: layout.points, port: toPort(layout) };
+}
+
+/** Adds a planned stub and flag to the project. */
+export function commitAttach(plan: { points: Vec[]; port: NetPort }): NetPort {
+  state().commit((doc) =>
+    dropNoConnects(
+      {
+        ...doc,
+        wires: [...doc.wires, { id: newId('w'), points: plan.points }],
+        ports: [...doc.ports, plan.port],
+      },
+      [plan.points[0]],
+    ),
+  );
+  return plan.port;
+}
+
+/** Adds a short wire stub from a pin with a label, power or ground flag at its end. */
+export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>, name: string): NetPort {
+  const plan = planAttach(state().project, findPin(pinRef), kind, name);
+  if (!plan) {
     throw new Error(`No room to attach a ${kind === 'label' ? 'label' : 'flag'} to ${pinRef} without touching other wiring; move parts apart or connect it with a wire`);
   }
-  const { points } = layout;
-  const port = toPort(layout);
-  state().commit((doc) => ({
-    ...doc,
-    wires: [...doc.wires, { id: newId('w'), points }],
-    ports: [...doc.ports, port],
-  }));
-  return port;
+  return commitAttach(plan);
 }
 
 /**

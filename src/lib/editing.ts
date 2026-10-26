@@ -3,13 +3,15 @@
  */
 import { useEditor } from '../store/editor';
 import { nextDesignator, splitDesignator, annotate } from './schematic/designators';
-import { componentBox, unionBoxes } from './schematic/geometry';
+import { componentBox, samePoint, unionBoxes } from './schematic/geometry';
 import { portBox } from './schematic/hit';
-import { deleteItems, duplicateItems, mirrorItems, rotateItems, addWire, newId, type Doc } from './schematic/ops';
+import { deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type Doc } from './schematic/ops';
+import { connectionNear } from './schematic/hit';
+import { elbow, simplify, wireVerticalFirst } from './schematic/route';
 import { resolverFor } from './schematic/symbols';
 import type { Component, Project, Vec } from './schematic/types';
 import { emptyProject } from '../store/editor';
-import { downloadText, safeFileName } from './actions';
+import { downloadText, pinByKey, planPinRoute, safeFileName, type ResolvedPin } from './actions';
 
 const st = () => useEditor.getState();
 const selectedSet = () => new Set(st().selection);
@@ -18,7 +20,7 @@ const symbols = () => resolverFor(st().project);
 export function deleteSelection() {
   const ids = selectedSet();
   if (ids.size === 0) return;
-  st().commit((doc) => deleteItems(doc, ids));
+  st().commit((doc) => deleteItems(doc, ids, symbols()));
   st().setSelection([]);
 }
 
@@ -94,9 +96,44 @@ export function selectAll() {
 }
 
 export function finishWireDraft() {
-  const draft = st().wireDraft;
+  const { wireDraft: draft, wireOneShot } = st();
   st().setWireDraft(null);
-  if (draft && draft.length >= 2) st().commit((doc) => addWire(doc, draft).doc);
+  if (draft && draft.length >= 2) st().commit((doc) => dropNoConnects(addWire(doc, draft).doc, [draft[0], draft[draft.length - 1]]));
+  if (wireOneShot) st().setTool('select');
+}
+
+/** Takes the last corner off the wire being drawn; returns false when no wire is being drawn. */
+export function removeWirePoint(): boolean {
+  const { wireDraft: draft, wireOneShot } = st();
+  if (!draft) return false;
+  if (draft.length > 1) st().setWireDraft(draft.slice(0, -1));
+  else {
+    st().setWireDraft(null);
+    if (wireOneShot) st().setTool('select');
+  }
+  return true;
+}
+
+const pinAt = (project: Project, p: Vec): ResolvedPin | null => {
+  const hit = connectionNear(project, resolverFor(project), p, 0.01);
+  return hit?.kind === 'pin' && hit.ref ? pinByKey(hit.ref, project) : null;
+};
+
+/**
+ * The wire being drawn as it would be with its next point at `to`. From one pin straight to
+ * another it is routed around parts (unless the bend was flipped, which asks for a plain bend);
+ * otherwise it is an L-bend that leaves a pin along the pin and turns at each corner.
+ */
+export function wireDraftTo(draft: Vec[], to: Vec, project: Project = st().project, flip = st().wireFlip): { points: Vec[]; routed: boolean } {
+  const start = pinAt(project, draft[0]);
+  if (draft.length === 1 && start && !flip) {
+    const end = pinAt(project, to);
+    const route = end && !samePoint(end.at, start.at) ? planPinRoute(project, start, end) : null;
+    if (route) return { points: route, routed: true };
+  }
+  const last = draft[draft.length - 1];
+  const vertical = wireVerticalFirst(draft, to, draft.length === 1 && start ? start.dir : null, flip);
+  return { points: simplify([...draft, ...elbow(last, to, vertical).slice(1)]), routed: false };
 }
 
 export function contentBounds(project: Project) {

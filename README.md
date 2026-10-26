@@ -40,7 +40,9 @@ Checks: `pnpm typecheck`, `pnpm test`.
 - **Schematic editor**
   - Places real EasyEDA library symbols, including multi-unit parts.
   - Drawing tools: wires, net labels, power and ground flags, no-connect markers.
-  - Move with rubber-banding wires, rotate, mirror, duplicate, copy/paste, undo/redo.
+  - **Wiring.** Drag from a pin end (or click it) to draw a wire without switching tools. Ending on another pin routes the wire around parts; otherwise it bends at right angles, leaving a pin along the pin and turning at each corner. `/` flips the next bend and Backspace takes off the last corner.
+  - **Labels and flags.** Name them in the placement bar before placing (`Tab` jumps to the name); power and ground flags suggest the project's own rails and the common ones. Dropped on a pin, a label or flag gets a short stub leading away from the part, placed clear of other wiring. Wiring or labelling a pin removes its no-connect marker.
+  - Move with rubber-banding wires (labels and flags drag their wires too), rotate, mirror, duplicate, copy/paste, undo/redo. Deleting a part also deletes the wires, labels and flags that only connected to it.
   - Box select, zoom and pan, junction dots, pin hover info, net highlighting.
 - **PCB editor** (Schematic / PCB switch in the top bar)
   - **Sync from the schematic.** Loads each part's JLCPCB footprint, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.

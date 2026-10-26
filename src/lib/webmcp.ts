@@ -544,7 +544,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'delete_components',
     title: 'Delete components',
-    description: 'Delete components by designator. Wires, labels and power flags attached to them are left in place.',
+    description: 'Delete components by designator. Wiring that only connected to them goes too: wires, labels, power flags and no-connect markers that no longer reach any other pin.',
     inputSchema: {
       type: 'object',
       properties: { designators: { type: 'array', items: { type: 'string' }, minItems: 1 } },
@@ -554,7 +554,7 @@ export const TOOLS: ToolDefinition[] = [
     execute: async (input) => {
       const list = (input.designators as string[]).map(byDesignator);
       const ids = new Set(list.map((c) => c.id));
-      st().commit((doc) => deleteItems(doc, ids));
+      st().commit((doc) => deleteItems(doc, ids, resolverFor(st().project)));
       return { deleted: list.map((c) => c.designator) };
     },
   },
