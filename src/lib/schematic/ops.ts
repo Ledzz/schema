@@ -41,13 +41,18 @@ function dragWireEnd(wire: Wire, endIndex: number, to: Vec): Wire {
   return { ...wire, points: simplify(pts) };
 }
 
-/** Applies `transform` to the selected components and keeps attached, unselected wires connected. */
-function transformComponents(
+/**
+ * Applies `transform` to the selected components and `transformPort` to the selected ports (net
+ * labels and flags), and keeps attached, unselected wires connected to the pins and anchors that
+ * moved.
+ */
+function transformItems(
   doc: Doc,
   ids: ReadonlySet<string>,
   symbols: SymbolResolver,
   transform: (c: Component) => Component,
-): Pick<Doc, 'components' | 'wires'> {
+  transformPort: (p: NetPort) => NetPort = (p) => p,
+): Pick<Doc, 'components' | 'wires' | 'ports'> {
   const moves: { from: Vec; to: Vec }[] = [];
   const components = doc.components.map((c) => {
     if (!ids.has(c.id)) return c;
@@ -56,6 +61,12 @@ function transformComponents(
     const before = worldPins(c, symbol);
     const after = worldPins(next, symbol);
     before.forEach((b, i) => moves.push({ from: b.at, to: after[i].at }));
+    return next;
+  });
+  const ports = doc.ports.map((p) => {
+    if (!ids.has(p.id)) return p;
+    const next = transformPort(p);
+    moves.push({ from: [p.x, p.y], to: [next.x, next.y] });
     return next;
   });
   const wires = doc.wires.map((w) => {
@@ -71,23 +82,29 @@ function transformComponents(
     }
     return out;
   });
-  return { components, wires };
+  return { components, wires, ports };
 }
 
 export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: number, symbols: SymbolResolver): Doc {
   if (dx === 0 && dy === 0) return doc;
-  const { components, wires } = transformComponents(doc, ids, symbols, (c) => ({ ...c, x: c.x + dx, y: c.y + dy }));
+  const { components, wires, ports } = transformItems(
+    doc,
+    ids,
+    symbols,
+    (c) => ({ ...c, x: c.x + dx, y: c.y + dy }),
+    (p) => ({ ...p, x: p.x + dx, y: p.y + dy }),
+  );
   return {
     ...doc,
     components,
     wires: wires.map((w) => (ids.has(w.id) ? { ...w, points: w.points.map(([x, y]) => [x + dx, y + dy] as Vec) } : w)),
-    ports: doc.ports.map((p) => (ids.has(p.id) ? { ...p, x: p.x + dx, y: p.y + dy } : p)),
+    ports,
   };
 }
 
 /** Updates one component (e.g. a new position or rotation) and keeps attached wires connected. */
 export function updateComponentItem(doc: Doc, id: string, patch: Partial<Component>, symbols: SymbolResolver): Doc {
-  const { components, wires } = transformComponents(doc, new Set([id]), symbols, (c) => ({ ...c, ...patch }));
+  const { components, wires } = transformItems(doc, new Set([id]), symbols, (c) => ({ ...c, ...patch }));
   return { ...doc, components, wires };
 }
 
@@ -110,25 +127,30 @@ export function rotateItems(doc: Doc, ids: ReadonlySet<string>, symbols: SymbolR
     const [rx, ry] = rotate([x - center[0], y - center[1]], 90);
     return [rx + center[0], ry + center[1]];
   };
-  const { components, wires } = transformComponents(doc, ids, symbols, (c) => {
-    const [x, y] = around([c.x, c.y]);
-    return { ...c, x, y, rotation: nextRotation(c.rotation) };
-  });
+  const { components, wires, ports } = transformItems(
+    doc,
+    ids,
+    symbols,
+    (c) => {
+      const [x, y] = around([c.x, c.y]);
+      return { ...c, x, y, rotation: nextRotation(c.rotation) };
+    },
+    (p) => {
+      const [x, y] = around([p.x, p.y]);
+      return { ...p, x, y, rotation: nextRotation(p.rotation) };
+    },
+  );
   return {
     ...doc,
     components,
     wires: wires.map((w) => (ids.has(w.id) ? { ...w, points: w.points.map(around) } : w)),
-    ports: doc.ports.map((p) => {
-      if (!ids.has(p.id)) return p;
-      const [x, y] = around([p.x, p.y]);
-      return { ...p, x, y, rotation: nextRotation(p.rotation) };
-    }),
+    ports,
   };
 }
 
 /** Mirrors selected components horizontally around their own origin. */
 export function mirrorItems(doc: Doc, ids: ReadonlySet<string>, symbols: SymbolResolver): Doc {
-  const { components, wires } = transformComponents(doc, ids, symbols, (c) => ({ ...c, mirror: !c.mirror }));
+  const { components, wires } = transformItems(doc, ids, symbols, (c) => ({ ...c, mirror: !c.mirror }));
   return { ...doc, components, wires };
 }
 

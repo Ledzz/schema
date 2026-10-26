@@ -107,6 +107,24 @@ describe('editing operations', () => {
     ]);
   });
 
+  it('drags the wire end on a net label or flag along with it', () => {
+    const labelled = project({
+      components: [comp('a', 'res', 'R1', 0, 0)],
+      wires: [{ id: 'w', points: [[20, 0], [60, 0]] }],
+      ports: [{ id: 'l', kind: 'label', name: 'SIG', x: 60, y: 0, rotation: 0 }],
+    });
+    const moved = moveItems(labelled, new Set(['l']), 20, 30, resolve);
+    expect(moved.ports[0]).toMatchObject({ x: 80, y: 30 });
+    const w = moved.wires[0].points;
+    expect(w[0]).toEqual([20, 0]);
+    expect(w.at(-1)).toEqual([80, 30]);
+    for (let i = 1; i < w.length; i++) expect(w[i][0] === w[i - 1][0] || w[i][1] === w[i - 1][1]).toBe(true);
+    expect(analyze(moved, resolve).nets.find((n) => n.name === 'SIG')?.members.map((m) => m.designator)).toEqual(['R1']);
+
+    const turned = rotateItems(labelled, new Set(['l']), resolve);
+    expect(turned.wires[0].points.at(-1)).toEqual([turned.ports[0].x, turned.ports[0].y]);
+  });
+
   it('rotates a component in place and re-attaches its wire', () => {
     const rotated = rotateItems(base, new Set(['b']), resolve);
     expect(rotated.components[1].rotation).toBe(90);
