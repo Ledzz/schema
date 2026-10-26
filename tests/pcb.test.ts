@@ -333,6 +333,42 @@ describe('router', () => {
   });
 });
 
+describe('router hole spacing', () => {
+  // A foreign top-layer track walls off R1 from R2, so the route has to drop to the bottom layer.
+  const route = (holes: { center: [number, number]; net: string }[]) => {
+    const project = fixture();
+    const board = buildBoard(project, project.pcb!);
+    const [p, q] = board.pads.filter((x) => x.net === 'SIG');
+    const wall = { key: 'w', type: 'track' as const, ref: 'w', layers: ['top' as const], net: 'OTHER', shape: { kind: 'capsule' as const, a: [8.5, 0.5] as [number, number], b: [8.5, 9.5] as [number, number], r: 0.15 }, box: { x1: 8.35, y1: 0.35, x2: 8.65, y2: 9.65 } };
+    return routeConnection({ point: p.center, layers: ['top'] }, { point: q.center, layers: ['top'] }, {
+      net: 'SIG',
+      width: 0.25,
+      rules: project.pcb!.rules,
+      board: project.pcb!.board,
+      items: [...board.items, wall],
+      netOf: (it) => it.net,
+      holes: holes.map((h) => ({ center: h.center, d: 0.3, len: 0, kind: 'via' as const, net: h.net, name: 'via' })),
+    })!;
+  };
+
+  it('keeps new via holes 0.2 mm from existing ones of any net', () => {
+    // Off the routing grid, so it can't be reused: new vias must keep their distance.
+    const existing: [number, number] = [7.6, 5.1];
+    const r = route([{ center: existing, net: 'SIG' }]);
+    expect(r.vias.length).toBeGreaterThan(0);
+    for (const v of r.vias) expect(Math.hypot(v[0] - existing[0], v[1] - existing[1])).toBeGreaterThanOrEqual(0.5 - 1e-9);
+  });
+
+  it('switches layers on existing on-grid vias of the net instead of stacking new ones', () => {
+    const r = route([
+      { center: [7.5, 5], net: 'SIG' },
+      { center: [9.5, 5], net: 'SIG' },
+    ]);
+    expect(r.vias).toEqual([]);
+    expect(r.tracks.some((t) => t.layer === 'bottom')).toBe(true);
+  });
+});
+
 describe('fabrication output', () => {
   const project = fixture({ vias: [{ id: 'v', x: 8, y: 2, diameter: 0.6, drill: 0.3, net: 'SIG' }] });
   const board = buildBoard(project, project.pcb!);

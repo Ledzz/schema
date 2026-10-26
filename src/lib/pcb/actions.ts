@@ -18,6 +18,7 @@ import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from
 import { edgeField, routeConnection, simplifyPath } from './router';
 import { DEFAULT_HOLE, DEFAULT_POUR, emptyPcb, type CopperLayer, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
 import { labelId, TEXT_SIZE } from './silk';
+import { drilledHoles, viaHoleConflict } from './jlcpcb';
 import { fitPcbView } from './view';
 
 const st = () => useEditor.getState();
@@ -423,7 +424,20 @@ export function addTrack(layer: CopperLayer, width: number, points: Vec[], net: 
   return track;
 }
 
-export function addVia(at: Vec, net: string | null): Via {
+/** Why a via of the design-rule size can't go at `at` (JLCPCB hole spacing), or null. */
+export function viaPlacementProblem(at: Vec, project: Project = st().project): string | null {
+  const pcb = currentPcb(project);
+  const { board, conn } = boardModel(project);
+  return viaHoleConflict(at, pcb.rules.viaDrill, drilledHoles(pcb, board, conn));
+}
+
+/** Places a via, unless its hole would crowd another drilled hole (then says why). */
+export function addVia(at: Vec, net: string | null): Via | null {
+  const problem = viaPlacementProblem(at);
+  if (problem) {
+    st().notify(`No room for a via here: ${problem}`, 'error');
+    return null;
+  }
   const { rules } = currentPcb();
   const via: Via = { id: newId('v'), x: at[0], y: at[1], diameter: rules.viaDiameter, drill: rules.viaDrill, net };
   commitPcb((pcb) => ({ ...pcb, vias: [...pcb.vias, via] }));
@@ -492,9 +506,14 @@ export function viaInDraft(layer?: CopperLayer) {
   const next: CopperLayer = layer ?? (d.layer === 'top' ? 'bottom' : 'top');
   if (next === d.layer) return;
   const end = s.pcbCursor;
+  // Switching layers on an existing via of this net uses it; otherwise a new via must fit.
+  const { conn } = boardModel();
+  const existing = currentPcb().vias.some((v) => Math.hypot(v.x - end[0], v.y - end[1]) < 0.01 && (conn.itemNet.get(v.id) ?? v.net) === d.net);
+  const problem = existing ? null : viaPlacementProblem(end);
+  if (problem) return s.notify(`No room for a via here: ${problem}`, 'error');
   const points = [...d.points, ...posture(d.points[d.points.length - 1], end)];
   if (points.length >= 2) addTrack(d.layer, d.width, points, d.net);
-  addVia(end, d.net);
+  if (!existing) addVia(end, d.net);
   s.setActiveLayer(next);
   s.setRouteDraft({ ...d, layer: next, points: [end] });
 }
@@ -601,7 +620,7 @@ function routeOne(project: Project, aw: Airwire, widthOverride?: number): { trac
   const avoid = shellAreas(board)
     .filter((a) => !a.nets.has(aw.net))
     .map(({ layer, outlines }) => ({ layer, outlines }));
-  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb) };
+  const opts = { net: aw.net, width, rules: pcb.rules, board: pcb.board, items: board.items, netOf, avoid, edges: edgeField(pcb), keepouts: keepoutAreas(pcb), holes: drilledHoles(pcb, board, conn) };
   const r = routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, opts) ?? routeConnection({ point: aw.a, layers: aw.aLayers }, { point: aw.b, layers: aw.bLayers }, { ...opts, margin: 30 });
   if (!r) return null;
   const others = width < wide ? board.items.filter((it) => netOf(it) !== aw.net) : [];

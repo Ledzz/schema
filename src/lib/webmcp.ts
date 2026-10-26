@@ -34,7 +34,7 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, setBoardOutline, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
-import { checklistReady, jlcpcbChecklist } from './pcb/jlcpcb';
+import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
 import { rasterizeInBrowser, traceBitmap, type Bitmap } from './pcb/logo';
 import type { Box } from './pcb/geometry';
@@ -1052,12 +1052,21 @@ export const TOOLS: ToolDefinition[] = [
     },
     execute: async (input) => {
       const net = String(input.net);
-      const { board, pcb } = boardModel();
+      const { board, pcb, conn } = boardModel();
       if (!board.pads.some((p) => p.net === net)) throw new Error(`No pad is on net "${net}"`);
       const points = (input.points as number[][]).map(([x, y]) => [x, y] as [number, number]);
       const edges = boardEdges(pcb);
       const outside = points.filter((p) => !insideBoard(p, edges));
       if (outside.length) throw new Error(`Points outside the board: ${outside.map((p) => p.join(',')).join('; ')}`);
+      // Every new hole keeps JLCPCB's spacing from existing holes and from the other new ones.
+      const holes = drilledHoles(pcb, board, conn);
+      const crowded: string[] = [];
+      for (const p of points) {
+        const problem = viaHoleConflict(p, pcb.rules.viaDrill, holes);
+        if (problem) crowded.push(`[${p.join(', ')}]: ${problem}`);
+        holes.push({ center: p, d: pcb.rules.viaDrill, len: 0, kind: 'via', net, name: 'new via' });
+      }
+      if (crowded.length) throw new Error(`Vias too close to other holes (JLCPCB needs 0.2 mm between via holes, 0.45 mm to pad holes): ${crowded.join('; ')}`);
       return { added: addVias(points, net).length };
     },
   },

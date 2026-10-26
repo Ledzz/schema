@@ -105,29 +105,50 @@ function minSpacing(board: BoardModel, conn: PcbConnectivity, window = 0.5): { g
   return best;
 }
 
-interface Hole {
+export interface DrillHole {
   center: Vec;
   /** Drill diameter (slot width for slots). */
   d: number;
-  /** Slot length (0 for round holes). */
+  /** Slot length beyond the width (0 for round holes). */
   len: number;
   kind: 'via' | 'pth' | 'npth';
+  net: string | null;
   name: string;
-  /** Via id or component id, for selecting it. */
+  /** Via id, component id or mounting hole id, for selecting it. */
   ref?: string;
 }
 
-function holes(pcb: Pcb, board: BoardModel, conn: PcbConnectivity): Hole[] {
-  const out: Hole[] = pcb.vias.map((v) => ({ center: [v.x, v.y] as Vec, d: v.drill, len: 0, kind: 'via' as const, name: `${conn.itemNet.get(v.id) ?? v.net ?? 'unconnected'} via`, ref: v.id }));
+/** Every drilled hole on the board: vias, through-hole pads and mounting holes. */
+export function drilledHoles(pcb: Pcb, board: BoardModel, conn: PcbConnectivity): DrillHole[] {
+  const out: DrillHole[] = pcb.vias.map((v) => {
+    const net = conn.itemNet.get(v.id) ?? v.net;
+    return { center: [v.x, v.y] as Vec, d: v.drill, len: 0, kind: 'via' as const, net, name: `${net ?? 'unconnected'} via`, ref: v.id };
+  });
   for (const p of board.pads) {
     if (!p.hole) continue;
     const d = Math.min(p.hole.w, p.hole.h);
     // A pad no bigger than its hole has no copper ring: a non-plated hole (locating peg).
     const plated = Math.min(p.pad.w, p.pad.h) > d + 0.01;
-    out.push({ center: p.hole.center, d, len: Math.abs(p.hole.w - p.hole.h), kind: plated ? 'pth' : 'npth', name: padName(p), ref: p.componentId });
+    out.push({ center: p.hole.center, d, len: Math.abs(p.hole.w - p.hole.h), kind: plated ? 'pth' : 'npth', net: p.net, name: padName(p), ref: p.componentId });
   }
-  for (const h of pcb.holes ?? []) out.push({ center: [h.x, h.y], d: h.diameter, len: 0, kind: 'npth', name: 'mounting hole', ref: h.id });
+  for (const h of pcb.holes ?? []) out.push({ center: [h.x, h.y], d: h.diameter, len: 0, kind: 'npth', net: null, name: 'mounting hole', ref: h.id });
   return out;
+}
+
+/** Edge-to-edge distance JLCPCB needs between two holes. */
+export const holeGap = (a: Pick<DrillHole, 'kind'>, b: Pick<DrillHole, 'kind'>) => (a.kind === 'via' && b.kind === 'via' ? JLC.viaHoleGap : JLC.padHoleGap);
+
+/**
+ * Why a new via hole at `at` would break JLCPCB's hole spacing (naming the hole it crowds), or
+ * null when it fits. An existing via at the same spot also counts: stacked vias overlap.
+ */
+export function viaHoleConflict(at: Vec, drill: number, holes: DrillHole[]): string | null {
+  for (const h of holes) {
+    const gap = Math.hypot(at[0] - h.center[0], at[1] - h.center[1]) - drill / 2 - (h.d + h.len) / 2;
+    const need = holeGap({ kind: 'via' }, h);
+    if (gap < need - 1e-6) return `${h.name} at ${h.center.map((v) => Math.round(v * 1000) / 1000).join(', ')} is ${gap < 0 ? 'overlapping' : `only ${mm(gap)} away`} (holes need ${mm(need)})`;
+  }
+  return null;
 }
 
 export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): CheckItem[] {
@@ -251,7 +272,7 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
       refs: extraCost.map((v) => v.id),
     });
   }
-  const all = holes(pcb, board, conn);
+  const all = drilledHoles(pcb, board, conn);
   const pth = board.pads.filter((p) => p.hole && Math.min(p.pad.w, p.pad.h) > Math.min(p.hole.w, p.hole.h) + 0.01);
   if (pth.length) {
     const rings = pth.map((p) => ({ pad: p, ring: (Math.min(p.pad.w, p.pad.h) - Math.min(p.hole!.w, p.hole!.h)) / 2, d: Math.min(p.hole!.w, p.hole!.h), slot: Math.abs(p.hole!.w - p.hole!.h) > 1e-6 }));
@@ -295,7 +316,7 @@ export function jlcpcbChecklist(project: Project, opts: ChecklistOptions = {}): 
       for (let j = i + 1; j < all.length; j++) {
         const [p, q] = [all[i], all[j]];
         const gapPQ = Math.hypot(p.center[0] - q.center[0], p.center[1] - q.center[1]) - (p.d + p.len) / 2 - (q.d + q.len) / 2;
-        const need = p.kind === 'via' && q.kind === 'via' ? JLC.viaHoleGap : JLC.padHoleGap;
+        const need = holeGap(p, q);
         if (gapPQ - need < tight.gap - tight.need) tight = { gap: gapPQ, need, a: p, b: q };
       }
     add({

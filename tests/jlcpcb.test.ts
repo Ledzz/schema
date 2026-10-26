@@ -5,6 +5,9 @@ import { builtinFootprintDoc } from '../src/lib/pcb/footprint';
 import { emptyPcb, type Pcb } from '../src/lib/pcb/types';
 import { PASSIVE_SYMBOLS } from '../src/shared/passives';
 import type { Project } from '../src/lib/schematic/types';
+import { addVia } from '../src/lib/pcb/actions';
+import { useEditor } from '../src/store/editor';
+import { TOOLS, runTool } from '../src/lib/webmcp';
 
 /** Two 0603 resistors from the JLCPCB library, joined by a 0.25 mm track, on a 20 × 10 board. */
 function fixture(extra: Partial<Pcb> = {}, lcsc = true): Project {
@@ -110,5 +113,26 @@ describe('JLCPCB checklist', () => {
     // 20 × 10 mm fits economic PCBA but not standard PCBA on its own.
     expect(item(jlcpcbChecklist(fixture()), 'pcbasize').status).toBe('info');
     expect(jlcpcbChecklist(fixture(), { assembly: false }).some((i) => i.group === 'Assembly')).toBe(false);
+  });
+});
+
+describe('via placement keeps hole spacing', () => {
+  const via = { id: 'v', x: 3, y: 3, drill: 0.3, diameter: 0.6, net: null };
+
+  it('refuses a via whose hole would crowd another', () => {
+    useEditor.getState().loadProject(fixture({ vias: [via] }));
+    expect(addVia([3.25, 3], null)).toBeNull();
+    expect(addVia([4, 3], null)).not.toBeNull();
+    expect(useEditor.getState().project.pcb!.vias).toHaveLength(2);
+  });
+
+  it('rejects agent vias too close to existing holes or to each other', async () => {
+    useEditor.getState().loadProject(fixture({ vias: [via] }));
+    const add = TOOLS.find((t) => t.name === 'pcb_add_vias')!;
+    // The wired net has no label in this fixture; take its generated name from R1.2.
+    const project = useEditor.getState().project;
+    const net = buildBoard(project, project.pcb!).pads.find((p) => p.designator === 'R1' && p.number === '2')!.net!;
+    await expect(runTool(add, { net, points: [[3.2, 3]] })).rejects.toThrow(/too close/);
+    await expect(runTool(add, { net, points: [[15, 2], [15.3, 2]] })).rejects.toThrow(/new via/);
   });
 });

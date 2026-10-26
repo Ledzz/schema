@@ -5,6 +5,7 @@
 import type { Vec } from '../schematic/types';
 import { pointInPolygon, pointShapeDistance, type CopperItem } from './geometry';
 import { boardEdges, edgeDistance, insideBoard } from './outline';
+import { holeGap, type DrillHole } from './jlcpcb';
 import type { Board, CopperLayer, DesignRules, Keepout, Pcb } from './types';
 
 export interface RouteEnd {
@@ -95,6 +96,11 @@ export interface RouteOptions {
   edges?: EdgeField;
   /** Areas tracks or vias must not enter. */
   keepouts?: Pick<Keepout, 'outline' | 'layers' | 'tracks' | 'vias'>[];
+  /**
+   * Drilled holes already on the board. New vias keep JLCPCB's hole spacing from all of them, of
+   * any net; a layer change exactly on a via of this net reuses it instead of adding one.
+   */
+  holes?: DrillHole[];
 }
 
 export interface EdgeField {
@@ -237,6 +243,27 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     }
   }
 
+  // Hole spacing: no new via hole too close to an existing one (same-net copper is no obstacle,
+  // so without this two connections can drop vias side by side). On-grid vias of this net can be
+  // used as they are.
+  const reuse = new Set<number>();
+  for (const h of opt.holes ?? []) {
+    const reach = (h.d + h.len) / 2 + rules.viaDrill / 2 + holeGap({ kind: 'via' }, h);
+    const ix0 = Math.max(0, Math.floor((h.center[0] - reach - x0) / STEP));
+    const ix1 = Math.min(cols - 1, Math.ceil((h.center[0] + reach - x0) / STEP));
+    const iy0 = Math.max(0, Math.floor((h.center[1] - reach - y0) / STEP));
+    const iy1 = Math.min(rows - 1, Math.ceil((h.center[1] + reach - y0) / STEP));
+    for (let iy = iy0; iy <= iy1; iy++)
+      for (let ix = ix0; ix <= ix1; ix++) if (Math.hypot(x0 + ix * STEP - h.center[0], y0 + iy * STEP - h.center[1]) < reach - 1e-9) viaBlocked[iy * cols + ix] = 1;
+    if (h.kind === 'via' && h.net === opt.net) {
+      const ix = Math.round((h.center[0] - x0) / STEP);
+      const iy = Math.round((h.center[1] - y0) / STEP);
+      const onGrid = Math.abs(x0 + ix * STEP - h.center[0]) < 1e-3 && Math.abs(y0 + iy * STEP - h.center[1]) < 1e-3;
+      if (onGrid && ix >= 0 && iy >= 0 && ix < cols && iy < rows) reuse.add(iy * cols + ix);
+    }
+  }
+  for (const c of reuse) viaBlocked[c] = 0;
+
   const cellOf = (p: Vec) => {
     const ix = Math.min(cols - 1, Math.max(0, Math.round((p[0] - x0) / STEP)));
     const iy = Math.min(rows - 1, Math.max(0, Math.round((p[1] - y0) / STEP)));
@@ -313,8 +340,9 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
       const nl = 1 - l;
       if (!blocked[nl][c]) {
         const ns = state(c, nl, d);
-        if (base + VIA < cost[ns]) {
-          cost[ns] = base + VIA;
+        const step = reuse.has(c) ? 1 : VIA;
+        if (base + step < cost[ns]) {
+          cost[ns] = base + step;
           prev[ns] = s;
           heap.push(cost[ns] + h(c), ns);
         }
@@ -324,10 +352,10 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
   if (found < 0) return null;
 
   // Walk back and split into per-layer polylines and vias.
-  const path: { p: Vec; l: number }[] = [];
+  const path: { p: Vec; l: number; c: number }[] = [];
   for (let s = found; s >= 0; s = prev[s]) {
     const c = Math.floor(s / 16);
-    path.push({ p: [Math.round(cx(c) * 1000) / 1000, Math.round(cy(c) * 1000) / 1000], l: Math.floor(s / 8) % 2 });
+    path.push({ p: [Math.round(cx(c) * 1000) / 1000, Math.round(cy(c) * 1000) / 1000], l: Math.floor(s / 8) % 2, c });
   }
   path.reverse();
   const tracks: RouteResult['tracks'] = [];
@@ -338,7 +366,8 @@ export function routeConnection(from: RouteEnd, to: RouteEnd, opt: RouteOptions)
     if (LAYERS[node.l] !== current.layer) {
       current.points.push(node.p);
       tracks.push(current);
-      vias.push(node.p);
+      // An existing via of this net is used as it is.
+      if (!reuse.has(node.c)) vias.push(node.p);
       current = { layer: LAYERS[node.l], points: [node.p] };
       continue;
     }
