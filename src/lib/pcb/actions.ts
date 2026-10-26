@@ -1,7 +1,7 @@
 /*
  * PCB editing actions shared by the PCB editor UI and the WebMCP tools.
  */
-import { useEditor } from '../../store/editor';
+import { ROUTE_MODE_NAMES, useEditor, type RouteMode } from '../../store/editor';
 import { fetchPartDetail } from '../api';
 import { downloadText, safeFileName } from '../actions';
 import { samePoint } from '../schematic/geometry';
@@ -12,6 +12,7 @@ import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
 import { pointShapeDistance, rotateDeg, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { POUR_EDGE_CLEARANCE } from './pour';
+import { applyShove, firstCollision, shove, trackMovers, type Mover, type ShoveResult } from './shove';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
@@ -434,11 +435,15 @@ export function updateTrack(id: string, patch: Partial<Track>) {
   commitPcb((pcb) => ({ ...pcb, tracks: pcb.tracks.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
 }
 
-export function addTrack(layer: CopperLayer, width: number, points: Vec[], net: string | null): Track | null {
+/** A new track from routed points (simplified), or null when it has no length. */
+function newTrack(layer: CopperLayer, width: number, points: Vec[], net: string | null): Track | null {
   const pts = simplifyPath(points);
-  if (pts.length < 2) return null;
-  const track: Track = { id: newId('t'), layer, width, points: pts, net };
-  commitPcb((pcb) => ({ ...pcb, tracks: [...pcb.tracks, track] }));
+  return pts.length < 2 ? null : { id: newId('t'), layer, width, points: pts, net };
+}
+
+export function addTrack(layer: CopperLayer, width: number, points: Vec[], net: string | null): Track | null {
+  const track = newTrack(layer, width, points, net);
+  if (track) commitPcb((pcb) => ({ ...pcb, tracks: [...pcb.tracks, track] }));
   return track;
 }
 
@@ -530,20 +535,113 @@ export function viaInDraft(layer?: CopperLayer) {
   const problem = existing ? null : viaPlacementProblem(end);
   if (problem) return s.notify(`No room for a via here: ${problem}`, 'error');
   const points = [...d.points, ...posture(d.points[d.points.length - 1], end)];
-  if (points.length >= 2) addTrack(d.layer, d.width, points, d.net);
-  if (!existing) addVia(end, d.net);
+  const track = newTrack(d.layer, d.width, points, d.net);
+  const { rules } = currentPcb();
+  const via: Via | null = existing ? null : { id: newId('v'), x: end[0], y: end[1], diameter: rules.viaDiameter, drill: rules.viaDrill, net: d.net };
+  const add = (pcb: Pcb): Pcb => ({ ...pcb, tracks: track ? [...pcb.tracks, track] : pcb.tracks, vias: via ? [...pcb.vias, via] : pcb.vias });
+  if (editingTracks()) {
+    // Push mode: commit this leg with what it pushed, then push afresh on the new layer.
+    if (track) previewTrackEdit(trackMovers(track.layer, track.net, track.width, track.points), 'push');
+    endTrackEdit(add);
+    beginTrackEdit();
+  } else commitPcb(add);
   s.setActiveLayer(next);
   s.setRouteDraft({ ...d, layer: next, points: [end] });
 }
 
+/** Ends the route being drawn, adding its track (and, in push mode, what it pushed). */
 export function finishDraft() {
   const s = st();
   const d = s.routeDraft;
-  if (d && d.points.length >= 2) addTrack(d.layer, d.width, d.points, d.net);
+  const track = d ? newTrack(d.layer, d.width, d.points, d.net) : null;
+  if (editingTracks()) {
+    if (track) {
+      previewTrackEdit(trackMovers(track.layer, track.net, track.width, track.points), 'push');
+      endTrackEdit((pcb) => ({ ...pcb, tracks: [...pcb.tracks, track] }));
+    } else cancelTrackEdit();
+  } else if (track) commitPcb((pcb) => ({ ...pcb, tracks: [...pcb.tracks, track] }));
   s.setRouteDraft(null);
 }
 
+/* ---------- push and shove ---------- */
+
+interface TrackEdit {
+  pcb: Pcb;
+  items: CopperItem[];
+  netOf: (it: CopperItem) => string | null;
+  trackNet: (t: Track) => string | null;
+}
+let trackEdit: TrackEdit | null = null;
+
+/**
+ * Starts an edit that may move other tracks (routing in push mode, dragging a segment): previews
+ * are worked out against the board as it is now, and the whole edit is one undo step.
+ */
+export function beginTrackEdit() {
+  const { pcb, board, conn } = boardModel();
+  trackEdit = { pcb, items: board.items, netOf: (it) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net)), trackNet: (t) => conn.itemNet.get(t.id) ?? t.net };
+  st().beginTransient();
+}
+
+const MODE_HINT: Record<RouteMode, string> = {
+  push: 'tracks in the way move aside',
+  walk: 'routes find a way around, drags stop at other copper',
+  ignore: 'copper may overlap; the design check reports it',
+};
+
+/** Switches the routing mode (a route being drawn carries on in the new one) and says what it does. */
+export function changeRouteMode(mode: RouteMode = nextRouteMode()) {
+  const s = st();
+  if (s.routeDraft) {
+    if (mode !== 'push' && editingTracks()) endTrackEdit();
+    if (mode === 'push' && !editingTracks()) beginTrackEdit();
+  }
+  s.setRouteMode(mode);
+  s.notify(`${ROUTE_MODE_NAMES[mode]}: ${MODE_HINT[mode]}`);
+}
+
+const nextRouteMode = (): RouteMode => ({ push: 'walk', walk: 'ignore', ignore: 'push' } as const)[st().routeMode];
+
+/** True while a track edit is open. */
+export const editingTracks = () => trackEdit !== null && st().transientBase !== null;
+
+/**
+ * Shows an edit with `movers` (copper in its new place): in push mode other nets' tracks move out
+ * of the way; walk-around refuses positions that touch other copper; ignore allows anything.
+ * `change` applies the edit itself, e.g. a dragged track's new points. A refused preview leaves
+ * the last good one on screen and returns why.
+ */
+export function previewTrackEdit(movers: Mover[], mode: RouteMode, change: (pcb: Pcb) => Pcb = (p) => p, skip?: ReadonlySet<string>): ShoveResult {
+  const ctx = trackEdit;
+  if (!ctx || !st().transientBase) return { ok: false, moved: new Map(), reason: 'no edit in progress' };
+  let r: ShoveResult = { ok: true, moved: new Map() };
+  if (mode === 'push') r = shove(movers, { ...ctx, skip });
+  else if (mode === 'walk') {
+    const hit = firstCollision(movers, { ...ctx, skip });
+    if (hit) r = { ok: false, moved: r.moved, reason: hit };
+  }
+  if (r.ok) st().updateTransient((base) => ({ ...base, pcb: change(applyShove(base.pcb ?? emptyPcb(), r.moved)) }));
+  return r;
+}
+
+/** Ends a track edit, keeping what the last good preview showed plus `finish` (a new track, say). */
+export function endTrackEdit(finish?: (pcb: Pcb) => Pcb) {
+  trackEdit = null;
+  if (!st().transientBase) return;
+  if (finish) st().updateTransient((base) => ({ ...base, pcb: finish(currentPcb()) }));
+  st().endTransient();
+}
+
+/** Drops a track edit: anything pushed goes back where it was. */
+export function cancelTrackEdit() {
+  trackEdit = null;
+  if (!st().transientBase) return;
+  st().updateTransient((base) => base);
+  st().endTransient();
+}
+
 /* ---------- auto-routing ---------- */
+
 
 export interface AutorouteReport {
   routed: number;

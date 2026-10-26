@@ -17,7 +17,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { useEditor, type Tool } from '../store/editor';
+import { ROUTE_MODE_NAMES, useEditor, type Tool } from '../store/editor';
 import { useWebMcp } from '../store/webmcp';
 import { connectivity, downloadText, refreshStock, safeFileName } from '../lib/actions';
 import {
@@ -40,7 +40,7 @@ import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
 import { startPassive } from '../lib/passives';
 import { detachDesign, openDesign, saveDesign } from '../lib/designs';
-import { boardModel, enterPcb } from '../lib/pcb/actions';
+import { boardModel, changeRouteMode, enterPcb } from '../lib/pcb/actions';
 import { LAYER_NAMES } from '../lib/pcb/types';
 import { PASSIVES, type PassiveKind } from '../shared/passives';
 
@@ -316,13 +316,14 @@ function PcbStatusBar() {
   const cursor = useEditor((s) => s.pcbCursor);
   const zoom = useEditor((s) => s.pcbView.zoom);
   const layer = useEditor((s) => s.activeLayer);
+  const routeMode = useEditor((s) => s.routeMode);
   const tool = useEditor((s) => s.pcbTool);
   const project = useEditor((s) => s.project);
   const unrouted = useMemo(() => [...boardModel(project).conn.unrouted.values()].reduce((a, b) => a + b, 0), [project]);
   const area = 'drag a rectangle, or click corners and click the first one (or Enter) to close · Esc cancels';
   const hint = {
-    select: 'Click to select · drag parts to move · R rotate · X flip side',
-    route: 'Click a pad to start · click to add corners · V via · Esc finish',
+    select: 'Click to select · drag parts to move, or a track sideways · R rotate · X flip side',
+    route: 'Click a pad to start · click to add corners · V via · M routing mode · Esc finish',
     via: 'Click to place a via',
     hole: 'Click to drill a 3.2 mm mounting hole with a copper-free ring',
     keepout: `Keepout: ${area}`,
@@ -342,7 +343,16 @@ function PcbStatusBar() {
       </span>
       <span className="tabular w-14">{Math.round(zoom * 10)}%</span>
       <span className="truncate">{hint}</span>
-      <button className="ml-auto hover:text-[var(--text)]" onClick={() => useEditor.getState().setPcbLeftTab('nets')}>
+      <button
+        className="ml-auto shrink-0 rounded px-1.5 hover:bg-black/5 hover:text-[var(--text)] dark:hover:bg-white/5"
+        data-tip="How routing and dragging treat other tracks: Push moves them aside, Walk around avoids them, Ignore lets copper overlap"
+        data-tip-key="M"
+        data-tip-side="top"
+        onClick={() => changeRouteMode()}
+      >
+        {ROUTE_MODE_NAMES[routeMode]}
+      </button>
+      <button className="shrink-0 hover:text-[var(--text)]" onClick={() => useEditor.getState().setPcbLeftTab('nets')}>
         <span className={unrouted ? 'text-amber-500' : 'text-emerald-500'}>{unrouted} unrouted</span>
       </button>
     </footer>

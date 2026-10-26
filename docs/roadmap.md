@@ -6,17 +6,22 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Push-and-shove routing and track dragging** — makes manual clean-up pleasant.
-2. **STEP export of the assembled board** — the 3D view already has the models; enclosure
+1. **STEP export of the assembled board** — the 3D view already has the models; enclosure
    design needs the board as a STEP file.
-3. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
-4. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
+2. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
+3. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
    other.
-5. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
+4. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
    router still leaves a connection or two for manual routing.
+5. **Length tuning and differential pairs** — for USB and other matched signals.
 
 ## Done
 
+- **Push-and-shove routing and track dragging** (2026-10-26): Push, Walk around and Ignore
+  routing modes (`M`); routes and dragged segments push other nets' tracks aside recursively,
+  keeping their ends with 45° jogs and stopping at pads, vias and the edge; walk-around routes
+  find a path to the cursor; segments drag sideways with their corners sliding along their
+  neighbours. Vias aren't pushed yet, and agents still route with the auto-router.
 - **4-layer boards** (2026-10-26): Inner 1 and Inner 2 copper layers with tracks, vias through all
   layers, pours and inner planes. Auto-routing keeps off the planes and joins each SMD pad of a
   plane net to its plane with a short stub and via; Gerbers gain inner layers; the JLCPCB checklist
@@ -69,7 +74,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## PCB: routing
 
-- ★ Push-and-shove or walk-around interactive routing, dragging track segments.
+- Pushing vias out of the way, dragging corners and whole tracks (segments drag today), glossing
+  (tidying routed tracks).
 - Differential pairs, length matching (serpentines), curved tracks, teardrops, BGA fanout.
 - A stronger auto-router (ours is a basic grid router).
 

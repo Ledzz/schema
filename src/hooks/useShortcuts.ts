@@ -19,7 +19,7 @@ import { focusLibrarySearch } from '../lib/libraryFocus';
 import { saveDesign } from '../lib/designs';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
-import { currentPcb, deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
+import { changeRouteMode, currentPcb, deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
 import { copperLayers } from '../lib/pcb/types';
 import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
 
@@ -57,6 +57,9 @@ function pcbKey(key: string, e: KeyboardEvent): boolean {
       return true;
     case 'w':
       s.setPcbTool('route');
+      return true;
+    case 'm':
+      changeRouteMode();
       return true;
     case 'v':
       if (draft) viaInDraft();

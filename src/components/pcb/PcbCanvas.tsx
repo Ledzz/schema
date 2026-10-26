@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { CircuitBoard, RefreshCcw } from 'lucide-react';
-import { SHAPE_TOOLS, useEditor } from '../../store/editor';
+import { ROUTE_MODE_NAMES, SHAPE_TOOLS, useEditor } from '../../store/editor';
 import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
 import { pointInPolygon, pointSegDist, type WorldPad } from '../../lib/pcb/geometry';
@@ -8,9 +8,12 @@ import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
 import { designatorLabel, labelBox, labelComponent, labelId, labelStrokes, logoAreas, logoBox, pinLabels, silkTextBox, strokeFor, textItemStrokes, textStroke } from '../../lib/pcb/silk';
 import type { Box } from '../../lib/pcb/geometry';
 import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
-import { addText, addVia, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
+import { addText, addVia, beginTrackEdit, endTrackEdit, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, previewTrackEdit, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
+import { dragSegment, trackMovers } from '../../lib/pcb/shove';
+import { edgeField, routeConnection } from '../../lib/pcb/router';
+import { keepoutAreas } from '../../lib/pcb/outline';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
-import { copperLayers, emptyPcb, isInner, LAYER_NAMES, type CopperLayer, type Pcb } from '../../lib/pcb/types';
+import { copperLayers, emptyPcb, isInner, LAYER_NAMES, type CopperLayer, type Pcb, type Track } from '../../lib/pcb/types';
 import { Kbd } from '../ui';
 
 const LAYER_COLOR: Record<CopperLayer, string> = { top: 'var(--pcb-top)', inner1: 'var(--pcb-inner1)', inner2: 'var(--pcb-inner2)', bottom: 'var(--pcb-bottom)' };
@@ -35,6 +38,10 @@ export function PcbCanvas() {
   const activeLayer = useEditor((s) => s.activeLayer);
   const selection = useEditor((s) => s.pcbSelection);
   const draft = useEditor((s) => s.routeDraft);
+  const routeMode = useEditor((s) => s.routeMode);
+  // What the current route or drag preview ran into, and the walk-around path to the cursor.
+  const [edit, setEdit] = useState<{ blocked: string | null; walk: Vec[] | null }>({ blocked: null, walk: null });
+  const frame = useRef<number | null>(null);
   const shapeDraft = useEditor((s) => s.shapeDraft);
   const highlightNet = useEditor((s) => s.pcbHighlightNet);
   const showPours = useEditor((s) => s.showPours);
@@ -44,7 +51,12 @@ export function PcbCanvas() {
   const [box, setBox] = useState<{ a: Vec; b: Vec } | null>(null);
   const [hoverPad, setHoverPad] = useState<WorldPad | null>(null);
   const interaction = useRef<
-    { mode: 'none' } | { mode: 'pan'; start: Vec; view: { x: number; y: number } } | { mode: 'drag'; start: Vec; ids: Set<string>; delta: Vec } | { mode: 'box'; start: Vec } | { mode: 'shape'; start: Vec }
+    | { mode: 'none' }
+    | { mode: 'pan'; start: Vec; view: { x: number; y: number } }
+    | { mode: 'drag'; start: Vec; ids: Set<string>; delta: Vec }
+    | { mode: 'box'; start: Vec }
+    | { mode: 'shape'; start: Vec }
+    | { mode: 'segment'; track: Track; seg: number; start: Vec; startPx: Vec; moved: boolean; offset: number }
   >({ mode: 'none' });
   const spaceDown = useRef(false);
 
@@ -142,6 +154,50 @@ export function PcbCanvas() {
     return { at: snap(p), finish: false };
   };
 
+  /**
+   * Works out the route preview to `w` for the routing mode: in push mode the tracks it pushes
+   * are shown on the board; in walk-around mode the router finds a path to the cursor on the
+   * draft's layer. Returns what it ran into (null when the spot is fine) and the walk path.
+   */
+  const routePreview = (w: Vec): { blocked: string | null; walk: Vec[] | null } => {
+    const s = useEditor.getState();
+    const d = s.routeDraft;
+    if (!d) return { blocked: null, walk: null };
+    const last = d.points[d.points.length - 1];
+    const target = routeTarget(w).at;
+    if (s.routeMode === 'push') {
+      const r = previewTrackEdit(trackMovers(d.layer, d.net, d.width, [...d.points, ...posture(last, target)]), 'push');
+      return { blocked: r.ok ? null : (r.reason ?? 'no room'), walk: null };
+    }
+    if (s.routeMode === 'walk') {
+      if (Math.hypot(target[0] - last[0], target[1] - last[1]) < 1e-6) return { blocked: null, walk: [] };
+      const now = s.project.pcb ?? emptyPcb();
+      const r = routeConnection({ point: last, layers: [d.layer] }, { point: target, layers: [d.layer] }, {
+        net: d.net ?? '',
+        width: d.width,
+        rules: now.rules,
+        board: now.board,
+        items: model.board.items,
+        netOf: (it) => (it.type === 'pad' ? it.net : (model.conn.itemNet.get(it.ref) ?? it.net)),
+        edges: edgeField(now),
+        keepouts: keepoutAreas(now),
+        layers: [d.layer],
+        margin: 3,
+      });
+      return r ? { blocked: null, walk: r.tracks[0].points.slice(1) } : { blocked: 'no way around', walk: null };
+    }
+    return { blocked: null, walk: null };
+  };
+
+  /** Runs `fn` once per animation frame at most (previews can take a few milliseconds). */
+  const throttled = (fn: () => void) => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      fn();
+    });
+  };
+
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     const s = useEditor.getState();
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -173,6 +229,15 @@ export function PcbCanvas() {
         return;
       }
       if (!selected.has(hit.id)) s.setPcbSelection([hit.id]);
+      if (hit.kind === 'track') {
+        // Dragging a track moves the segment under the pointer sideways.
+        const track = pcb.tracks.find((t) => t.id === hit.id)!;
+        let seg = 0;
+        for (let j = 1; j < track.points.length - 1; j++)
+          if (pointSegDist(w, track.points[j], track.points[j + 1]) < pointSegDist(w, track.points[seg], track.points[seg + 1])) seg = j;
+        interaction.current = { mode: 'segment', track, seg, start: w, startPx: [e.clientX, e.clientY], moved: false, offset: 0 };
+        return;
+      }
       const ids = movableIds(pcb, selected.has(hit.id) ? selection : [hit.id]);
       if (ids.has(hit.id)) {
         s.beginTransient();
@@ -220,6 +285,8 @@ export function PcbCanvas() {
       if (layer !== s.activeLayer) s.setActiveLayer(layer);
       const start: Vec = pad ? pad.center : via ? [via.x, via.y] : snap(w);
       s.setRouteDraft({ net, layer, width: trackWidthFor(net, pcb), points: [start] });
+      if (s.routeMode === 'push') beginTrackEdit();
+      setEdit({ blocked: null, walk: null });
       return;
     }
     const target = routeTarget(w);
@@ -228,7 +295,12 @@ export function PcbCanvas() {
       if (e.detail >= 2) finishDraft();
       return;
     }
-    const next = { ...d, points: [...d.points, ...posture(last, target.at)] };
+    // The leg to the click, as the mode sees it; a blocked spot can't be clicked.
+    const here = routePreview(w);
+    setEdit(here);
+    if (here.blocked) return s.notify(s.routeMode === 'push' ? `Can't push the tracks out of the way: ${here.blocked}` : 'No way around to this spot', 'error');
+    const legs = s.routeMode === 'walk' && here.walk ? here.walk : posture(last, target.at);
+    const next = { ...d, points: [...d.points, ...legs] };
     s.setRouteDraft(next);
     if (target.finish) finishDraft();
   };
@@ -250,8 +322,35 @@ export function PcbCanvas() {
         const labels = new Set([...it.ids].map(labelComponent).filter((c): c is string => !!c));
         s.updateTransient((base) => ({ ...base, pcb: movePlacements(pinLabels(base.pcb ?? emptyPcb(), model.board, labels), it.ids, delta[0], delta[1]) }));
       }
+    } else if (it.mode === 'segment') {
+      // A few pixels before it counts as a drag, so a click only selects the track.
+      if (!it.moved) {
+        if (Math.hypot(e.clientX - it.startPx[0], e.clientY - it.startPx[1]) < 4) return;
+        it.moved = true;
+        beginTrackEdit();
+      }
+      const [a, b] = [it.track.points[it.seg], it.track.points[it.seg + 1]];
+      const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+      const n: Vec = [(b[1] - a[1]) / l, -(b[0] - a[0]) / l];
+      const offset = Math.round(((w[0] - it.start[0]) * n[0] + (w[1] - it.start[1]) * n[1]) / 0.05) * 0.05;
+      if (offset === it.offset) return;
+      const { track, seg } = it;
+      throttled(() => {
+        const pts = dragSegment(track.points, seg, offset);
+        if (!pts) return;
+        const net = model.conn.itemNet.get(track.id) ?? track.net;
+        const r = previewTrackEdit(
+          trackMovers(track.layer, net, track.width, pts),
+          useEditor.getState().routeMode,
+          (p) => ({ ...p, tracks: p.tracks.map((t) => (t.id === track.id ? { ...t, points: pts } : t)) }),
+          new Set([track.id]),
+        );
+        if (r.ok) it.offset = offset;
+        setEdit({ blocked: r.ok ? null : (r.reason ?? 'no room'), walk: null });
+      });
     } else if (it.mode === 'box') setBox({ a: it.start, b: w });
     else if (it.mode === 'shape') setBox({ a: it.start, b: snap(w) });
+    else if (s.routeDraft && s.routeMode !== 'ignore') throttled(() => setEdit(routePreview(w)));
   };
 
   const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>) => {
@@ -260,6 +359,13 @@ export function PcbCanvas() {
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
     if (it.mode === 'drag') s.endTransient();
+    if (it.mode === 'segment') {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+      if (it.moved) endTrackEdit();
+      setEdit({ blocked: null, walk: null });
+      return;
+    }
     if (it.mode === 'shape') {
       setBox(null);
       const b = snap(toWorld(e.clientX, e.clientY));
@@ -299,7 +405,9 @@ export function PcbCanvas() {
     } else if (s.pcbTool !== 'select') s.setPcbTool('select');
   };
 
-  const preview: Vec[] | null = draft ? [...draft.points, ...posture(draft.points[draft.points.length - 1], routeTarget(pointer).at)] : null;
+  const preview: Vec[] | null = draft
+    ? [...draft.points, ...(routeMode === 'walk' && edit.walk ? edit.walk : posture(draft.points[draft.points.length - 1], routeTarget(pointer).at))]
+    : null;
   const crosshair = tool !== 'select' ? snap(pointer) : null;
   const empty = pcb.placements.length === 0;
   const issuesShown = useEditor((s) => s.pcbLeftTab === 'drc');
@@ -357,7 +465,16 @@ export function PcbCanvas() {
             </g>
           )}
           {preview && draft && (
-            <polyline points={pts(preview)} fill="none" stroke={LAYER_COLOR[draft.layer]} strokeWidth={draft.width} strokeLinecap="round" strokeLinejoin="round" opacity={0.75} />
+            <polyline
+              points={pts(preview)}
+              fill="none"
+              stroke={edit.blocked ? 'var(--unconnected)' : LAYER_COLOR[draft.layer]}
+              strokeWidth={draft.width}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeDasharray={edit.blocked ? `${draft.width * 2} ${draft.width * 1.5}` : undefined}
+              opacity={0.75}
+            />
           )}
           {hoverPad && (
             <polygon points={pts(hoverPad.outline)} fill="none" stroke="var(--select)" strokeWidth={1.5 / view.zoom} />
@@ -383,6 +500,11 @@ export function PcbCanvas() {
         </g>
       </svg>
 
+      {!draft && edit.blocked && (
+        <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-full border border-rose-500/40 bg-panel/95 px-3 py-1.5 text-xs text-rose-500 shadow-lg backdrop-blur">
+          {routeMode === 'push' ? "Can't push further" : 'Stopped'}: {edit.blocked}
+        </div>
+      )}
       {hoverPad && (
         <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border border-line bg-panel px-2 py-1 text-[11px] shadow-lg">
           {hoverPad.designator}.{hoverPad.number} · {hoverPad.net ?? 'no net'} · {hoverPad.layers.join('+')}
@@ -393,8 +515,9 @@ export function PcbCanvas() {
           <span className="h-2 w-2 rounded-full" style={{ background: LAYER_COLOR[draft.layer] }} />
           Routing <span className="font-semibold">{draft.net ?? 'no net'}</span> on {LAYER_NAMES[draft.layer]} · {draft.width} mm
           <span className="text-muted">
-            · <Kbd>V</Kbd> via · <Kbd>⌫</Kbd> undo corner · <Kbd>Esc</Kbd> finish
+            · {ROUTE_MODE_NAMES[routeMode]} <Kbd>M</Kbd> · <Kbd>V</Kbd> via · <Kbd>⌫</Kbd> undo corner · <Kbd>Esc</Kbd> finish
           </span>
+          {edit.blocked && <span className="font-medium text-rose-500">· {edit.blocked}</span>}
         </div>
       )}
       {empty && (

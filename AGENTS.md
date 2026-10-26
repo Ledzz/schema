@@ -32,7 +32,8 @@ lazy-loaded modules changed.
 - `src/lib/pcb/` – PCB model (`types.ts`), board model and connectivity (`board.ts`), board shape,
   holes and keepouts (`outline.ts`), pours (`pour.ts`, Clipper), DRC (`drc.ts`), A* router
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
-  (`render.ts`), silkscreen text, logos and designator labels (`silk.ts`, `font.ts`, `logo.ts`),
+  (`render.ts`), push-and-shove and segment dragging (`shove.ts`), silkscreen text, logos and
+  designator labels (`silk.ts`, `font.ts`, `logo.ts`),
   3D (`model3d.ts`, `viewer3d.ts`), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
   whose `JLC` constants hold JLCPCB's published limits).
 - `src/lib/actions.ts`, `src/lib/passives.ts` – schematic actions shared by the UI and the tools.

@@ -47,6 +47,7 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
   - **2 or 4 copper layers** (Board panel or `pcb_set_board`). A 4-layer board adds Inner 1 and Inner 2: a whole-board pour on an inner layer makes it a plane, which auto-routing leaves alone and joins each surface-mount pad of that net to through a short stub and via. Gerbers gain `In1_Cu`/`In2_Cu` layers, and the JLCPCB checklist switches to the multilayer limits.
   - **Interactive routing** (`W`) with 45° corners on any copper layer (`1` top, `2` bottom, `⇧1`/`⇧2` inner layers). Press `V` to drop a via and continue on the other outer layer, or a layer key to jump to that one. Power nets get wider tracks automatically.
+  - **Push-and-shove.** Three routing modes, switched with `M` or the chip in the status bar: **Push** (default) moves other nets' tracks out of the way of the route being drawn, recursively, keeping their ends in place with 45° jogs and refusing (in red) where a push would hit a pad, via or the board edge; **Walk around** lets the router find a path to the cursor around obstacles; **Ignore** lets copper overlap for the design check to report. In select mode, dragging a track moves the segment under the pointer sideways while its neighbours keep their 45°/90° angles, pushing (or, in walk-around mode, stopping at) other tracks; each route or drag is one undo step.
   - **Ratsnest** and an unrouted count per net. Per-net or whole-board auto-routing uses an A* grid router over the board's layers (planes excluded) that keeps clearance, never places vias in SMD pads, keeps JLCPCB's hole spacing from every drilled hole (and switches layers on an existing via of the net rather than stacking a new one) and keeps other nets out from under metal connector shells where it can. Supply nets get wide tracks, and any net can be routed at a chosen width; wide tracks neck down to the pad width only where they enter fine-pitch pins.
   - **Board shape and mechanics.** Draw a custom outline (an L, a notch, a chamfer; corners are rounded by the corner radius), milled cutouts, non-plated mounting holes with a copper-free ring (one click puts M3 holes in all four corners), and keepout areas that keep tracks, vias, pours or parts out on one or both layers. Drag a rectangle or click the corners of a polygon; holes, keepouts, cutouts and zones move by dragging and delete with `Del`. The router, pours, DRC, Gerbers and the 3D view all follow the real shape.
   - **Silkscreen.** Text on either side (lowercase, several lines, ° µ Ω and common punctuation, in the same stroke font the Gerbers use), logos traced from a PNG, JPEG or SVG image, and designators that can be dragged, rotated, resized or hidden; a designator keeps its place relative to its part when the part moves or turns.
@@ -66,7 +67,7 @@ Checks: `pnpm typecheck`, `pnpm test`.
 
 Schematic keys: `W` wire · `N` label · `P`/`G` power/ground · `Q` no-connect · `R` rotate ·
 `X` mirror · `Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate.
-PCB keys: `W` route · `V` via · `1`/`2` top/bottom layer · `⇧1`/`⇧2` inner layers · `R` rotate · `X` flip side · `⌫` remove last
+PCB keys: `W` route · `V` via · `M` routing mode (push / walk around / ignore) · `1`/`2` top/bottom layer · `⇧1`/`⇧2` inner layers · `R` rotate · `X` flip side · `⌫` remove last
 corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms.
 
 ## WebMCP
@@ -157,7 +158,7 @@ src/
 
 ## Limitations
 
-- **Missing PCB features.** No more than 4 layers, no blind or buried vias or impedance control; outlines are straight-sided polygons (no arcs or DXF import); no differential pairs, length tuning, or push-and-shove routing. There is also no multi-sheet schematic hierarchy and no simulation. See [docs/roadmap.md](docs/roadmap.md).
+- **Missing PCB features.** No more than 4 layers, no blind or buried vias or impedance control; outlines are straight-sided polygons (no arcs or DXF import); no differential pairs or length tuning. There is also no multi-sheet schematic hierarchy and no simulation. See [docs/roadmap.md](docs/roadmap.md).
 - **Auto-router.** It is a simple grid router meant for small boards. Expect to clean up dense layouts by hand.
 - **Gerber output.** Covered by unit tests and a structural check. Look at it in JLCPCB's Gerber viewer before ordering.
 - **CPL rotations.** These are the design's own rotations. JLCPCB sometimes needs per-part rotation fixes, which you confirm in their placement preview.

@@ -6,6 +6,10 @@ import type { CopperLayer } from '../lib/pcb/types';
 import type { DrcIssue } from '../lib/pcb/drc';
 
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
+/** How routing and track dragging treat other nets' tracks in the way. */
+export type RouteMode = 'push' | 'walk' | 'ignore';
+export const ROUTE_MODE_NAMES: Record<RouteMode, string> = { push: 'Push', walk: 'Walk around', ignore: 'Ignore' };
+
 export type PcbTool = 'select' | 'route' | 'via' | 'hole' | 'keepout' | 'cutout' | 'zone' | 'outline' | 'text';
 /** PCB tools that draw an area: drag a rectangle, or click corners and close the shape. */
 export const SHAPE_TOOLS: readonly PcbTool[] = ['keepout', 'cutout', 'zone', 'outline'];
@@ -143,6 +147,8 @@ interface EditorState {
   setPcbIssues: (issues: DrcIssue[]) => void;
   showPours: boolean;
   setShowPours: (show: boolean) => void;
+  routeMode: RouteMode;
+  setRouteMode: (mode: RouteMode) => void;
   /** designs/<file> the project was opened from (dev only). */
   sourceFile: string | null;
   beginTransient: () => void;
@@ -253,12 +259,17 @@ export const useEditor = create<EditorState>()((set, get) => ({
     } catch {
       /* ignore */
     }
+    if (get().routeDraft && get().transientBase) get().endTransient();
     set({ mode, routeDraft: null, shapeDraft: null, quickEditId: null });
   },
   pcbView: { x: 120, y: 80, zoom: 12 },
   setPcbView: (pcbView) => set({ pcbView }),
   pcbTool: 'select',
-  setPcbTool: (pcbTool) => set({ pcbTool, routeDraft: null, shapeDraft: null }),
+  setPcbTool: (pcbTool) => {
+    // A route drawn in push mode keeps what it pushed so far, as one undo step.
+    if (get().routeDraft && get().transientBase) get().endTransient();
+    set({ pcbTool, routeDraft: null, shapeDraft: null });
+  },
   activeLayer: 'top',
   setActiveLayer: (activeLayer) => set({ activeLayer }),
   pcbSelection: [],
@@ -279,6 +290,22 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setPcbIssues: (pcbIssues) => set({ pcbIssues }),
   showPours: true,
   setShowPours: (showPours) => set({ showPours }),
+  routeMode: (() => {
+    try {
+      const m = localStorage.getItem('schematics:routeMode');
+      return m === 'walk' || m === 'ignore' ? m : 'push';
+    } catch {
+      return 'push';
+    }
+  })(),
+  setRouteMode: (routeMode) => {
+    try {
+      localStorage.setItem('schematics:routeMode', routeMode);
+    } catch {
+      // Private mode: the choice lasts for this session only.
+    }
+    set({ routeMode });
+  },
   sourceFile: null,
 
   beginTransient: () => set({ transientBase: docOf(get().project) }),
