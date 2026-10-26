@@ -3,13 +3,13 @@ import { CircuitBoard, RefreshCcw } from 'lucide-react';
 import { ROUTE_MODE_NAMES, SHAPE_TOOLS, useEditor } from '../../store/editor';
 import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
-import { pointInPolygon, pointSegDist, type WorldPad } from '../../lib/pcb/geometry';
+import { pointInPolygon, pointSegDist, shapeDistance, type WorldPad } from '../../lib/pcb/geometry';
 import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
 import { designatorLabel, labelBox, labelComponent, labelId, labelStrokes, logoAreas, logoBox, pinLabels, silkTextBox, strokeFor, textItemStrokes, textStroke } from '../../lib/pcb/silk';
 import type { Box } from '../../lib/pcb/geometry';
 import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
 import { addText, addVia, beginTrackEdit, endTrackEdit, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, previewTrackEdit, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
-import { dragSegment, trackMovers } from '../../lib/pcb/shove';
+import { dragCorner, dragSegment, moveTrack, trackMovers } from '../../lib/pcb/shove';
 import { edgeField, routeConnection } from '../../lib/pcb/router';
 import { keepoutAreas } from '../../lib/pcb/outline';
 import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
@@ -57,6 +57,9 @@ export function PcbCanvas() {
     | { mode: 'box'; start: Vec }
     | { mode: 'shape'; start: Vec }
     | { mode: 'segment'; track: Track; seg: number; start: Vec; startPx: Vec; moved: boolean; offset: number }
+    /** Dragging a track's inner corner, or (Alt) the whole track. */
+    | { mode: 'corner'; track: Track; vertex: number; startPx: Vec; moved: boolean; to: Vec }
+    | { mode: 'track-move'; track: Track; start: Vec; startPx: Vec; moved: boolean; delta: Vec; fixed: [boolean, boolean] }
   >({ mode: 'none' });
   const spaceDown = useRef(false);
 
@@ -114,6 +117,15 @@ export function PcbCanvas() {
     return [(clientX - rect.left - v.x) / v.zoom, (clientY - rect.top - v.y) / v.zoom];
   };
   const snap = (p: Vec): Vec => [snapMm(p[0]), snapMm(p[1])];
+
+  /** Whether a track end sits on a pad, via or other track of its own net (and so stays put). */
+  const endHeld = (track: Track, p: Vec): boolean => {
+    const net = model.conn.itemNet.get(track.id) ?? track.net;
+    const dot = { kind: 'capsule' as const, a: p, b: p, r: 0 };
+    if (model.board.items.some((it) => it.type === 'pad' && it.layers.includes(track.layer) && it.net === net && shapeDistance(dot, it.shape) < 1e-6)) return true;
+    if (pcb.vias.some((v) => Math.hypot(v.x - p[0], v.y - p[1]) < 1e-3)) return true;
+    return pcb.tracks.some((t) => t.id !== track.id && t.layer === track.layer && t.points.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-3));
+  };
 
   const hitTest = (p: Vec): Hit => {
     const tol = 4 / view.zoom;
@@ -230,8 +242,22 @@ export function PcbCanvas() {
       }
       if (!selected.has(hit.id)) s.setPcbSelection([hit.id]);
       if (hit.kind === 'track') {
-        // Dragging a track moves the segment under the pointer sideways.
         const track = pcb.tracks.find((t) => t.id === hit.id)!;
+        const last = track.points.length - 1;
+        // Alt-dragging moves the whole track; its ends stay on the pads or vias they sit on.
+        if (e.altKey) {
+          const fixed: [boolean, boolean] = [endHeld(track, track.points[0]), endHeld(track, track.points[last])];
+          interaction.current = { mode: 'track-move', track, start: snap(w), startPx: [e.clientX, e.clientY], moved: false, delta: [0, 0], fixed };
+          return;
+        }
+        // On an inner corner: drag the corner.
+        const near = Math.max(track.width / 2, 5 / view.zoom);
+        const vertex = track.points.findIndex((p, i) => i > 0 && i < last && Math.hypot(p[0] - w[0], p[1] - w[1]) <= near);
+        if (vertex > 0) {
+          interaction.current = { mode: 'corner', track, vertex, startPx: [e.clientX, e.clientY], moved: false, to: track.points[vertex] };
+          return;
+        }
+        // Elsewhere: the segment under the pointer moves sideways.
         let seg = 0;
         for (let j = 1; j < track.points.length - 1; j++)
           if (pointSegDist(w, track.points[j], track.points[j + 1]) < pointSegDist(w, track.points[seg], track.points[seg + 1])) seg = j;
@@ -348,6 +374,25 @@ export function PcbCanvas() {
         if (r.ok) it.offset = offset;
         setEdit({ blocked: r.ok ? null : (r.reason ?? 'no room'), walk: null });
       });
+    } else if (it.mode === 'corner' || it.mode === 'track-move') {
+      if (!it.moved) {
+        if (Math.hypot(e.clientX - it.startPx[0], e.clientY - it.startPx[1]) < 4) return;
+        it.moved = true;
+        beginTrackEdit();
+      }
+      const to = snap(w);
+      const { track } = it;
+      throttled(() => {
+        const pts = it.mode === 'corner' ? dragCorner(track.points, it.vertex, to) : moveTrack(track.points, [to[0] - it.start[0], to[1] - it.start[1]], it.fixed);
+        const net = model.conn.itemNet.get(track.id) ?? track.net;
+        const r = previewTrackEdit(
+          trackMovers(track.layer, net, track.width, pts),
+          useEditor.getState().routeMode,
+          (p) => ({ ...p, tracks: p.tracks.map((t) => (t.id === track.id ? { ...t, points: pts } : t)) }),
+          new Set([track.id]),
+        );
+        setEdit({ blocked: r.ok ? null : (r.reason ?? 'no room'), walk: null });
+      });
     } else if (it.mode === 'box') setBox({ a: it.start, b: w });
     else if (it.mode === 'shape') setBox({ a: it.start, b: snap(w) });
     else if (s.routeDraft && s.routeMode !== 'ignore') throttled(() => setEdit(routePreview(w)));
@@ -359,7 +404,7 @@ export function PcbCanvas() {
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
     if (it.mode === 'drag') s.endTransient();
-    if (it.mode === 'segment') {
+    if (it.mode === 'segment' || it.mode === 'corner' || it.mode === 'track-move') {
       if (frame.current !== null) cancelAnimationFrame(frame.current);
       frame.current = null;
       if (it.moved) endTrackEdit();

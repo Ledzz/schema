@@ -17,6 +17,10 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Track corners, whole tracks and via pushing** (2026-10-26): corners drag with 45° bends,
+  Alt-drag moves a whole track with its ends kept on their pads, and Push moves other nets' vias
+  (with the tracks ending on them) as well as tracks. Moving copper is refused near other nets'
+  pads, and a router stub into a pad no longer stops a segment drag.
 - **Circuit blocks and automatic decoupling** (2026-10-26): ten sub-circuits from the
   schematic-design recipes (regulator, USB-C power, LED, I2C pull-ups, button, reset RC,
   crystal, 555 timer, SWD header, divider) inserted with parts and wiring in one undo step, and
@@ -87,8 +91,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## PCB: routing
 
-- Pushing vias out of the way, dragging corners and whole tracks (segments drag today), glossing
-  (tidying routed tracks).
+- Glossing (tidying routed tracks), pushing pads' parts, dragging vias with their tracks.
 - Differential pairs, length matching (serpentines), curved tracks, teardrops, BGA fanout.
 - A stronger auto-router (ours is a basic grid router).
 

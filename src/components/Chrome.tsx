@@ -338,7 +338,7 @@ function PcbStatusBar() {
   const unrouted = useMemo(() => [...boardModel(project).conn.unrouted.values()].reduce((a, b) => a + b, 0), [project]);
   const area = 'drag a rectangle, or click corners and click the first one (or Enter) to close · Esc cancels';
   const hint = {
-    select: 'Click to select · drag parts to move, or a track sideways · R rotate · X flip side',
+    select: 'Click to select · drag parts to move, a track sideways or by a corner · Alt-drag moves a whole track · R rotate · X flip side',
     route: 'Click a pad to start · click to add corners · V via · M routing mode · Esc finish',
     via: 'Click to place a via',
     hole: 'Click to drill a 3.2 mm mounting hole with a copper-free ring',

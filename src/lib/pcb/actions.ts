@@ -12,7 +12,8 @@ import { zip } from '../zip';
 import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardModel } from './board';
 import { pointShapeDistance, rotateDeg, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { POUR_EDGE_CLEARANCE } from './pour';
-import { applyShove, firstCollision, shove, trackMovers, type Mover, type ShoveResult } from './shove';
+import { applyShove, firstCollision, posture, shove, trackMovers, type Mover, type ShoveResult } from './shove';
+export { posture } from './shove';
 import { boardStep, type StepResult } from './step';
 import type { PartStep } from '../../shared/parts';
 import { runDrc, shellAreas } from './drc';
@@ -22,7 +23,7 @@ import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from
 import { edgeField, routeConnection, simplifyPath } from './router';
 import { DEFAULT_HOLE, DEFAULT_POUR, copperLayers, emptyPcb, isInner, sideOfLayer, type CopperLayer, type Side, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
 import { labelId, TEXT_SIZE } from './silk';
-import { drilledHoles, viaHoleConflict } from './jlcpcb';
+import { drilledHoles, viaHoleConflict, type DrillHole } from './jlcpcb';
 import { fitPcbView } from './view';
 
 const st = () => useEditor.getState();
@@ -512,17 +513,6 @@ export function trackWidthFor(net: string | null, pcb: Pcb = currentPcb()): numb
   return net && POWER_NET.test(net.replace(/^\+/, '+')) ? pcb.rules.powerTrackWidth : pcb.rules.trackWidth;
 }
 
-/** 45° routing posture from `from` to `to`: straight leg first, then the diagonal. */
-export function posture(from: Vec, to: Vec): Vec[] {
-  const dx = to[0] - from[0];
-  const dy = to[1] - from[1];
-  const ax = Math.abs(dx);
-  const ay = Math.abs(dy);
-  if (ax < 1e-9 || ay < 1e-9 || Math.abs(ax - ay) < 1e-9) return [to];
-  const corner: Vec = ax > ay ? [from[0] + Math.sign(dx) * (ax - ay), from[1]] : [from[0], from[1] + Math.sign(dy) * (ay - ax)];
-  return [corner, to];
-}
-
 /** While routing: finish the current segment at the cursor, drop a via and continue on the other layer. */
 export function viaInDraft(layer?: CopperLayer) {
   const s = st();
@@ -570,6 +560,7 @@ export function finishDraft() {
 interface TrackEdit {
   pcb: Pcb;
   items: CopperItem[];
+  holes: DrillHole[];
   netOf: (it: CopperItem) => string | null;
   trackNet: (t: Track) => string | null;
 }
@@ -581,7 +572,13 @@ let trackEdit: TrackEdit | null = null;
  */
 export function beginTrackEdit() {
   const { pcb, board, conn } = boardModel();
-  trackEdit = { pcb, items: board.items, netOf: (it) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net)), trackNet: (t) => conn.itemNet.get(t.id) ?? t.net };
+  trackEdit = {
+    pcb,
+    items: board.items,
+    holes: drilledHoles(pcb, board, conn),
+    netOf: (it) => (it.type === 'pad' ? it.net : (conn.itemNet.get(it.ref) ?? it.net)),
+    trackNet: (t) => conn.itemNet.get(t.id) ?? t.net,
+  };
   st().beginTransient();
 }
 
@@ -615,14 +612,14 @@ export const editingTracks = () => trackEdit !== null && st().transientBase !== 
  */
 export function previewTrackEdit(movers: Mover[], mode: RouteMode, change: (pcb: Pcb) => Pcb = (p) => p, skip?: ReadonlySet<string>): ShoveResult {
   const ctx = trackEdit;
-  if (!ctx || !st().transientBase) return { ok: false, moved: new Map(), reason: 'no edit in progress' };
-  let r: ShoveResult = { ok: true, moved: new Map() };
+  if (!ctx || !st().transientBase) return { ok: false, moved: new Map(), vias: new Map(), reason: 'no edit in progress' };
+  let r: ShoveResult = { ok: true, moved: new Map(), vias: new Map() };
   if (mode === 'push') r = shove(movers, { ...ctx, skip });
   else if (mode === 'walk') {
     const hit = firstCollision(movers, { ...ctx, skip });
-    if (hit) r = { ok: false, moved: r.moved, reason: hit };
+    if (hit) r = { ...r, ok: false, reason: hit };
   }
-  if (r.ok) st().updateTransient((base) => ({ ...base, pcb: change(applyShove(base.pcb ?? emptyPcb(), r.moved)) }));
+  if (r.ok) st().updateTransient((base) => ({ ...base, pcb: change(applyShove(base.pcb ?? emptyPcb(), r.moved, r.vias)) }));
   return r;
 }
 
