@@ -4,9 +4,9 @@ import { useEditor } from '../../store/editor';
 import { addPort, commitAttach, pinByKey, placeComponent, planAttach } from '../../lib/actions';
 import { finishWireDraft, fitView, wireDraftTo, zoomBy } from '../../lib/editing';
 import { normBox, samePoint, snapVec } from '../../lib/schematic/geometry';
-import { connectionNear, hitTest, itemsInBox } from '../../lib/schematic/hit';
+import { connectionNear, hitTest, itemsInBox, wireGrabAt } from '../../lib/schematic/hit';
 import { analyze } from '../../lib/schematic/netlist';
-import { moveItems } from '../../lib/schematic/ops';
+import { dragWire, moveItems, type WireGrab } from '../../lib/schematic/ops';
 import { portRotationFor } from '../../lib/schematic/route';
 import { resolverFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, PortKind, Vec } from '../../lib/schematic/types';
@@ -24,7 +24,9 @@ type Interaction =
   /** A wire started by pressing on a pin in the select tool; releasing elsewhere places its next point. */
   | { mode: 'wire'; start: Vec }
   /** Pressed on a no-connect marker on a pin: a click selects the marker, a drag draws a wire. */
-  | { mode: 'press-pin'; start: Vec; at: Vec; portId: string };
+  | { mode: 'press-pin'; start: Vec; at: Vec; portId: string }
+  /** Dragging a segment, corner or end of one wire. */
+  | { mode: 'wire-edit'; wireId: string; grab: WireGrab; start: Vec; from: Vec; delta: Vec };
 
 type NamedPort = Exclude<PortKind, 'noconnect'>;
 const isNamedPortTool = (tool: string): tool is NamedPort => tool === 'label' || tool === 'power' || tool === 'ground';
@@ -166,6 +168,16 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
             s.setSelection(selected.has(id) ? selection.filter((x) => x !== id) : [...selection, id]);
             return;
           }
+          // A wire on its own: drag the segment, corner or end under the pointer.
+          const wireHit = project.wires.some((x) => x.id === id) && (!selected.has(id) || selection.length === 1) ? wireGrabAt(project, w, tolerance()) : null;
+          if (wireHit?.wireId === id) {
+            s.setSelection([id]);
+            s.beginTransient();
+            const wire = project.wires.find((x) => x.id === id)!;
+            const from = 'vertex' in wireHit.grab ? wire.points[wireHit.grab.vertex] : snapVec(w);
+            interaction.current = { mode: 'wire-edit', wireId: id, grab: wireHit.grab, start: snapVec(w), from, delta: [0, 0] };
+            return;
+          }
           const ids = selected.has(id) ? new Set(selection) : new Set([id]);
           if (!selected.has(id)) s.setSelection([id]);
           s.beginTransient();
@@ -257,6 +269,20 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       setBox({ a: it.start, b: w });
       return;
     }
+    if (it.mode === 'wire-edit') {
+      const base = s.transientBase;
+      if (!base) return;
+      // A dragged end snaps to pins and other wiring (not to its own wire).
+      const others = { ...base, wires: base.wires.filter((x) => x.id !== it.wireId) };
+      const end = 'vertex' in it.grab && (it.grab.vertex === 0 || it.grab.vertex === base.wires.find((x) => x.id === it.wireId)!.points.length - 1);
+      const to = end ? (connectionNear(others, symbols, w, tolerance())?.at ?? snapVec(w)) : snapVec(w);
+      const delta: Vec = 'vertex' in it.grab ? [to[0] - it.from[0], to[1] - it.from[1]] : [to[0] - it.start[0], to[1] - it.start[1]];
+      if (delta[0] !== it.delta[0] || delta[1] !== it.delta[1]) {
+        it.delta = delta;
+        s.updateTransient((b) => dragWire(b, it.wireId, it.grab, delta, symbols));
+      }
+      return;
+    }
     if (it.mode === 'press-pin' && Math.hypot(e.clientX - it.start[0], e.clientY - it.start[1]) >= 5) {
       s.setSelection([]);
       s.startWire(it.at);
@@ -276,7 +302,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     const it = interaction.current;
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
-    if (it.mode === 'drag') s.endTransient();
+    if (it.mode === 'drag' || it.mode === 'wire-edit') s.endTransient();
     if (it.mode === 'wire' && Math.hypot(e.clientX - it.start[0], e.clientY - it.start[1]) >= 5) wireClick(toWorld(e.clientX, e.clientY), false);
     if (it.mode === 'press-pin') s.setSelection([it.portId]);
     if (it.mode === 'box') {
@@ -329,7 +355,9 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const gridStep = 10 * view.zoom;
   const showMinor = gridStep >= 7;
   const majorStep = (gridStep >= 7 ? 50 : 100) * view.zoom;
-  const cursor = tool === 'select' ? (interaction.current.mode === 'pan' ? 'grabbing' : near?.kind === 'pin' ? 'crosshair' : 'default') : 'crosshair';
+  const wireHover = useMemo(() => (tool === 'select' && inside && near?.kind !== 'pin' ? wireGrabAt(project, pointer, 6 / view.zoom) : null), [tool, inside, near, project, pointer, view.zoom]);
+  const wireCursor = wireHover ? ('vertex' in wireHover.grab ? 'move' : wireHover.horizontal ? 'ns-resize' : 'ew-resize') : 'default';
+  const cursor = tool === 'select' ? (interaction.current.mode === 'pan' ? 'grabbing' : near?.kind === 'pin' ? 'crosshair' : wireCursor) : 'crosshair';
   const empty = project.components.length === 0 && project.wires.length === 0 && project.ports.length === 0;
 
   return (

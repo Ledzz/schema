@@ -39,6 +39,19 @@ export function hitTest(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number):
   return null;
 }
 
+/** The part of a wire under a point: a vertex within `tol`, otherwise a segment. */
+export function wireGrabAt(doc: Doc, p: Vec, tol: number): { wireId: string; grab: { segment: number } | { vertex: number }; horizontal: boolean } | null {
+  for (let i = doc.wires.length - 1; i >= 0; i--) {
+    const w = doc.wires[i];
+    const v = w.points.findIndex((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) <= tol);
+    if (v >= 0) return { wireId: w.id, grab: { vertex: v }, horizontal: false };
+    for (let k = 1; k < w.points.length; k++) {
+      if (distToSegment(p, w.points[k - 1], w.points[k]) <= tol) return { wireId: w.id, grab: { segment: k - 1 }, horizontal: w.points[k - 1][1] === w.points[k][1] };
+    }
+  }
+  return null;
+}
+
 export function itemsInBox(doc: Doc, symbols: SymbolResolver, box: Box): string[] {
   const ids: string[] = [];
   for (const c of doc.components) if (boxIntersects(componentBox(c, symbols(c.symbolKey)), box)) ids.push(c.id);

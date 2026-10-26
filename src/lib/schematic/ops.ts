@@ -94,11 +94,106 @@ export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: nu
     (c) => ({ ...c, x: c.x + dx, y: c.y + dy }),
     (p) => ({ ...p, x: p.x + dx, y: p.y + dy }),
   );
+  // A moved wire whose end is on something staying put keeps that end, turning towards it.
+  const staying = { ...doc, components: doc.components.filter((c) => !ids.has(c.id)), wires: doc.wires.filter((w) => !ids.has(w.id)), ports: doc.ports.filter((p) => !ids.has(p.id)) };
   return {
     ...doc,
     components,
-    wires: wires.map((w) => (ids.has(w.id) ? { ...w, points: w.points.map(([x, y]) => [x + dx, y + dy] as Vec) } : w)),
+    wires: wires.map((w) => {
+      if (!ids.has(w.id)) return w;
+      const n = w.points.length;
+      const fixed: [boolean, boolean] = [attachedAt(staying, symbols, w.points[0], w.id), attachedAt(staying, symbols, w.points[n - 1], w.id)];
+      if (!fixed[0] && !fixed[1]) return { ...w, points: w.points.map(([x, y]) => [x + dx, y + dy] as Vec) };
+      const moved = new Set(w.points.map((_, i) => i).filter((i) => !(i === 0 && fixed[0]) && !(i === n - 1 && fixed[1])));
+      return { ...w, points: moveWirePoints(w.points, moved, [dx, dy], fixed) };
+    }),
     ports,
+  };
+}
+
+/** Whether a point is connected to something in `doc` other than `wireId`: a pin, a label or flag, or another wire. */
+export function attachedAt(doc: Pick<Doc, 'components' | 'wires' | 'ports'>, symbols: SymbolResolver, p: Vec, wireId?: string): boolean {
+  if (doc.ports.some((q) => samePoint([q.x, q.y], p))) return true;
+  if (doc.wires.some((w) => w.id !== wireId && w.points.some((q, i) => (i === 0 ? samePoint(p, q) : onSegment(p, w.points[i - 1], q))))) return true;
+  return doc.components.some((c) => worldPins(c, symbols(c.symbolKey)).some((pin) => samePoint(pin.at, p)));
+}
+
+/**
+ * Moves some vertices of an orthogonal wire by `delta` and keeps every segment horizontal or
+ * vertical: the far end of a segment with one moved vertex follows across the segment. An end
+ * marked `fixed` (connected to something) stays where it is and the wire turns towards it.
+ */
+export function moveWirePoints(points: Vec[], moved: ReadonlySet<number>, delta: Vec, fixed: [boolean, boolean] = [false, false]): Vec[] {
+  const n = points.length;
+  const last = n - 1;
+  const isFixed = (i: number) => (i === 0 && fixed[0]) || (i === last && fixed[1]);
+  const pts = points.map((p, i) => (moved.has(i) ? ([p[0] + delta[0], p[1] + delta[1]] as Vec) : ([...p] as Vec)));
+  for (let a = 0; a < last; a++) {
+    if (moved.has(a) === moved.has(a + 1)) continue;
+    const j = moved.has(a) ? a + 1 : a;
+    const horizontal = points[a][1] === points[a + 1][1] && points[a][0] !== points[a + 1][0];
+    const vertical = points[a][0] === points[a + 1][0] && points[a][1] !== points[a + 1][1];
+    if (horizontal) pts[j] = [pts[j][0], pts[j][1] + delta[1]];
+    else if (vertical) pts[j] = [pts[j][0] + delta[0], pts[j][1]];
+  }
+  // A fixed end that had to move becomes a corner, with the end itself left in place.
+  const head = isFixed(0) && !samePoint(pts[0], points[0]) ? [points[0]] : [];
+  const tail = isFixed(last) && !samePoint(pts[last], points[last]) ? [points[last]] : [];
+  return simplify([...head, ...pts, ...tail]);
+}
+
+/** Part of a wire being dragged: a segment (moves sideways) or a vertex (a corner or an end). */
+export type WireGrab = { segment: number } | { vertex: number };
+
+/**
+ * Drags part of a wire by `delta`. A segment moves across itself and its neighbours stretch; a
+ * corner moves freely; an end moves and leaves whatever it was on. Ends that stay on a pin,
+ * label or other wire keep their place with a jog, and labels and other wires' ends on the moved
+ * stretch follow it.
+ */
+export function dragWire(doc: Doc, wireId: string, grab: WireGrab, delta: Vec, symbols: SymbolResolver): Doc {
+  const wire = doc.wires.find((w) => w.id === wireId);
+  if (!wire || (delta[0] === 0 && delta[1] === 0)) return doc;
+  const pts = wire.points;
+  const last = pts.length - 1;
+  let moved: Set<number>;
+  let d = delta;
+  if ('segment' in grab) {
+    const [a, b] = [pts[grab.segment], pts[grab.segment + 1]];
+    d = a[1] === b[1] ? [0, delta[1]] : a[0] === b[0] ? [delta[0], 0] : delta;
+    moved = new Set([grab.segment, grab.segment + 1]);
+  } else moved = new Set([grab.vertex]);
+  if (d[0] === 0 && d[1] === 0) return doc;
+  // A dragged end leaves what it was on; any other end stays put when it is connected.
+  const endFixed = (i: number) => !('vertex' in grab && grab.vertex === i) && attachedAt(doc, symbols, pts[i], wireId);
+  const fixed: [boolean, boolean] = [endFixed(0), endFixed(last)];
+  const next = moveWirePoints(pts, moved, d, fixed);
+
+  const stays = (p: Vec) => (fixed[0] && samePoint(p, pts[0])) || (fixed[1] && samePoint(p, pts[last]));
+  const follow = (p: Vec): Vec | null => {
+    if (stays(p)) return null;
+    for (const i of moved) if (samePoint(p, pts[i])) return [p[0] + d[0], p[1] + d[1]];
+    for (let a = 0; a < last; a++) {
+      if ((!moved.has(a) && !moved.has(a + 1)) || !onSegment(p, pts[a], pts[a + 1])) continue;
+      return pts[a][1] === pts[a + 1][1] ? [p[0], p[1] + d[1]] : [p[0] + d[0], p[1]];
+    }
+    return null;
+  };
+  return {
+    ...doc,
+    wires: doc.wires.map((w) => {
+      if (w.id === wireId) return { ...w, points: next };
+      let out = w;
+      for (const end of [0, w.points.length - 1]) {
+        const to = follow(w.points[end]);
+        if (to) out = dragWireEnd(out, end === 0 ? 0 : out.points.length - 1, to);
+      }
+      return out;
+    }),
+    ports: doc.ports.map((p) => {
+      const to = follow([p.x, p.y]);
+      return to ? { ...p, x: to[0], y: to[1] } : p;
+    }),
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyze } from '../src/lib/schematic/netlist';
-import { deleteItems, moveItems, rotateItems } from '../src/lib/schematic/ops';
+import { deleteItems, dragWire, moveItems, moveWirePoints, rotateItems } from '../src/lib/schematic/ops';
 import { resolverFor } from '../src/lib/schematic/symbols';
 import { autoRoute, routePins, portRotationFor, simplify, wireVerticalFirst } from '../src/lib/schematic/route';
 import { worldPins, toWorld } from '../src/lib/schematic/geometry';
@@ -131,6 +131,54 @@ describe('editing operations', () => {
     const end = rotated.wires[0].points.at(-1)!;
     const pins = worldPins(rotated.components[1], resolve('res')).map((p) => p.at);
     expect(pins).toContainEqual(end);
+  });
+});
+
+describe('editing wires', () => {
+  it('keeps segments orthogonal when vertices move', () => {
+    // An L: drag its corner and both legs follow.
+    expect(moveWirePoints([[0, 0], [50, 0], [50, 40]], new Set([1]), [10, 5])).toEqual([[0, 5], [60, 5], [60, 40]]);
+    // The same with the start connected: it stays and the wire turns up to it.
+    expect(moveWirePoints([[0, 0], [50, 0], [50, 40]], new Set([1]), [10, 5], [true, false])).toEqual([[0, 0], [0, 5], [60, 5], [60, 40]]);
+    // A straight wire between two pins dragged sideways becomes a U.
+    expect(moveWirePoints([[0, 0], [60, 0]], new Set([0, 1]), [0, 20], [true, true])).toEqual([[0, 0], [0, 20], [60, 20], [60, 0]]);
+  });
+
+  // R1 pins at (-20, 0) and (20, 0); R2 at (180, 0) and (220, 0).
+  const base = project({
+    components: [comp('a', 'res', 'R1', 0, 0), comp('b', 'res', 'R2', 200, 0)],
+    wires: [
+      { id: 'w', points: [[20, 0], [100, 0], [100, 40], [180, 40], [180, 0]] },
+      { id: 't', points: [[140, 40], [140, 80]] },
+    ],
+    ports: [{ id: 'l', kind: 'label', name: 'SIG', x: 160, y: 40, rotation: 0 }],
+  });
+
+  it('drags a segment sideways with what sits on it', () => {
+    const after = dragWire(base, 'w', { segment: 2 }, [7, 20], resolve);
+    expect(after.wires[0].points).toEqual([[20, 0], [100, 0], [100, 60], [180, 60], [180, 0]]);
+    // The T-junction wire and the label on that segment come along.
+    expect(after.wires[1].points[0]).toEqual([140, 60]);
+    expect(after.ports[0]).toMatchObject({ x: 160, y: 60 });
+    expect(analyze({ ...after, ports: [] }, resolve).nets.some((n) => n.members.length === 2)).toBe(true);
+  });
+
+  it('keeps an end on its pin when the first segment moves', () => {
+    const after = dragWire(base, 'w', { segment: 0 }, [0, -30], resolve);
+    expect(after.wires[0].points).toEqual([[20, 0], [20, -30], [100, -30], [100, 40], [180, 40], [180, 0]]);
+  });
+
+  it('moves a dragged end off its pin', () => {
+    const after = dragWire(base, 'w', { vertex: 0 }, [-40, 0], resolve);
+    expect(after.wires[0].points[0]).toEqual([-20, 0]);
+  });
+
+  it('keeps a moved wire on the pins of parts left behind', () => {
+    const moved = moveItems(base, new Set(['w']), 0, 20, resolve);
+    const pts = moved.wires[0].points;
+    expect(pts[0]).toEqual([20, 0]);
+    expect(pts[pts.length - 1]).toEqual([180, 0]);
+    for (let i = 1; i < pts.length; i++) expect(pts[i][0] === pts[i - 1][0] || pts[i][1] === pts[i - 1][1]).toBe(true);
   });
 });
 
