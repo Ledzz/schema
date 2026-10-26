@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { MousePointerClick, Search } from 'lucide-react';
 import { useEditor } from '../../store/editor';
-import { addPort, commitAttach, pinByKey, placeComponent, planAttach } from '../../lib/actions';
-import { finishWireDraft, fitView, wireDraftTo, zoomBy } from '../../lib/editing';
+import { addPort, commitAttach, endByKey, placeComponent, planAttach } from '../../lib/actions';
+import { finishWireDraft, fitView, openSheet, wireDraftTo, zoomBy } from '../../lib/editing';
 import { normBox, samePoint, snapVec } from '../../lib/schematic/geometry';
 import { connectionNear, hitTest, itemsInBox, wireGrabAt } from '../../lib/schematic/hit';
 import { analyze } from '../../lib/schematic/netlist';
 import { dragWire, moveItems, type WireGrab } from '../../lib/schematic/ops';
+import { onSheet, sheetsOf, sheetView } from '../../lib/schematic/sheets';
 import { portRotationFor } from '../../lib/schematic/route';
 import { resolverFor } from '../../lib/schematic/symbols';
 import type { Component, NetPort, PortKind, Vec } from '../../lib/schematic/types';
-import { ComponentGraphic, PortGraphic } from './graphics';
+import { BlockGraphic, ComponentGraphic, PortGraphic } from './graphics';
+import { SheetTabs } from './SheetTabs';
 import { cx, inputClass, Kbd } from '../ui';
 import { QuickEdit } from '../passives/QuickEdit';
 import { ContextMenu, schematicMenu, type ContextMenuState } from './ContextMenu';
@@ -30,7 +32,7 @@ type Interaction =
   | { mode: 'wire-edit'; wireId: string; grab: WireGrab; start: Vec; from: Vec; delta: Vec };
 
 type NamedPort = Exclude<PortKind, 'noconnect'>;
-const isNamedPortTool = (tool: string): tool is NamedPort => tool === 'label' || tool === 'power' || tool === 'ground';
+const isNamedPortTool = (tool: string): tool is NamedPort => tool === 'label' || tool === 'power' || tool === 'ground' || tool === 'hier';
 
 function nextLabelName(name: string): string {
   const m = /^(.*?)(\d+)$/.exec(name);
@@ -38,7 +40,10 @@ function nextLabelName(name: string): string {
 }
 
 export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | null> }) {
-  const project = useEditor((s) => s.project);
+  const whole = useEditor((s) => s.project);
+  const currentSheet = useEditor((s) => s.currentSheet);
+  // Everything drawn and edited here is on one sheet; nets come from the whole project.
+  const project = useMemo(() => sheetView(whole, currentSheet), [whole, currentSheet]);
   const view = useEditor((s) => s.view);
   const selection = useEditor((s) => s.selection);
   const tool = useEditor((s) => s.tool);
@@ -61,11 +66,12 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
 
-  const symbols = useMemo(() => resolverFor(project), [project.symbols]); // eslint-disable-line react-hooks/exhaustive-deps
+  const symbols = useMemo(() => resolverFor(whole), [whole.symbols]); // eslint-disable-line react-hooks/exhaustive-deps
   const conn = useMemo(
-    () => analyze(project, symbols),
-    [project.components, project.wires, project.ports, symbols], // eslint-disable-line react-hooks/exhaustive-deps
+    () => analyze(whole, symbols),
+    [whole.components, whole.wires, whole.ports, whole.sheets, whole.blocks, symbols], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const sheetName = useMemo(() => new Map(sheetsOf(whole).map((sh) => [sh.id, sh.name])), [whole.sheets]); // eslint-disable-line react-hooks/exhaustive-deps
   const selected = useMemo(() => new Set(selection), [selection]);
   const highlightPins = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -156,11 +162,11 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         // Pressing on a pin end (not on a label or flag sitting there) starts a wire.
         const port = project.ports.find((p) => p.id === id);
         const near = !mod && (!port || port.kind === 'noconnect') ? connectionNear(project, symbols, w, tolerance()) : null;
-        if (near?.kind === 'pin' && port) {
+        if ((near?.kind === 'pin' || near?.kind === 'block') && port) {
           interaction.current = { mode: 'press-pin', start: [e.clientX, e.clientY], at: near.at, portId: port.id };
           return;
         }
-        if (near?.kind === 'pin') {
+        if (near?.kind === 'pin' || near?.kind === 'block') {
           s.setSelection([]);
           s.startWire(near.at);
           interaction.current = { mode: 'wire', start: [e.clientX, e.clientY] };
@@ -204,6 +210,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       case 'label':
       case 'power':
       case 'ground':
+      case 'hier':
       case 'noconnect': {
         const t = s.portTemplate;
         const kind = s.tool;
@@ -217,9 +224,9 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
           return;
         }
         const hit = connectionNear(project, symbols, w, tolerance());
-        const pin = hit?.kind === 'pin' && hit.ref ? pinByKey(hit.ref, project) : null;
+        const pin = (hit?.kind === 'pin' || hit?.kind === 'block') && hit.ref ? endByKey(hit.ref, project) : null;
         if (pin) {
-          // On a pin: a short stub leading away from the part, the label or flag at its end.
+          // On a pin: a short stub leading away from the part or block, the label or flag at its end.
           const plan = planAttach(project, pin, kind, name);
           if (plan) commitAttach(plan);
           else addPort(kind, name, pin.at, portRotationFor(kind, [-pin.dir[0], -pin.dir[1]]));
@@ -264,7 +271,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       const delta: Vec = [p[0] - it.start[0], p[1] - it.start[1]];
       if (delta[0] !== it.delta[0] || delta[1] !== it.delta[1]) {
         it.delta = delta;
-        s.updateTransient((base) => moveItems(base, it.ids, delta[0], delta[1], symbols));
+        s.updateTransient((base) => onSheet(base, s.currentSheet, (v) => moveItems(v, it.ids, delta[0], delta[1], symbols)));
       }
       return;
     }
@@ -276,13 +283,14 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       const base = s.transientBase;
       if (!base) return;
       // A dragged end snaps to pins and other wiring (not to its own wire).
-      const others = { ...base, wires: base.wires.filter((x) => x.id !== it.wireId) };
+      const here = sheetView(base, s.currentSheet);
+      const others = { ...here, wires: here.wires.filter((x) => x.id !== it.wireId) };
       const end = 'vertex' in it.grab && (it.grab.vertex === 0 || it.grab.vertex === base.wires.find((x) => x.id === it.wireId)!.points.length - 1);
       const to = end ? (connectionNear(others, symbols, w, tolerance())?.at ?? snapVec(w)) : snapVec(w);
       const delta: Vec = 'vertex' in it.grab ? [to[0] - it.from[0], to[1] - it.from[1]] : [to[0] - it.start[0], to[1] - it.start[1]];
       if (delta[0] !== it.delta[0] || delta[1] !== it.delta[1]) {
         it.delta = delta;
-        s.updateTransient((b) => dragWire(b, it.wireId, it.grab, delta, symbols));
+        s.updateTransient((b) => onSheet(b, s.currentSheet, (v) => dragWire(v, it.wireId, it.grab, delta, symbols)));
       }
       return;
     }
@@ -297,6 +305,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       setHover({ text: `${hit.label}${net ? ` · ${net}` : ' · unconnected'}`, at: hit.at });
     } else if (hit?.kind === 'port' && hit.label) {
       setHover({ text: `Net ${hit.label}`, at: hit.at });
+    } else if (hit?.kind === 'block' && hit.label) {
+      setHover({ text: hit.label, at: hit.at });
     } else setHover(null);
   };
 
@@ -335,6 +345,9 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     if (s.tool !== 'select') return;
     const id = hitTest(project, symbols, toWorld(e.clientX, e.clientY), tolerance());
     if (id && project.components.find((c) => c.id === id)?.generic) s.setQuickEdit(id);
+    // On a block: open its sheet.
+    const block = project.blocks?.find((b) => b.id === id);
+    if (block) return openSheet(block.child);
     // On a wire or label: highlight its net, or stop highlighting it.
     const net = id ? conn.itemNet.get(id) : undefined;
     if (net) s.setHighlightNet(s.highlightNet === net ? null : net);
@@ -348,10 +361,10 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       ? { ...placing.template, id: 'ghost', x: snapped[0], y: snapped[1], rotation: placementRotation, mirror: placementMirror, designator: `${placing.prefix}?` }
       : null;
   // Over a pin, show where the stub and the label or flag will go.
-  const nearPin = near?.kind === 'pin' ? near.ref : undefined;
+  const nearPin = near?.kind === 'pin' || near?.kind === 'block' ? near.ref : undefined;
   const attachPreview = useMemo(() => {
     if (!isNamedPortTool(tool) || !nearPin || !portTemplate.name.trim()) return null;
-    const pin = pinByKey(nearPin, project);
+    const pin = endByKey(nearPin, project);
     return pin ? planAttach(project, pin, tool, portTemplate.name.trim()) : null;
   }, [tool, nearPin, portTemplate.name, project]);
   const ghostPort: NetPort | null =
@@ -422,14 +435,19 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
           {project.components.map((c) => (
             <ComponentGraphic key={c.id} component={c} symbol={symbols(c.symbolKey)} selected={selected.has(c.id)} highlightPins={highlightPins.get(c.id)} />
           ))}
+          {(project.blocks ?? []).map((b) => (
+            <BlockGraphic key={b.id} block={b} name={sheetName.get(b.child) ?? 'Sheet'} selected={selected.has(b.id)} />
+          ))}
           {project.ports.map((p) => (
             <PortGraphic key={p.id} port={p} selected={selected.has(p.id)} highlight={!!highlightNet && conn.itemNet.get(p.id) === highlightNet} />
           ))}
-          {conn.junctions.map((j) => (
-            <circle key={j.join(',')} cx={j[0]} cy={j[1]} r={1.8} fill="var(--junction)" />
-          ))}
+          {conn.junctions
+            .filter((j) => j.sheet === currentSheet)
+            .map(({ at: j }) => (
+              <circle key={j.join(',')} cx={j[0]} cy={j[1]} r={1.8} fill="var(--junction)" />
+            ))}
           <g data-ephemeral="">
-            {conn.unconnected.map((u) => (
+            {conn.unconnected.filter((u) => project.components.some((c) => c.id === u.componentId)).map((u) => (
               <circle key={`${u.componentId}:${u.pinId}`} cx={u.at[0]} cy={u.at[1]} r={1.3} fill="none" stroke="var(--unconnected)" strokeWidth={0.5} opacity={0.8} />
             ))}
             {draftPreview && (
@@ -510,6 +528,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
       <QuickEdit />
+      <SheetTabs />
       {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
       {isNamedPortTool(tool) && <PortNameBar kind={tool} />}
       {tool === 'place' && placing?.template.generic && (
@@ -541,8 +560,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   );
 }
 
-const PORT_TITLES: Record<NamedPort, string> = { label: 'Net label', power: 'Power flag', ground: 'Ground flag' };
-const COMMON_NAMES: Record<NamedPort, string[]> = { label: [], power: ['+3V3', '+5V', '+12V', 'VBUS', 'VCC'], ground: ['GND', 'AGND', 'PGND'] };
+const PORT_TITLES: Record<NamedPort, string> = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', hier: 'Hierarchical port' };
+const COMMON_NAMES: Record<NamedPort, string[]> = { label: [], power: ['+3V3', '+5V', '+12V', 'VBUS', 'VCC'], ground: ['GND', 'AGND', 'PGND'], hier: [] };
 
 /** Name of the label or flag being placed, with the project's names of that kind as suggestions. */
 function PortNameBar({ kind }: { kind: NamedPort }) {

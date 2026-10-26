@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   Blocks,
   Bot,
+  Split,
   Cable,
   CircleOff,
   FlipHorizontal2,
@@ -20,7 +21,7 @@ import {
 } from 'lucide-react';
 import { ROUTE_MODE_NAMES, useEditor, type Tool } from '../store/editor';
 import { useWebMcp } from '../store/webmcp';
-import { connectivity, downloadText, refreshStock, safeFileName } from '../lib/actions';
+import { addSheet, connectivity, downloadText, placeBlock, refreshStock, safeFileName } from '../lib/actions';
 import {
   alignSelection,
   deleteSelection,
@@ -62,6 +63,24 @@ function GroundIcon() {
       <path d="M12 4v9M5 13h14M8 16.5h8M10.5 20h3" />
     </svg>
   );
+}
+
+/** Runs a menu action, reporting a refusal instead of dropping it. */
+function runAction(fn: () => unknown) {
+  try {
+    fn();
+  } catch (err) {
+    useEditor.getState().notify((err as Error).message, 'error');
+  }
+}
+
+/** A block for a new sheet in the middle of the view, selected. */
+function placeBlockHere() {
+  const s = useEditor.getState();
+  const at: [number, number] = [(s.canvasSize.width / 2 - s.view.x) / s.view.zoom - 50, (s.canvasSize.height / 2 - s.view.y) / s.view.zoom - 20];
+  const block = placeBlock(at);
+  s.setSelection([block.id]);
+  s.notify('Block placed: double-click it to open its sheet and add hierarchical ports (H), which become its pins');
 }
 
 export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | null> }) {
@@ -140,6 +159,9 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Power flag', shortcut: 'P', onSelect: () => s().startPort('power') },
             { label: 'Ground flag', shortcut: 'G', onSelect: () => s().startPort('ground') },
             { label: 'No-connect flag', shortcut: 'Q', onSelect: () => s().startPort('noconnect') },
+            { label: 'Sheet', separatorBefore: true, onSelect: () => runAction(() => addSheet()) },
+            { label: 'Hierarchical block (new sheet)', onSelect: () => runAction(() => placeBlockHere()) },
+            { label: 'Hierarchical port', shortcut: 'H', onSelect: () => s().startPort('hier') },
           ]}
         />
         <MenuButton
@@ -238,6 +260,7 @@ const TOOLS: { tool: Tool; label: string; key: string; icon: React.ReactNode }[]
   { tool: 'power', label: 'Power flag', key: 'P', icon: <PowerIcon /> },
   { tool: 'ground', label: 'Ground flag', key: 'G', icon: <GroundIcon /> },
   { tool: 'noconnect', label: 'No-connect flag', key: 'Q', icon: <CircleOff className="h-4 w-4" /> },
+  { tool: 'hier', label: 'Hierarchical port (a pin of this sheet’s block)', key: 'H', icon: <Split className="h-4 w-4" /> },
 ];
 
 const svgIcon = (d: string) => (
@@ -325,6 +348,7 @@ const TOOL_HINT: Record<Tool, string> = {
   power: 'Click a pin or wire to place a power flag · Tab renames · R rotates',
   ground: 'Click a pin or wire to place a ground flag · Tab renames · R rotates',
   noconnect: 'Click a pin to mark it as not connected',
+  hier: 'Click a pin or wire to drop the hierarchical port (a pin of this sheet’s blocks) · Tab renames · R rotates',
   place: 'Click to place · R rotate · X mirror · Esc to stop',
 };
 

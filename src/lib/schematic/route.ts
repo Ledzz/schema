@@ -237,6 +237,7 @@ const PORT_OUT: Record<PortKind, Vec> = {
   power: [0, -1],
   ground: [0, 1],
   noconnect: [1, 0],
+  hier: [1, 0],
 };
 
 /** Rotation that points a port graphic along `out`. */

@@ -68,7 +68,7 @@ describe('connectivity', () => {
     const c = analyze(p, resolve);
     const net = c.nets.find((n) => n.members.some((m) => m.designator === 'R2'));
     expect(net?.members.map((m) => `${m.designator}.${m.pinNumber}`)).toEqual(['R1.2', 'R2.2']);
-    expect(c.junctions).toEqual([[60, 0]]);
+    expect(c.junctions).toEqual([{ at: [60, 0], sheet: 's1' }]);
 
     const midWire = project({
       components: [comp('a', 'res', 'R1', 0, 0)],

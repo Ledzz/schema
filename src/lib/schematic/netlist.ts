@@ -1,4 +1,5 @@
 import { onSegment, pointKey, samePoint, worldPins } from './geometry';
+import { blockPins, sheetOf, sheetsOf } from './sheets';
 import type { SymbolResolver } from './symbols';
 import type { Component, NetPort, Project, Vec, Wire } from './types';
 
@@ -44,11 +45,11 @@ export interface ErcIssue {
 
 export interface Connectivity {
   nets: Net[];
-  /** `${componentId}:${pinId}` -> net name */
+  /** `${componentId}:${pinId}` (or `${blockId}:${port}` for a block's pin) -> net name */
   pinNet: Map<string, string>;
   /** wire / port id -> net name */
   itemNet: Map<string, string>;
-  junctions: Vec[];
+  junctions: { at: Vec; sheet: string }[];
   unconnected: PinRef[];
   issues: ErcIssue[];
 }
@@ -77,11 +78,14 @@ function naturalCompare(a: string, b: string) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
 
-export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>, symbols: SymbolResolver): Connectivity {
+export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports' | 'sheets' | 'blocks'>, symbols: SymbolResolver): Connectivity {
   const uf = new UnionFind();
+  // Geometry only connects things on the same sheet.
+  const at = (sheet: string, p: Vec) => `${sheet}|${pointKey(p)}`;
+  const sheetName = new Map(sheetsOf(project).map((sh) => [sh.id, sh.name]));
   const atPoint = new Map<string, string[]>();
-  const add = (p: Vec, node: string) => {
-    const k = pointKey(p);
+  const add = (sheet: string, p: Vec, node: string) => {
+    const k = at(sheet, p);
     const list = atPoint.get(k);
     if (list) list.push(node);
     else atPoint.set(k, [node]);
@@ -100,15 +104,27 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
         pinName: wp.pin.name,
         at: wp.at,
       });
-      add(wp.at, node);
+      add(sheetOf(c, project), wp.at, node);
     }
   }
 
   const noConnect = new Set<string>();
   const namedPorts = project.ports.filter((p) => NAMED_PORTS.has(p.kind));
+  const hierPorts = project.ports.filter((p) => p.kind === 'hier');
   for (const p of project.ports) {
-    if (p.kind === 'noconnect') noConnect.add(pointKey([p.x, p.y]));
-    else add([p.x, p.y], `n:${p.id}`);
+    if (p.kind === 'noconnect') noConnect.add(at(sheetOf(p, project), [p.x, p.y]));
+    else add(sheetOf(p, project), [p.x, p.y], `n:${p.id}`);
+  }
+
+  // Block pins, joined to the hierarchical ports of the same name on the block's sheet.
+  const blockNodes: string[] = [];
+  for (const b of project.blocks ?? []) {
+    for (const pin of blockPins(b)) {
+      const node = `b:${b.id}:${pin.name}`;
+      blockNodes.push(node);
+      add(sheetOf(b, project), pin.at, node);
+      uf.union(node, `hier:${b.child}:${pin.name}`);
+    }
   }
 
   const wireEnds: { wire: Wire; at: Vec }[] = [];
@@ -117,41 +133,45 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     const ends = [w.points[0], w.points[w.points.length - 1]];
     for (const e of ends) {
       wireEnds.push({ wire: w, at: e });
-      add(e, `w:${w.id}`);
+      add(sheetOf(w, project), e, `w:${w.id}`);
     }
   }
 
   // Coincident connection points.
   for (const nodes of atPoint.values()) for (let i = 1; i < nodes.length; i++) uf.union(nodes[0], nodes[i]);
 
-  // T-junctions: wire ends and port anchors anywhere on a wire.
+  // T-junctions: wire ends and port anchors anywhere on a wire of the same sheet.
   const passThrough = new Map<string, number>();
+  const anchored = project.ports.filter((p) => p.kind !== 'noconnect');
   for (const w of project.wires) {
+    const sheet = sheetOf(w, project);
     for (const [a, b] of segments(w)) {
       for (const e of wireEnds) {
-        if (e.wire === w || !onSegment(e.at, a, b)) continue;
+        if (e.wire === w || sheetOf(e.wire, project) !== sheet || !onSegment(e.at, a, b)) continue;
         uf.union(`w:${w.id}`, `w:${e.wire.id}`);
         if (!samePoint(e.at, a) && !samePoint(e.at, b)) {
-          const k = pointKey(e.at);
+          const k = at(sheet, e.at);
           passThrough.set(k, (passThrough.get(k) ?? 0) + 2);
         }
       }
-      for (const p of namedPorts) if (onSegment([p.x, p.y], a, b)) uf.union(`w:${w.id}`, `n:${p.id}`);
+      for (const p of anchored) if (sheetOf(p, project) === sheet && onSegment([p.x, p.y], a, b)) uf.union(`w:${w.id}`, `n:${p.id}`);
     }
   }
 
-  // Same-named labels and power flags.
+  // Same-named labels and power flags, on any sheet; hierarchical ports only reach their blocks.
   for (const p of namedPorts) if (p.name.trim()) uf.union(`n:${p.id}`, `name:${p.name.trim()}`);
+  for (const p of hierPorts) if (p.name.trim()) uf.union(`n:${p.id}`, `hier:${sheetOf(p, project)}:${p.name.trim()}`);
 
   // Junction dots where three or more wire ends / pins meet.
-  const junctions: Vec[] = [];
+  const junctions: { at: Vec; sheet: string }[] = [];
   const seen = new Set<string>();
   for (const e of wireEnds) {
-    const k = pointKey(e.at);
+    const sheet = sheetOf(e.wire, project);
+    const k = at(sheet, e.at);
     if (seen.has(k)) continue;
     seen.add(k);
     const items = (atPoint.get(k) ?? []).filter((n) => !n.startsWith('n:')).length + (passThrough.get(k) ?? 0);
-    if (items >= 3) junctions.push(e.at);
+    if (items >= 3) junctions.push({ at: e.at, sheet });
   }
 
   // Group pins into nets.
@@ -160,6 +180,7 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     ...pins.map((p) => p.node),
     ...project.wires.map((w) => `w:${w.id}`),
     ...project.ports.filter((p) => p.kind !== 'noconnect').map((p) => `n:${p.id}`),
+    ...blockNodes,
   ];
   for (const n of allNodes) {
     const r = uf.find(n);
@@ -174,6 +195,16 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     if (!namesByRoot.has(r)) namesByRoot.set(r, new Set());
     namesByRoot.get(r)!.add(name);
     priority.set(name, Math.min(priority.get(name) ?? 9, p.kind === 'label' ? 1 : 0));
+  }
+  // A net named only by hierarchical ports takes "sheet/port": the same port name on two sheets
+  // belongs to two different nets.
+  for (const p of hierPorts) {
+    if (!p.name.trim()) continue;
+    const name = `${sheetName.get(sheetOf(p, project)) ?? 'Sheet'}/${p.name.trim()}`;
+    const r = uf.find(`n:${p.id}`);
+    if (!namesByRoot.has(r)) namesByRoot.set(r, new Set());
+    namesByRoot.get(r)!.add(name);
+    priority.set(name, 2);
   }
 
   const byRoot = new Map<string, NetMember[]>();
@@ -201,8 +232,9 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     const name = names[0] ?? `Net-(${members[0].designator}-Pad${members[0].pinNumber})`;
     // Two power flags on one net (e.g. +3V3 and GND) is a short, not just an alias.
     const flagNames = names.filter((n) => priority.get(n) === 0);
+    const given = names.filter((n) => (priority.get(n) ?? 9) < 2);
     if (flagNames.length > 1) issues.push({ severity: 'error', message: `Power nets shorted together: ${flagNames.join(', ')}` });
-    else if (names.length > 1) issues.push({ severity: 'warning', message: `Net has several names: ${names.join(', ')}` });
+    else if (given.length > 1) issues.push({ severity: 'warning', message: `Net has several names: ${given.join(', ')}` });
     if (members.length === 1 && names.length === 0) {
       issues.push({ severity: 'warning', message: `${members[0].designator} pin ${members[0].pinNumber} is wired to nothing else`, itemId: members[0].componentId });
     }
@@ -219,9 +251,19 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports'>
     const n = nameOf(`w:${w.id}`);
     if (n) itemNet.set(w.id, n);
   }
-  for (const p of namedPorts) {
+  for (const p of [...namedPorts, ...hierPorts]) {
     const n = nameOf(`n:${p.id}`);
     if (n) itemNet.set(p.id, n);
+  }
+  for (const node of blockNodes) {
+    const n = nameOf(node);
+    if (n) pinNet.set(node.slice(2), n);
+  }
+  // A hierarchical port no block uses leads nowhere.
+  const used = new Set((project.blocks ?? []).map((b) => b.child));
+  for (const p of hierPorts) {
+    const sheet = sheetOf(p, project);
+    if (!used.has(sheet)) issues.push({ severity: 'warning', message: `Hierarchical port ${p.name} on ${sheetName.get(sheet) ?? 'a sheet'} has no block using that sheet`, at: [p.x, p.y], itemId: p.id });
   }
   nets.sort((a, b) => Number(a.auto) - Number(b.auto) || naturalCompare(a.name, b.name));
 

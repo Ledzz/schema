@@ -10,12 +10,15 @@
 import { useEditor } from '../store/editor';
 import { fetchPartDetail, fetchSearch } from './api';
 import {
+  addSheet,
   attachPort,
   connectPins,
+  placeBlock,
   renameNet,
   connectivity,
   designatorPrefix,
   disconnectPin,
+  findEnd,
   findPin,
   markNoConnect,
   nextFreePosition,
@@ -28,6 +31,7 @@ import { worldPins } from './schematic/geometry';
 import { parseSymbol } from './easyeda/symbol';
 import { deleteItems, updateComponentItem } from './schematic/ops';
 import { resolverFor, symbolFor } from './schematic/symbols';
+import { blockPins, hierNames, sheetOf, sheetView, sheetsOf } from './schematic/sheets';
 import type { Component, Rotation } from './schematic/types';
 import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
@@ -65,6 +69,11 @@ const pinRefSchema = (description: string) => ({
   type: 'string',
   description: `${description} Format "<designator>.<pin number or name>", e.g. "R1.2", "U1.VIN", "U2.PA9".`,
 });
+/** A part's pin, or a block's pin named by its sheet. */
+const endRefSchema = (description: string) => ({
+  type: 'string',
+  description: `${description} A part's pin as "<designator>.<pin number or name>" ("R1.2", "U1.VIN"), or a hierarchical block's pin as "<sheet name>.<port>" ("Power.VIN").`,
+});
 
 function componentInfo(c: Component, withPins = true) {
   const project = st().project;
@@ -89,8 +98,18 @@ function componentInfo(c: Component, withPins = true) {
     x: c.x,
     y: c.y,
     rotation: c.rotation,
+    // Only worth saying once there is more than one sheet.
+    sheet: project.sheets && project.sheets.length > 1 ? sheetsOf(project).find((s) => s.id === sheetOf(c, project))?.name : undefined,
     pins,
   };
+}
+
+/** A sheet by name or id. */
+function sheetByName(ref: string) {
+  const sheets = sheetsOf(st().project);
+  const sheet = sheets.find((s) => s.name === ref || s.id === ref) ?? sheets.find((s) => s.name.toLowerCase() === ref.trim().toLowerCase());
+  if (!sheet) throw new Error(`No sheet "${ref}". Sheets: ${sheets.map((s) => s.name).join(', ')}`);
+  return sheet;
 }
 
 const byDesignator = (d: string) => {
@@ -406,7 +425,7 @@ export const TOOLS: ToolDefinition[] = [
     description: 'Draw an orthogonal wire between two pins. For power rails and long distances prefer add_net_label / add_power_flag on each pin instead of long wires.',
     inputSchema: {
       type: 'object',
-      properties: { from: pinRefSchema('First pin.'), to: pinRefSchema('Second pin.') },
+      properties: { from: endRefSchema('First pin.'), to: endRefSchema('Second pin.') },
       required: ['from', 'to'],
     },
     execute: async (input) => connectPins(String(input.from), String(input.to)),
@@ -414,15 +433,20 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'add_net_label',
     title: 'Add net label',
-    description: 'Attach a net label to a pin (short wire stub + label). Pins with the same label name are connected.',
+    description:
+      'Attach a net label to a pin (short wire stub + label). Pins with the same label name are connected, on any sheet. With scope "hierarchical" it is a hierarchical port instead: it connects only to the pin of that name on the block standing for this sheet (see place_block).',
     inputSchema: {
       type: 'object',
-      properties: { pin: pinRefSchema('Pin to label.'), name: { type: 'string', description: 'Net name, e.g. "SDA", "EN".' } },
+      properties: {
+        pin: endRefSchema('Pin to label.'),
+        name: { type: 'string', description: 'Net name, e.g. "SDA", "EN".' },
+        scope: { type: 'string', enum: ['global', 'hierarchical'], description: 'global (default): joins every label of that name; hierarchical: a port of this sheet’s block.' },
+      },
       required: ['pin', 'name'],
     },
     execute: async (input) => {
-      const port = attachPort(String(input.pin), 'label', String(input.name));
-      return { net: port.name, x: port.x, y: port.y };
+      const port = attachPort(String(input.pin), input.scope === 'hierarchical' ? 'hier' : 'label', String(input.name));
+      return { net: port.name, x: port.x, y: port.y, scope: port.kind === 'hier' ? 'hierarchical' : 'global' };
     },
   },
   {
@@ -432,7 +456,7 @@ export const TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        pin: pinRefSchema('Pin to connect.'),
+        pin: endRefSchema('Pin to connect.'),
         net: { type: 'string', description: 'Net name, e.g. "GND", "+3V3".' },
         style: { type: 'string', enum: ['power', 'ground'], description: 'Symbol style; defaults to ground for names containing GND.' },
       },
@@ -453,6 +477,73 @@ export const TOOLS: ToolDefinition[] = [
     execute: async (input) => {
       markNoConnect(String(input.pin));
       return { ok: true };
+    },
+  },
+  {
+    name: 'list_sheets',
+    title: 'List sheets',
+    description:
+      'The schematic’s sheets in order, which one new parts and labels go on (current), what is on each, its hierarchical ports and the block that stands for it (if any). Nets join across sheets through labels and power flags of the same name, and through blocks.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const project = st().project;
+      const sheets = sheetsOf(project);
+      const nameOf = (id: string) => sheets.find((s) => s.id === id)?.name ?? id;
+      return {
+        current: nameOf(st().currentSheet),
+        sheets: sheets.map((sheet) => {
+          const v = sheetView(project, sheet.id);
+          const block = (project.blocks ?? []).find((b) => b.child === sheet.id);
+          return {
+            name: sheet.name,
+            parts: v.components.map((c) => c.designator),
+            labels: [...new Set(v.ports.filter((p) => p.kind === 'label').map((p) => p.name))],
+            hierarchical_ports: hierNames(project, sheet.id),
+            blocks: (v.blocks ?? []).map((b) => ({ sheet: nameOf(b.child), x: b.x, y: b.y, pins: blockPins(b).map((p) => ({ name: p.name, x: p.at[0], y: p.at[1] })) })),
+            used_by_block_on: block ? nameOf(sheetOf(block, project)) : undefined,
+          };
+        }),
+      };
+    },
+  },
+  {
+    name: 'add_sheet',
+    title: 'Add sheet',
+    description: 'Add a sheet (page) to the schematic and make it current: parts, labels and blocks placed from now on go on it. Use labels or power flags of the same name to join nets across sheets.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Sheet name, e.g. "Power", "MCU".' } } },
+    execute: async (input) => {
+      const sheet = addSheet(input.name === undefined ? undefined : String(input.name));
+      return { sheet: sheet.name };
+    },
+  },
+  {
+    name: 'switch_sheet',
+    title: 'Switch sheet',
+    description: 'Make another sheet current: parts, labels and blocks placed from now on go on it, and positions (x, y) are on it.',
+    inputSchema: { type: 'object', properties: { sheet: { type: 'string', description: 'Sheet name.' } }, required: ['sheet'] },
+    execute: async (input) => {
+      const sheet = sheetByName(String(input.sheet));
+      st().setCurrentSheet(sheet.id);
+      return { current: sheet.name };
+    },
+  },
+  {
+    name: 'place_block',
+    title: 'Place hierarchical block',
+    description:
+      'Place a hierarchical block on the current sheet standing for another sheet (created when it does not exist yet). The block has a pin for each hierarchical port on that sheet (add_net_label with scope "hierarchical"), down its left edge; connect them here with connect_pins, add_net_label or add_power_flag using "<sheet name>.<port>" as the pin ("Power.VIN"). A sheet can have one block.',
+    inputSchema: {
+      type: 'object',
+      properties: { sheet: { type: 'string', description: 'The sheet the block stands for.' }, x: { type: 'number' }, y: { type: 'number' } },
+      required: ['sheet'],
+    },
+    execute: async (input) => {
+      const name = String(input.sheet);
+      const existing = sheetsOf(st().project).find((s) => s.name === name);
+      const at: [number, number] = input.x !== undefined && input.y !== undefined ? [Number(input.x), Number(input.y)] : nextFreePosition();
+      const block = placeBlock(at, existing?.id, existing ? undefined : name);
+      return { block: name, x: block.x, y: block.y, pins: blockPins(block).map((p) => ({ name: p.name, x: p.at[0], y: p.at[1] })) };
     },
   },
   {
@@ -527,12 +618,12 @@ export const TOOLS: ToolDefinition[] = [
     title: 'Disconnect pin',
     description:
       'Undo connections at a pin: removes every wire that ends on it (including whole wires made by connect_pins, which also frees the pin at the other end), no-connect markers on it, and labels or flags left dangling by that. Returns what was removed and the pin’s net afterwards.',
-    inputSchema: { type: 'object', properties: { pin: pinRefSchema('Pin to disconnect.') }, required: ['pin'] },
+    inputSchema: { type: 'object', properties: { pin: endRefSchema('Pin to disconnect.') }, required: ['pin'] },
     annotations: { consequentialHint: true },
     execute: async (input) => {
       const removed = disconnectPin(String(input.pin));
-      const p = findPin(String(input.pin));
-      return { removed_wires: removed.wires, removed_labels: removed.labels, net: connectivity().pinNet.get(`${p.component.id}:${p.pin.id}`) ?? null };
+      const p = findEnd(String(input.pin));
+      return { removed_wires: removed.wires, removed_labels: removed.labels, net: connectivity().pinNet.get(p.key) ?? null };
     },
   },
   {

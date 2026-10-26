@@ -1,13 +1,14 @@
 import type { Box } from '../easyeda/symbol';
 import { boxContains, boxIntersects, componentBox, distToSegment, normBox, rotate, samePoint, worldPins } from './geometry';
 import type { SymbolResolver } from './symbols';
+import { blockBox, blockPins } from './sheets';
 import type { NetPort, Project, Vec } from './types';
 
-type Doc = Pick<Project, 'components' | 'wires' | 'ports'>;
+type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'blocks'>;
 
 export function portBox(p: NetPort): Box {
   if (p.kind === 'noconnect') return { x1: p.x - 4, y1: p.y - 4, x2: p.x + 4, y2: p.y + 4 };
-  if (p.kind === 'label') {
+  if (p.kind === 'label' || p.kind === 'hier') {
     const w = Math.max(p.name.length * 4.2 + 4, 10) + 3;
     switch (p.rotation) {
       case 90:
@@ -32,6 +33,7 @@ export function hitTest(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number):
     const w = doc.wires[i];
     for (let k = 1; k < w.points.length; k++) if (distToSegment(p, w.points[k - 1], w.points[k]) <= tol) return w.id;
   }
+  for (const b of doc.blocks ?? []) if (boxContains(blockBox(b), p, 1)) return b.id;
   for (let i = doc.components.length - 1; i >= 0; i--) {
     const c = doc.components[i];
     if (boxContains(componentBox(c, symbols(c.symbolKey)), p, 1)) return c.id;
@@ -57,12 +59,13 @@ export function itemsInBox(doc: Doc, symbols: SymbolResolver, box: Box): string[
   for (const c of doc.components) if (boxIntersects(componentBox(c, symbols(c.symbolKey)), box)) ids.push(c.id);
   for (const w of doc.wires) if (w.points.some((pt) => boxContains(box, pt))) ids.push(w.id);
   for (const p of doc.ports) if (boxContains(box, [p.x, p.y])) ids.push(p.id);
+  for (const b of doc.blocks ?? []) if (boxIntersects(blockBox(b), box)) ids.push(b.id);
   return ids;
 }
 
 export interface ConnectionPoint {
   at: Vec;
-  kind: 'pin' | 'wire-end' | 'wire' | 'port';
+  kind: 'pin' | 'block' | 'wire-end' | 'wire' | 'port';
   label?: string;
   /** `${componentId}:${pinId}` for pins, the item id otherwise. */
   ref?: string;
@@ -86,6 +89,7 @@ export function connectionNear(doc: Doc, symbols: SymbolResolver, p: Vec, tol: n
       consider(wp.at, 'pin', `${c.id}:${wp.pin.id}`, `${c.designator} pin ${wp.pin.number}${name}`);
     }
   }
+  for (const b of doc.blocks ?? []) for (const pin of blockPins(b)) consider(pin.at, 'block', `${b.id}:${pin.name}`, `Block pin ${pin.name}`);
   for (const port of doc.ports) if (port.kind !== 'noconnect') consider([port.x, port.y], 'port', port.id, port.name);
   for (const w of doc.wires) {
     consider(w.points[0], 'wire-end', w.id);

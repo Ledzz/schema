@@ -93,6 +93,17 @@ pitches and keep some pins between grid lines, which still connect fine.
   power flag on the upper pin and the ground flag on the lower one.
 - Leave about 30 units of free space around pins that will get flags or labels. The tools refuse
   rather than touch another net, so cramped parts mean refusals and rework.
+- **Bigger designs on several sheets.** Past roughly 25 parts, or with clearly separate functions
+  (power, MCU, motor driver), give each its own sheet: `add_sheet` with a name makes it current,
+  so the parts, labels and flags you place next go on it, and each sheet has its own coordinates.
+  `switch_sheet` goes back to an earlier one and `list_sheets` shows what is where. Labels and
+  power flags of the same name connect across sheets, which is all most designs need.
+- **Hierarchical blocks** suit a sheet that is a module with a defined interface. On that sheet,
+  give each interface pin `add_net_label` with `"scope": "hierarchical"`. On the parent sheet,
+  `place_block` with the sheet's name draws a block with a pin per port, and you connect them
+  with `connect_pins`, `add_net_label` or `add_power_flag` on `"<sheet name>.<port>"`
+  (`"Power.VIN"`). A port reaches only its block's pin, so the same port name on two sheets
+  stays two nets (named `Sheet/port` unless a label names them).
 
 ### 5. Connect
 

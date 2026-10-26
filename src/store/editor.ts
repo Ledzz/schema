@@ -1,11 +1,12 @@
 import { create } from 'zustand';
-import { newId, type Doc } from '../lib/schematic/ops';
+import { newId, syncBlocks, type Doc } from '../lib/schematic/ops';
+import { FIRST_SHEET, sheetView, sheetsOf } from '../lib/schematic/sheets';
 import type { Component, NetPort, PortKind, Project, Rotation, Vec } from '../lib/schematic/types';
 import type { PartClass } from '../shared/parts';
 import type { CopperLayer } from '../lib/pcb/types';
 import type { DrcIssue } from '../lib/pcb/drc';
 
-export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'place';
+export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'hier' | 'place';
 /** How routing and track dragging treat other nets' tracks in the way. */
 export type RouteMode = 'push' | 'walk' | 'ignore';
 export const ROUTE_MODE_NAMES: Record<RouteMode, string> = { push: 'Push', walk: 'Walk around', ignore: 'Ignore' };
@@ -72,7 +73,7 @@ function loadProject(): Project {
   return emptyProject();
 }
 
-const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, pcb: p.pcb });
+const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, pcb: p.pcb, sheets: p.sheets, blocks: p.blocks });
 
 /** Symbols and footprints are append-only caches, so history never removes them. */
 function keepCaches(target: Doc, current: Project): Doc {
@@ -97,6 +98,9 @@ interface EditorState {
   canvasSize: { width: number; height: number };
   cursor: Vec;
   wireDraft: Vec[] | null;
+  /** The schematic sheet being shown and drawn on. */
+  currentSheet: string;
+  setCurrentSheet: (sheet: string) => void;
   /** Swaps the direction of the next bend of the wire being drawn. */
   wireFlip: boolean;
   /** The wire was started from a pin in the select tool: go back to it when the wire ends. */
@@ -223,6 +227,7 @@ let toastId = 0;
 function defaultPortName(kind: PortKind, project: Project): string {
   if (kind === 'noconnect') return '';
   if (kind === 'label') return 'NET1';
+  if (kind === 'hier') return 'IO1';
   const counts = new Map<string, number>();
   for (const p of project.ports) if (p.kind === kind && p.name.trim()) counts.set(p.name, (counts.get(p.name) ?? 0) + 1);
   const used = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
@@ -244,6 +249,13 @@ export const useEditor = create<EditorState>()((set, get) => ({
   canvasSize: { width: 800, height: 520 },
   cursor: [0, 0],
   wireDraft: null,
+  currentSheet: FIRST_SHEET,
+  setCurrentSheet: (currentSheet) => {
+    // Keep only the selected items that are on the new sheet.
+    const v = sheetView(get().project, currentSheet);
+    const here = new Set([...v.components, ...v.wires, ...v.ports, ...(v.blocks ?? [])].map((i) => i.id));
+    set({ currentSheet, selection: get().selection.filter((id) => here.has(id)), wireDraft: null, quickEditId: null });
+  },
   wireFlip: false,
   wireOneShot: false,
   portNames: {},
@@ -260,9 +272,11 @@ export const useEditor = create<EditorState>()((set, get) => ({
   commit: (fn) => {
     const { project, past } = get();
     const before = docOf(project);
-    const after = fn(before);
-    if (after === before) return;
-    const ids = new Set([...after.components, ...after.wires, ...after.ports].map((i) => i.id));
+    const changed = fn(before);
+    if (changed === before) return;
+    // Blocks follow the hierarchical ports on their sheets.
+    const after = syncBlocks(changed);
+    const ids = new Set([...after.components, ...after.wires, ...after.ports, ...(after.blocks ?? [])].map((i) => i.id));
     set({
       project: { ...project, ...after, updatedAt: Date.now() },
       past: [...past.slice(-HISTORY_LIMIT + 1), before],
@@ -381,7 +395,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const { past, project } = get();
     const i = past.findLastIndex((d) => d.components === mark.components && d.wires === mark.wires && d.ports === mark.ports);
     if (i < 0) return;
-    set({ project: { ...project, components: mark.components, wires: mark.wires, ports: mark.ports, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
+    set({ project: { ...project, components: mark.components, wires: mark.wires, ports: mark.ports, sheets: mark.sheets, blocks: mark.blocks, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
   },
   undo: () => {
     const { past, future, project } = get();
@@ -409,7 +423,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   addSymbols: (symbols) => set({ project: { ...get().project, symbols: { ...get().project.symbols, ...symbols } } }),
 
-  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null }),
+  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null, currentSheet: sheetsOf(p)[0].id }),
   renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
 
   setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null, wireFlip: false, wireOneShot: false }),

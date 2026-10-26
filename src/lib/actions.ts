@@ -9,11 +9,19 @@ import { boxContains, boxIntersects, componentBox, normBox, onSegment, samePoint
 import { portBox } from './schematic/hit';
 import { analyze } from './schematic/netlist';
 import { dropNoConnects, newId } from './schematic/ops';
+import { blockBox, blockPins, hierNames, onSheet, sheetOf, sheetsOf, sheetView } from './schematic/sheets';
 import { autoRoute, portRotationFor, routePins, type RouteObstacles } from './schematic/route';
 import { resolverFor, symbolFor } from './schematic/symbols';
-import type { Component, NetPort, PortKind, Project, Rotation, StoredSymbol, Vec } from './schematic/types';
+import type { Component, NetPort, PortKind, Project, Rotation, Sheet, SheetBlock, StoredSymbol, Vec } from './schematic/types';
 
 const state = () => useEditor.getState();
+
+/** The sheet field for a new item: the given sheet, else the one being drawn on. */
+const sheetTag = (sheet?: string) => {
+  const s = sheet ?? state().currentSheet;
+  // Single-sheet projects keep untagged items, as before sheets existed.
+  return state().project.sheets?.length ? { sheet: s } : {};
+};
 
 /** Loads part data and makes sure its symbol is stored in the project. */
 export async function loadPart(lcsc: string): Promise<{ detail: PartDetail; symbolKey: string }> {
@@ -96,6 +104,7 @@ export function placeComponent(placing: Placing, at: Vec, rotation: Rotation = 0
       mirror,
       attrs: { ...placing.template.attrs },
       designator: designator || nextDesignator(placing.prefix, doc.components),
+      ...sheetTag(),
     };
     return { ...doc, components: [...doc.components, created] };
   });
@@ -104,7 +113,7 @@ export function placeComponent(placing: Placing, at: Vec, rotation: Rotation = 0
 
 /** Free spot to the right of the current drawing, used when no position is given. */
 export function nextFreePosition(): Vec {
-  const { project } = state();
+  const project = sheetView(state().project, state().currentSheet);
   if (project.components.length === 0) return [0, 0];
   const xs = project.components.map((c) => c.x);
   const ys = project.components.map((c) => c.y);
@@ -148,14 +157,39 @@ export async function placePartAt(
   return placeComponent(placing, onPinGrid(placing, at, rotation), rotation, false, opts.designator);
 }
 
-export function addPort(kind: PortKind, name: string, at: Vec, rotation: Rotation = 0): NetPort {
-  const port: NetPort = { id: newId('n'), kind, name, x: snap(at[0]), y: snap(at[1]), rotation };
+export function addPort(kind: PortKind, name: string, at: Vec, rotation: Rotation = 0, sheet?: string): NetPort {
+  const port: NetPort = { id: newId('n'), kind, name, x: snap(at[0]), y: snap(at[1]), rotation, ...sheetTag(sheet) };
   state().commit((doc) => ({ ...doc, ports: [...doc.ports, port] }));
   return port;
 }
 
-export interface ResolvedPin extends WorldPin {
+/** Where wiring can end: a part's pin or a pin of a hierarchical block. */
+export interface PinEnd {
+  at: Vec;
+  /** From the pin's free end towards its part or block. */
+  dir: Vec;
+  sheet: string;
+  /** Its key in `connectivity().pinNet`: `${componentId}:${pinId}`, or `${blockId}:${port}`. */
+  key: string;
+}
+
+export interface ResolvedPin extends WorldPin, PinEnd {
   component: Component;
+}
+
+/** A part's pin as a wiring end. */
+export const resolvedPin = (wp: WorldPin, component: Component, project: Project): ResolvedPin => ({ ...wp, component, sheet: sheetOf(component, project), key: `${component.id}:${wp.pin.id}` });
+
+/** A block's pins point into the block: they run down its left edge. */
+const blockEnd = (block: SheetBlock, pin: { name: string; at: Vec }, project: Project): PinEnd => ({ at: pin.at, dir: [1, 0], sheet: sheetOf(block, project), key: `${block.id}:${pin.name}` });
+
+/** Pins of the blocks in a drawing, as wiring ends. */
+const blockEnds = (project: Project): PinEnd[] => (project.blocks ?? []).flatMap((b) => blockPins(b).map((p) => blockEnd(b, p, project)));
+
+/** Part bodies and blocks, which wiring keeps out of. */
+function bodyBoxes(project: Project) {
+  const resolve = resolverFor(project);
+  return [...project.components.map((c) => componentBox(c, resolve(c.symbolKey))), ...(project.blocks ?? []).map(blockBox)];
 }
 
 /** Resolves "R1.2" / "U1.VIN" / "U1.PA9" style references. */
@@ -175,7 +209,7 @@ export function findPin(ref: string, project: Project = state().project): Resolv
     const available = pins.map((p) => (p.pin.name && p.pin.name !== p.pin.number ? `${p.pin.number}(${p.pin.name})` : p.pin.number));
     throw new Error(`${designator} has no pin "${pinKey}". Pins: ${available.join(', ')}`);
   }
-  return { ...pin, component };
+  return resolvedPin(pin, component, project);
 }
 
 /** Resolves a `${componentId}:${pinId}` key, as hit testing and connectivity report pins. */
@@ -183,16 +217,47 @@ export function pinByKey(key: string, project: Project = state().project): Resol
   const i = key.indexOf(':');
   const component = project.components.find((c) => c.id === key.slice(0, i));
   const pin = component && worldPins(component, symbolFor(project, component.symbolKey)).find((p) => p.pin.id === key.slice(i + 1));
-  return component && pin ? { ...pin, component } : null;
+  return component && pin ? resolvedPin(pin, component, project) : null;
+}
+
+/** A part's pin or a block's pin by its key (`${blockId}:${port}` for blocks). */
+export function endByKey(key: string, project: Project = state().project): PinEnd | null {
+  const pin = pinByKey(key, project);
+  if (pin) return pin;
+  const i = key.indexOf(':');
+  const block = project.blocks?.find((b) => b.id === key.slice(0, i));
+  const bp = block && blockPins(block).find((p) => p.name === key.slice(i + 1));
+  return block && bp ? blockEnd(block, bp, project) : null;
+}
+
+/**
+ * Resolves a part's pin like findPin, or a block's pin as "<sheet name>.<port>" ("Power.VIN"):
+ * the pin of the block standing for that sheet.
+ */
+export function findEnd(ref: string, project: Project = state().project): PinEnd {
+  const dot = ref.lastIndexOf('.');
+  const name = ref.slice(0, dot).trim().toLowerCase();
+  const sheet = dot > 0 && !project.components.some((c) => c.designator.toLowerCase() === name) ? sheetsOf(project).find((s) => s.name.toLowerCase() === name) : undefined;
+  if (!sheet) return findPin(ref, project);
+  const block = project.blocks?.find((b) => b.child === sheet.id);
+  if (!block) throw new Error(`${sheet.name} has no block yet; place one with place_block, then connect its pins`);
+  const port = ref.slice(dot + 1).trim();
+  const pin = blockPins(block).find((p) => p.name.toLowerCase() === port.toLowerCase());
+  if (!pin) {
+    const none = `It has none yet: add hierarchical ports on ${sheet.name} (add_net_label with scope "hierarchical")`;
+    throw new Error(`The ${sheet.name} block has no pin "${port}". ${blockPins(block).length ? `Pins: ${blockPins(block).map((p) => p.name).join(', ')}` : none}`);
+  }
+  return blockEnd(block, pin, project);
 }
 
 function routeObstacles(project: Project, except: Vec[]): RouteObstacles {
   const resolve = resolverFor(project);
   const keep = (p: Vec) => !except.some((e) => samePoint(e, p));
   return {
-    boxes: [...project.components.map((c) => componentBox(c, resolve(c.symbolKey))), ...project.ports.filter((p) => p.kind !== 'noconnect').map(portBox)],
+    boxes: [...bodyBoxes(project), ...project.ports.filter((p) => p.kind !== 'noconnect').map(portBox)],
     points: [
       ...project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey)).map((p) => p.at)),
+      ...blockEnds(project).map((p) => p.at),
       ...project.wires.flatMap((w) => [w.points[0], w.points[w.points.length - 1]]),
       ...project.ports.map((p) => [p.x, p.y] as Vec),
     ].filter(keep),
@@ -204,10 +269,11 @@ function routeObstacles(project: Project, except: Vec[]): RouteObstacles {
  * A wire between two pins that keeps clear of part bodies and doesn't touch other connections,
  * or null when there is no such route.
  */
-export function planPinRoute(project: Project, pa: WorldPin, pb: WorldPin): Vec[] | null {
+export function planPinRoute(whole: Project, pa: PinEnd, pb: PinEnd): Vec[] | null {
+  if (pa.sheet !== pb.sheet) return null;
+  const project = sheetView(whole, pa.sheet);
   const obstacles = routeObstacles(project, [pa.at, pb.at]);
-  const resolve = resolverFor(project);
-  const bodiesOnly: RouteObstacles = { boxes: project.components.map((c) => componentBox(c, resolve(c.symbolKey))), points: [], segments: obstacles.segments };
+  const bodiesOnly: RouteObstacles = { boxes: bodyBoxes(project), points: [], segments: obstacles.segments };
   const attempts = [
     () => autoRoute(pa, pb, obstacles),
     () => autoRoute(pa, pb, obstacles, 5),
@@ -226,17 +292,22 @@ export function planPinRoute(project: Project, pa: WorldPin, pb: WorldPin): Vec[
 }
 
 export function connectPins(a: string, b: string): { wireId: string; points: Vec[] } {
-  const points = planPinRoute(state().project, findPin(a), findPin(b));
+  const pa = findEnd(a);
+  const pb = findEnd(b);
+  const project = state().project;
+  const sheet = pa.sheet;
+  if (pb.sheet !== sheet) throw new Error(`${a} and ${b} are on different sheets; give both pins the same net label instead`);
+  const points = planPinRoute(project, pa, pb);
   if (!points) throw new Error(`Cannot wire ${a} to ${b} without touching other connections; use net labels on both pins instead`);
   const id = newId('w');
-  state().commit((doc) => dropNoConnects({ ...doc, wires: [...doc.wires, { id, points }] }, [points[0], points[points.length - 1]]));
+  state().commit((doc) => onSheet(doc, sheet, (v) => dropNoConnects({ ...v, wires: [...v.wires, { id, points }] }, [points[0], points[points.length - 1]])));
   return { wireId: id, points };
 }
 
 type FlagLayout = { points: Vec[]; rotation: Rotation };
 
 /** Candidate stub/flag layouts for a pin, most conventional first. */
-function flagLayouts(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>): FlagLayout[] {
+function flagLayouts(pin: PinEnd, kind: Exclude<PortKind, 'noconnect'>): FlagLayout[] {
   const out: Vec = [-pin.dir[0], -pin.dir[1]];
   const along = (k: number): Vec => [pin.at[0] + out[0] * k, pin.at[1] + out[1] * k];
   const straight = (len: number): FlagLayout => ({ points: [pin.at, along(len)], rotation: portRotationFor(kind, out) });
@@ -248,7 +319,7 @@ function flagLayouts(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>): Fl
       return { points: [pin.at, e, [e[0] + s[0] * 20, e[1] + s[1] * 20]], rotation: portRotationFor(kind, s) };
     }),
   );
-  if (kind === 'label' || out[1] !== 0) return [...[20, 30, 40, 60, 80].map(straight), ...sideways];
+  if (kind === 'label' || kind === 'hier' || out[1] !== 0) return [...[20, 30, 40, 60, 80].map(straight), ...sideways];
   // Power flags point up and ground flags down, so turn the stub vertical.
   const v = kind === 'power' ? -1 : 1;
   const elbow = (len: number, rise: number): FlagLayout => {
@@ -269,7 +340,7 @@ function createsContact(project: Project, points: Vec[], allowed: Vec[]): boolea
   const end = points[points.length - 1];
   const segs = points.slice(1).map((p, i) => [points[i], p] as [Vec, Vec]);
   if (!ok(end)) {
-    const pins = project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey)).map((p) => p.at));
+    const pins = [...project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey)).map((p) => p.at)), ...blockEnds(project).map((p) => p.at)];
     if (pins.some((p) => samePoint(p, end))) return true;
     for (const w of project.wires) for (let i = 1; i < w.points.length; i++) if (onSegment(end, w.points[i - 1], w.points[i])) return true;
   }
@@ -290,19 +361,17 @@ interface ContactScope {
 function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, self: Vec, scope: ContactScope): number {
   const resolve = resolverFor(project);
   const flag = portBox(port);
-  const compBoxes = project.components.map((c) => componentBox(c, resolve(c.symbolKey)));
+  const compBoxes = bodyBoxes(project);
   const stubPoints = layout.points.slice(1);
   let conflicts = 0;
   for (const b of compBoxes) if (boxIntersects(b, flag) || stubPoints.some((p) => boxContains(b, p, -0.5))) conflicts += 3;
   // Keep the lane in front of every other pin free so it can still be wired.
-  const lanes = project.components.flatMap((c) =>
-    worldPins(c, resolve(c.symbolKey))
-      .filter((p) => !samePoint(p.at, self))
-      .map((p) => {
-        const b = normBox(p.at, [p.at[0] - p.dir[0] * 30, p.at[1] - p.dir[1] * 30]);
-        return { x1: b.x1 - 1, y1: b.y1 - 1, x2: b.x2 + 1, y2: b.y2 + 1 };
-      }),
-  );
+  const lanes = [...project.components.flatMap((c) => worldPins(c, resolve(c.symbolKey))), ...blockEnds(project)]
+    .filter((p) => !samePoint(p.at, self))
+    .map((p) => {
+      const b = normBox(p.at, [p.at[0] - p.dir[0] * 30, p.at[1] - p.dir[1] * 30]);
+      return { x1: b.x1 - 1, y1: b.y1 - 1, x2: b.x2 + 1, y2: b.y2 + 1 };
+    });
   const stubBoxes = layout.points.slice(1).map((p, i) => normBox(layout.points[i], p));
   for (const lane of lanes) if (boxIntersects(lane, flag) || stubBoxes.some((s) => boxIntersects(lane, s))) conflicts += 2;
   for (const p of project.ports) {
@@ -326,18 +395,24 @@ function layoutConflicts(project: Project, layout: FlagLayout, port: NetPort, se
  * the flag at its end, placed clear of other parts and wiring. Null when every layout would touch
  * another net.
  */
-export function planAttach(project: Project, pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>, name: string): { points: Vec[]; port: NetPort } | null {
+export function planAttach(whole: Project, pin: PinEnd, kind: Exclude<PortKind, 'noconnect'>, name: string): { points: Vec[]; port: NetPort; sheet: string } | null {
+  const sheet = pin.sheet;
+  const project = sheetView(whole, sheet);
   const toPort = (l: FlagLayout): NetPort => {
     const end = l.points[l.points.length - 1];
     return { id: newId('n'), kind, name, x: end[0], y: end[1], rotation: l.rotation };
   };
   // A pin that is already wired may share its net's wiring: touching that only names the net.
   const conn = connectivity(project);
-  const net = conn.pinNet.get(`${pin.component.id}:${pin.pin.id}`);
+  const net = conn.pinNet.get(pin.key);
   const scope: ContactScope = net
     ? {
         project: { ...project, wires: project.wires.filter((w) => conn.itemNet.get(w.id) !== net), ports: project.ports.filter((p) => conn.itemNet.get(p.id) !== net) },
-        allowed: [pin.at, ...project.components.flatMap((c) => worldPins(c, symbolFor(project, c.symbolKey)).filter((p) => conn.pinNet.get(`${c.id}:${p.pin.id}`) === net).map((p) => p.at))],
+        allowed: [
+          pin.at,
+          ...project.components.flatMap((c) => worldPins(c, symbolFor(project, c.symbolKey)).filter((p) => conn.pinNet.get(`${c.id}:${p.pin.id}`) === net).map((p) => p.at)),
+          ...blockEnds(project).filter((p) => conn.pinNet.get(p.key) === net).map((p) => p.at),
+        ],
       }
     : { project, allowed: [pin.at] };
   // First conflict-free layout, otherwise the least conflicting one.
@@ -351,19 +426,21 @@ export function planAttach(project: Project, pin: ResolvedPin, kind: Exclude<Por
     }
     if (n === 0) break;
   }
-  return best === Infinity ? null : { points: layout.points, port: toPort(layout) };
+  return best === Infinity ? null : { points: layout.points, port: toPort(layout), sheet };
 }
 
-/** Adds a planned stub and flag to the project. */
-export function commitAttach(plan: { points: Vec[]; port: NetPort }): NetPort {
+/** Adds a planned stub and flag to the project, on the pin's sheet. */
+export function commitAttach(plan: { points: Vec[]; port: NetPort; sheet: string }): NetPort {
   state().commit((doc) =>
-    dropNoConnects(
-      {
-        ...doc,
-        wires: [...doc.wires, { id: newId('w'), points: plan.points }],
-        ports: [...doc.ports, plan.port],
-      },
-      [plan.points[0]],
+    onSheet(doc, plan.sheet, (v) =>
+      dropNoConnects(
+        {
+          ...v,
+          wires: [...v.wires, { id: newId('w'), points: plan.points }],
+          ports: [...v.ports, plan.port],
+        },
+        [plan.points[0]],
+      ),
     ),
   );
   return plan.port;
@@ -371,7 +448,7 @@ export function commitAttach(plan: { points: Vec[]; port: NetPort }): NetPort {
 
 /** Adds a short wire stub from a pin with a label, power or ground flag at its end. */
 export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>, name: string): NetPort {
-  const plan = planAttach(state().project, findPin(pinRef), kind, name);
+  const plan = planAttach(state().project, findEnd(pinRef), kind, name);
   if (!plan) {
     throw new Error(`No room to attach a ${kind === 'label' ? 'label' : 'flag'} to ${pinRef} without touching other wiring; move parts apart or connect it with a wire`);
   }
@@ -383,8 +460,8 @@ export function attachPort(pinRef: string, kind: Exclude<PortKind, 'noconnect'>,
  * labels or flags left dangling at the far end of a removed wire (the stubs attachPort makes).
  */
 export function disconnectPin(pinRef: string): { wires: number; labels: string[] } {
-  const pin = findPin(pinRef);
-  const project = state().project;
+  const pin = findEnd(pinRef);
+  const project = sheetView(state().project, pin.sheet);
   const wires = project.wires.filter((w) => samePoint(w.points[0], pin.at) || samePoint(w.points[w.points.length - 1], pin.at));
   const removed = new Set(wires.map((w) => w.id));
   const kept = project.wires.filter((w) => !removed.has(w.id));
@@ -434,12 +511,12 @@ export function nameNet(itemId: string, name: string): void {
     return;
   }
   const wire = project.wires.find((w) => w.id === itemId);
-  if (wire) addPort('label', name.trim(), wire.points[wire.points.length - 1]);
+  if (wire) addPort('label', name.trim(), wire.points[wire.points.length - 1], 0, sheetOf(wire, project));
 }
 
 export function markNoConnect(pinRef: string): NetPort {
   const pin = findPin(pinRef);
-  return addPort('noconnect', '', pin.at, 0);
+  return addPort('noconnect', '', pin.at, 0, pin.sheet);
 }
 
 export async function replacePart(componentId: string, lcsc: string): Promise<Component | null> {
@@ -499,3 +576,63 @@ export function downloadText(filename: string, text: string, mime = 'text/plain'
 }
 
 export const safeFileName = (name: string) => name.replace(/[^\w.-]+/g, '_') || 'schematic';
+
+/* ---------- sheets ---------- */
+
+/** Adds a sheet after the others and switches to it. */
+export function addSheet(name?: string): Sheet {
+  const sheets = sheetsOf(state().project);
+  const sheet: Sheet = { id: newId('s'), name: name?.trim() || `Sheet ${sheets.length + 1}` };
+  if (sheets.some((s) => s.name === sheet.name)) throw new Error(`There is already a sheet called ${sheet.name}`);
+  state().commit((doc) => ({ ...doc, sheets: [...sheetsOf(doc), sheet] }));
+  state().setCurrentSheet(sheet.id);
+  return sheet;
+}
+
+export function renameSheet(id: string, name: string) {
+  const sheets = sheetsOf(state().project);
+  const next = name.trim();
+  if (!next) throw new Error('Give the sheet a name');
+  if (sheets.some((s) => s.id !== id && s.name === next)) throw new Error(`There is already a sheet called ${next}`);
+  state().commit((doc) => ({ ...doc, sheets: sheetsOf(doc).map((s) => (s.id === id ? { ...s, name: next } : s)) }));
+}
+
+/** Deletes a sheet with everything on it, and the block that stands for it. */
+export function deleteSheet(id: string) {
+  const sheets = sheetsOf(state().project);
+  if (sheets.length <= 1) throw new Error('A schematic needs at least one sheet');
+  state().commit((doc) => {
+    const keep = <T extends { sheet?: string }>(item: T) => sheetOf(item, doc) !== id;
+    return {
+      ...doc,
+      components: doc.components.filter(keep),
+      wires: doc.wires.filter(keep),
+      ports: doc.ports.filter(keep),
+      blocks: (doc.blocks ?? []).filter((b) => keep(b) && b.child !== id),
+      sheets: sheetsOf(doc).filter((s) => s.id !== id),
+    };
+  });
+  if (state().currentSheet === id) state().setCurrentSheet(sheetsOf(state().project)[0].id);
+}
+
+/**
+ * Places a hierarchical block on the sheet being drawn on, standing for `child` (default: a new
+ * sheet). Its pins are the child sheet's hierarchical ports. A sheet has at most one block.
+ */
+export function placeBlock(at: Vec, child?: string, name?: string): SheetBlock {
+  const current = state().currentSheet;
+  let target = child;
+  if (target === undefined) {
+    const sheets = sheetsOf(state().project);
+    const sheet: Sheet = { id: newId('s'), name: name?.trim() || `Block ${sheets.length}` };
+    state().commit((doc) => ({ ...doc, sheets: [...sheetsOf(doc), sheet] }));
+    target = sheet.id;
+  }
+  const project = state().project;
+  if (!sheetsOf(project).some((s) => s.id === target)) throw new Error(`No sheet ${target}`);
+  if (target === current) throw new Error('A block cannot stand for the sheet it is on');
+  if ((project.blocks ?? []).some((b) => b.child === target)) throw new Error('That sheet already has a block; each sheet can be used once');
+  const block: SheetBlock = { id: newId('b'), ...sheetTag(), child: target, x: snap(at[0], 10), y: snap(at[1], 10), width: 100, pins: hierNames(project, target) };
+  state().commit((doc) => ({ ...doc, blocks: [...(doc.blocks ?? []), block] }));
+  return block;
+}

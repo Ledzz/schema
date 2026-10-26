@@ -14,6 +14,10 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Done
 
+- **Multiple sheets and hierarchical blocks** (2026-10-26): sheet tabs (add, rename, delete),
+  labels and power flags joining nets across sheets, hierarchical ports, and blocks standing for
+  a sheet with a pin per port that keep their places as ports change. Agents use `list_sheets`,
+  `add_sheet`, `switch_sheet`, `place_block`, and address block pins as `Power.VIN`.
 - **Rip-up and retry in the auto-router** (2026-10-26): connections the greedy pass leaves are
   routed through other nets' copper at a cost, what is in the way is ripped up and routed again,
   and a change is kept only when fewer connections are left; the STM32 board routes completely
@@ -67,11 +71,10 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Schematic
 
-- ★ Multiple sheets and hierarchical blocks (everything is one sheet today).
 - Buses and bus entries.
 - Drawing tools: text, lines, rectangles, images, sheet frame and title block.
-- Find and replace, select similar, align and distribute, a property table for bulk edits
-  (bulk editing exists only for passives).
+- Find and replace, select similar, a property table for bulk edits (bulk editing exists only
+  for passives).
 - ★ Cross-probing between schematic and PCB.
 - Net classes and differential-pair marking.
 - Stricter design check: pin-type conflicts such as two outputs on one net.

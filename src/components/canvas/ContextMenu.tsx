@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
-import { addPort, commitAttach, connectivity, disconnectPin, findNoFeeAlternative, markNoConnect, nameNet, pinByKey, planAttach, renameNet, type ResolvedPin } from '../../lib/actions';
+import { addPort, commitAttach, connectivity, disconnectPin, endByKey, findNoFeeAlternative, markNoConnect, nameNet, pinByKey, planAttach, renameNet, type PinEnd } from '../../lib/actions';
 import { addDecoupling, supplyPins } from '../../lib/decoupling';
-import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, paste, rotateSelection, selectAll } from '../../lib/editing';
+import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, openSheet, paste, rotateSelection, selectAll } from '../../lib/editing';
 import { samePoint } from '../../lib/schematic/geometry';
+import { sheetsOf, sheetView } from '../../lib/schematic/sheets';
 import { connectionNear, hitTest, wireGrabAt } from '../../lib/schematic/hit';
 import { deleteWireSegment } from '../../lib/schematic/ops';
 import { portRotationFor } from '../../lib/schematic/route';
@@ -52,7 +53,7 @@ const mostUsedRail = (project: Project) => {
 };
 
 /** A label or flag on a pin, on a stub leading away from the part when there is room. */
-function flagPin(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>, name: string) {
+function flagPin(pin: PinEnd, kind: Exclude<PortKind, 'noconnect'>, name: string) {
   const value = name.trim();
   if (!value) return;
   const plan = planAttach(st().project, pin, kind, value);
@@ -63,9 +64,10 @@ function flagPin(pin: ResolvedPin, kind: Exclude<PortKind, 'noconnect'>, name: s
 /** The menu for a point of the drawing (world coordinates), selecting what is under it. */
 export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'> {
   const s = st();
-  const project = s.project;
+  // What is under the pointer comes from this sheet; nets from the whole project.
+  const project = sheetView(s.project, s.currentSheet);
   const symbols = resolverFor(project);
-  const conn = connectivity(project);
+  const conn = connectivity(s.project);
   const id = hitTest(project, symbols, w, tol);
   const port = project.ports.find((p) => p.id === id);
   const near = !port || port.kind === 'noconnect' ? connectionNear(project, symbols, w, tol) : null;
@@ -90,6 +92,28 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
           ? { label: 'Remove no-connect marker', separatorBefore: true, onSelect: () => s.commit((doc) => ({ ...doc, ports: doc.ports.filter((p) => p.id !== marker.id) })) }
           : { label: 'Mark as not connected', separatorBefore: true, disabled: !!net && wired, onSelect: () => markNoConnect(ref) },
         { label: 'Disconnect', disabled: !wired, onSelect: () => disconnectPin(ref) },
+        ...highlight(net),
+      ],
+    };
+  }
+
+  // A block's pin.
+  const blockPin = near?.kind === 'block' && near.ref ? endByKey(near.ref, project) : null;
+  const block = blockPin && project.blocks?.find((b) => near!.ref!.startsWith(`${b.id}:`));
+  if (blockPin && block) {
+    const port = near!.ref!.slice(block.id.length + 1);
+    const ref = `${sheetsOf(s.project).find((sh) => sh.id === block.child)?.name}.${port}`;
+    const net = conn.pinNet.get(near!.ref!);
+    const named = net && !conn.nets.find((n) => n.name === net)?.auto && !net.includes('/') ? net : '';
+    const wired = project.wires.some((wire) => samePoint(wire.points[0], blockPin.at) || samePoint(wire.points[wire.points.length - 1], blockPin.at));
+    return {
+      title: `${near!.label}${net ? ` · ${net}` : ''}`,
+      items: [
+        { label: 'Draw a wire from here', onSelect: () => s.startWire(blockPin.at) },
+        { label: 'Net label', input: { initial: named, placeholder: 'Net name, e.g. SDA', onSubmit: (v) => flagPin(blockPin, 'label', v) } },
+        { label: 'Power flag', input: { initial: mostUsedRail(project), onSubmit: (v) => flagPin(blockPin, 'power', v) } },
+        { label: 'Connect to GND', onSelect: () => flagPin(blockPin, 'ground', 'GND') },
+        { label: 'Disconnect', separatorBefore: true, disabled: !wired, onSelect: () => disconnectPin(ref) },
         ...highlight(net),
       ],
     };
@@ -142,7 +166,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
 
   if (port) {
     const net = conn.itemNet.get(port.id);
-    const title = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', noconnect: 'No-connect marker' }[port.kind];
+    const title = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', noconnect: 'No-connect marker', hier: 'Hierarchical port' }[port.kind];
     return {
       title: port.kind === 'noconnect' ? title : `${title} ${port.name}`,
       items: [
@@ -151,6 +175,15 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
         { label: 'Rotate', shortcut: 'R', separatorBefore: true, onSelect: rotateSelection },
         remove,
       ],
+    };
+  }
+
+  const sheetBlock = project.blocks?.find((b) => b.id === id);
+  if (sheetBlock) {
+    const name = sheetsOf(s.project).find((sh) => sh.id === sheetBlock.child)?.name ?? 'sheet';
+    return {
+      title: `Block · ${name}`,
+      items: [{ label: `Open ${name}`, shortcut: 'Double-click', onSelect: () => openSheet(sheetBlock.child) }, remove],
     };
   }
 

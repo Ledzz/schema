@@ -8,7 +8,7 @@ import { useEditor } from '../store/editor';
 import type { PassiveKind } from '../shared/passives';
 import type { PartClass } from '../shared/parts';
 import { attachPort, connectPins, markNoConnect, placePartAt } from './actions';
-import { contentBounds } from './editing';
+import { contentBounds, currentView } from './editing';
 import { placePassiveAt } from './passives';
 import { nextDesignator } from './schematic/designators';
 import { snap, worldPins, type WorldPin } from './schematic/geometry';
@@ -273,7 +273,7 @@ export interface InsertedBlock {
 
 /** Where a block goes when no position is given: right of the whole drawing, top-aligned with it. */
 function freeOrigin(block: CircuitBlock): Vec {
-  const bounds = contentBounds(st().project);
+  const bounds = contentBounds(currentView());
   if (!bounds) return [0, 0];
   // Offsets are part centres: leave room for half a part and its flags as well.
   const minX = Math.min(...block.parts.map((p) => p.at[0]));

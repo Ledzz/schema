@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useEditor } from '../store/editor';
 import {
+  commitSheet,
   copySelection,
   deleteSelection,
   duplicateSelection,
@@ -205,6 +206,9 @@ export function useShortcuts() {
         case 'q':
           s.startPort('noconnect');
           break;
+        case 'h':
+          s.startPort('hier');
+          break;
         case 'v':
           s.setTool('select');
           break;
@@ -237,7 +241,7 @@ export function useShortcuts() {
           const dx = key === 'arrowleft' ? -step : key === 'arrowright' ? step : 0;
           const dy = key === 'arrowup' ? -step : key === 'arrowdown' ? step : 0;
           const ids = new Set(s.selection);
-          s.commit((doc) => moveItems(doc, ids, dx, dy, resolverFor(s.project)));
+          commitSheet((doc) => moveItems(doc, ids, dx, dy, resolverFor(s.project)));
           break;
         }
         default:

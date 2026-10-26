@@ -2,7 +2,8 @@ import { memo } from 'react';
 import type { SymbolShape, SymbolUnit } from '../../lib/easyeda/symbol';
 import { dirToWorld, toWorld, transformBox, unitOf } from '../../lib/schematic/geometry';
 import type { SymbolDef } from '../../lib/easyeda/symbol';
-import type { Component, NetPort, Vec } from '../../lib/schematic/types';
+import { blockBox, blockPins } from '../../lib/schematic/sheets';
+import type { Component, NetPort, SheetBlock, Vec } from '../../lib/schematic/types';
 
 const STROKE = 1;
 
@@ -156,7 +157,17 @@ export const ComponentGraphic = memo(function ComponentGraphic({
 
 /** Net label, power / ground flag or no-connect marker, drawn around its anchor. */
 export const PortGraphic = memo(function PortGraphic({ port, selected, highlight, ghost }: { port: NetPort; selected?: boolean; highlight?: boolean; ghost?: boolean }) {
-  const color = selected ? 'var(--select)' : highlight ? 'var(--highlight)' : port.kind === 'label' ? 'var(--label)' : port.kind === 'noconnect' ? 'var(--unconnected)' : 'var(--power)';
+  const color = selected
+    ? 'var(--select)'
+    : highlight
+      ? 'var(--highlight)'
+      : port.kind === 'label'
+        ? 'var(--label)'
+        : port.kind === 'hier'
+          ? 'var(--hier)'
+          : port.kind === 'noconnect'
+            ? 'var(--unconnected)'
+            : 'var(--power)';
   const { x, y, rotation: r } = port;
   if (port.kind === 'noconnect') {
     return (
@@ -166,15 +177,21 @@ export const PortGraphic = memo(function PortGraphic({ port, selected, highlight
       </g>
     );
   }
-  if (port.kind === 'label') {
+  if (port.kind === 'label' || port.kind === 'hier') {
     const vertical = r === 90 || r === 270;
     const reverse = r === 180 || r === 270;
     const width = Math.max(port.name.length * 4.2 + 4, 10);
+    // A hierarchical port is pointed at both ends.
+    const tip = port.kind === 'hier' ? 3 : 0;
     return (
       <g opacity={ghost ? 0.6 : 1}>
         <g transform={`translate(${x} ${y}) rotate(${vertical ? -90 : 0})`}>
           <path
-            d={reverse ? `M0 0 L-3 -4.5 L${-width - 3} -4.5 L${-width - 3} 4.5 L-3 4.5 Z` : `M0 0 L3 -4.5 L${width + 3} -4.5 L${width + 3} 4.5 L3 4.5 Z`}
+            d={
+              reverse
+                ? `M0 0 L-3 -4.5 L${-width - 3} -4.5 L${-width - 3 - tip} 0 L${-width - 3} 4.5 L-3 4.5 Z`
+                : `M0 0 L3 -4.5 L${width + 3} -4.5 L${width + 3 + tip} 0 L${width + 3} 4.5 L3 4.5 Z`
+            }
             fill="var(--canvas-bg)"
             fillOpacity={0.85}
             stroke={color}
@@ -229,3 +246,31 @@ function PowerText({ port, color, vertical }: { port: NetPort; color: string; ve
     </text>
   );
 }
+
+/** A hierarchical block: a box named after its sheet, with a pin per hierarchical port down the left. */
+export const BlockGraphic = memo(function BlockGraphic({ block, name, selected }: { block: SheetBlock; name: string; selected?: boolean }) {
+  const box = blockBox(block);
+  const stroke = selected ? 'var(--select)' : 'var(--hier)';
+  return (
+    <g>
+      <rect x={box.x1} y={box.y1} width={box.x2 - box.x1} height={box.y2 - box.y1} fill="var(--sym-fill)" stroke={stroke} strokeWidth={1.2} strokeDasharray="4 2" rx={1.5} />
+      <text x={box.x1 + 4} y={box.y1 + 9} fontSize={7} fill={stroke} className="canvas-text" fontWeight={700}>
+        {name}
+      </text>
+      {blockPins(block).map((p) => (
+        <g key={p.name}>
+          <line x1={p.at[0]} y1={p.at[1]} x2={p.at[0] + 5} y2={p.at[1]} stroke={stroke} strokeWidth={1} />
+          <circle cx={p.at[0]} cy={p.at[1]} r={0.9} fill={stroke} />
+          <text x={p.at[0] + 7} y={p.at[1] + 0.3} fontSize={5.5} fill="var(--pin-text)" dominantBaseline="central" className="canvas-text">
+            {p.name}
+          </text>
+        </g>
+      ))}
+      {!block.pins.some(Boolean) && (
+        <text x={box.x1 + 4} y={box.y1 + 22} fontSize={5} fill="var(--sym-text)" opacity={0.6} className="canvas-text">
+          Add hierarchical ports on its sheet
+        </text>
+      )}
+    </g>
+  );
+});

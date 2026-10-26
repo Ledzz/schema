@@ -5,10 +5,11 @@
  */
 import { useEditor } from '../store/editor';
 import { downloadText } from './actions';
-import { contentBounds } from './editing';
+import { contentBounds, currentView } from './editing';
 import { nextDesignator, splitDesignator } from './schematic/designators';
 import { snap } from './schematic/geometry';
 import { newId } from './schematic/ops';
+import { onSheet, sheetOf } from './schematic/sheets';
 import type { Component, NetPort, Project, StoredSymbol, Vec, Wire } from './schematic/types';
 
 const KEY = 'schematics:blocks';
@@ -81,14 +82,16 @@ export function deleteUserBlock(id: string) {
  * and nets renamed as given. Returns the ids of what it added.
  */
 export function insertUserBlock(block: UserBlock, renames: Record<string, string> = {}, at?: Vec): string[] {
-  const project = st().project;
-  const bounds = contentBounds(project);
+  const bounds = contentBounds(currentView());
+  const sheet = st().currentSheet;
+  const elsewhere = st().project.components.filter((c) => sheetOf(c, st().project) !== sheet);
   const origin: Vec = at ?? (bounds ? [snap(bounds.x2 + 100, 10), snap(bounds.y1, 10)] : [0, 0]);
   const rename = (name: string) => renames[name]?.trim() || name;
   let ids: string[] = [];
   st().addSymbols(block.symbols);
-  st().commit((doc) => {
-    const placed = [...doc.components];
+  st().commit((whole) => onSheet(whole, sheet, (doc) => {
+    // Numbered after every part of the project, on any sheet.
+    const placed = [...elsewhere, ...doc.components];
     const components = block.components.map((c) => {
       const copy: Component = { ...c, id: newId('c'), x: c.x + origin[0], y: c.y + origin[1], attrs: { ...c.attrs } };
       copy.designator = nextDesignator(splitDesignator(c.designator).prefix, placed);
@@ -99,7 +102,7 @@ export function insertUserBlock(block: UserBlock, renames: Record<string, string
     const ports = block.ports.map((p) => ({ ...p, id: newId('n'), name: p.kind === 'noconnect' ? p.name : rename(p.name), x: p.x + origin[0], y: p.y + origin[1] }));
     ids = [...components, ...wires, ...ports].map((i) => i.id);
     return { ...doc, components: [...doc.components, ...components], wires: [...doc.wires, ...wires], ports: [...doc.ports, ...ports] };
-  });
+  }));
   return ids;
 }
 

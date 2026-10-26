@@ -380,7 +380,7 @@ function PortInspector({ p }: { p: NetPort }) {
   const [name, setName] = useState(p.name);
   const [onlyThis, setOnlyThis] = useState(false);
   useEffect(() => setName(p.name), [p.name]);
-  const title = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', noconnect: 'No-connect flag' }[p.kind];
+  const title = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', noconnect: 'No-connect flag', hier: 'Hierarchical port' }[p.kind];
   const sameName = ports.filter((q) => q.kind !== 'noconnect' && q.name === p.name).length;
   const joins = name.trim() !== p.name && ports.some((q) => q.kind !== 'noconnect' && q.name === name.trim());
   const commit = () => {

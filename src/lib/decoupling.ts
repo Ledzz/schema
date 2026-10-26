@@ -5,11 +5,12 @@
  * they join the pins by net name; on the board they still need placing next to their pins.
  */
 import { useEditor } from '../store/editor';
-import { attachPort, connectivity, type ResolvedPin } from './actions';
+import { attachPort, connectivity, resolvedPin, type ResolvedPin } from './actions';
 import { placePassiveAt } from './passives';
 import { boxIntersects, componentBox, normBox, snap, worldPins } from './schematic/geometry';
 import { portBox } from './schematic/hit';
 import { symbolFor } from './schematic/symbols';
+import { sheetOf, sheetView } from './schematic/sheets';
 import { parsePassiveValue } from '../shared/passives';
 import type { Box } from './easyeda/symbol';
 import type { Component, Project, Vec } from './schematic/types';
@@ -40,7 +41,7 @@ export function supplyPins(c: Component, project: Project = st().project, conn: 
     const net = conn.pinNet.get(`${c.id}:${wp.pin.id}`);
     const named = net && !conn.nets.find((n) => n.name === net)?.auto ? net : null;
     if (named && GROUND.test(named)) continue;
-    out.push({ pin: { ...wp, component: c }, label: name && name !== wp.pin.number ? `${wp.pin.number} (${name})` : wp.pin.number, rail: named, analog: ANALOG.test(name) });
+    out.push({ pin: resolvedPin(wp, c, project), label: name && name !== wp.pin.number ? `${wp.pin.number} (${name})` : wp.pin.number, rail: named, analog: ANALOG.test(name) });
   }
   return out;
 }
@@ -183,7 +184,10 @@ export async function addDecoupling(componentId: string, opts: DecouplingOptions
   if (!c) throw new Error('No such component');
   const plan = planDecoupling(c, opts, project);
   if (plan.caps.length === 0) throw new Error(`Nothing to add for ${c.designator}: ${plan.skipped.join('; ')}`);
-  const [x0, y0] = freeRow(c, plan.caps.length, project);
+  // The capacitors go on the IC's own sheet.
+  const sheet = sheetOf(c, project);
+  if (st().currentSheet !== sheet) st().setCurrentSheet(sheet);
+  const [x0, y0] = freeRow(c, plan.caps.length, sheetView(project, sheet));
   const mark = st().historyMark();
   const before = new Set([...mark.components, ...mark.wires, ...mark.ports].map((i) => i.id));
   try {

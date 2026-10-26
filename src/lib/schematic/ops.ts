@@ -3,9 +3,10 @@ import { portBox } from './hit';
 import type { Box } from '../easyeda/symbol';
 import { simplify } from './route';
 import type { SymbolResolver } from './symbols';
-import type { Component, NetPort, Project, Vec, Wire } from './types';
+import { blockPins, blockSlot, hierNames, sheetOf } from './sheets';
+import type { Component, NetPort, Project, SheetBlock, Vec, Wire } from './types';
 
-export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'pcb'>;
+export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'pcb' | 'sheets' | 'blocks'>;
 
 let counter = 0;
 export function newId(prefix: string): string {
@@ -54,8 +55,16 @@ function transformItems(
   symbols: SymbolResolver,
   transform: (c: Component) => Component,
   transformPort: (p: NetPort) => NetPort = (p) => p,
-): Pick<Doc, 'components' | 'wires' | 'ports'> {
+  transformBlock: (b: SheetBlock) => SheetBlock = (b) => b,
+): Pick<Doc, 'components' | 'wires' | 'ports' | 'blocks'> {
   const moves: { from: Vec; to: Vec }[] = [];
+  const blocks = (doc.blocks ?? []).map((b) => {
+    if (!ids.has(b.id)) return b;
+    const next = transformBlock(b);
+    const after = blockPins(next);
+    blockPins(b).forEach((p, i) => moves.push({ from: p.at, to: after[i].at }));
+    return next;
+  });
   const components = doc.components.map((c) => {
     if (!ids.has(c.id)) return c;
     const next = transform(c);
@@ -84,20 +93,27 @@ function transformItems(
     }
     return out;
   });
-  return { components, wires, ports };
+  return { components, wires, ports, blocks };
 }
 
 export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: number, symbols: SymbolResolver): Doc {
   if (dx === 0 && dy === 0) return doc;
-  const { components, wires, ports } = transformItems(
+  const { components, wires, ports, blocks } = transformItems(
     doc,
     ids,
     symbols,
     (c) => ({ ...c, x: c.x + dx, y: c.y + dy }),
     (p) => ({ ...p, x: p.x + dx, y: p.y + dy }),
+    (b) => ({ ...b, x: b.x + dx, y: b.y + dy }),
   );
   // A moved wire whose end is on something staying put keeps that end, turning towards it.
-  const staying = { ...doc, components: doc.components.filter((c) => !ids.has(c.id)), wires: doc.wires.filter((w) => !ids.has(w.id)), ports: doc.ports.filter((p) => !ids.has(p.id)) };
+  const staying = {
+    ...doc,
+    components: doc.components.filter((c) => !ids.has(c.id)),
+    wires: doc.wires.filter((w) => !ids.has(w.id)),
+    ports: doc.ports.filter((p) => !ids.has(p.id)),
+    blocks: (doc.blocks ?? []).filter((b) => !ids.has(b.id)),
+  };
   return {
     ...doc,
     components,
@@ -110,12 +126,14 @@ export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: nu
       return { ...w, points: moveWirePoints(w.points, moved, [dx, dy], fixed) };
     }),
     ports,
+    blocks,
   };
 }
 
-/** Whether a point is connected to something in `doc` other than `wireId`: a pin, a label or flag, or another wire. */
-export function attachedAt(doc: Pick<Doc, 'components' | 'wires' | 'ports'>, symbols: SymbolResolver, p: Vec, wireId?: string): boolean {
+/** Whether a point is connected to something in `doc` other than `wireId`: a pin, a block pin, a label or flag, or another wire. */
+export function attachedAt(doc: Pick<Doc, 'components' | 'wires' | 'ports' | 'blocks'>, symbols: SymbolResolver, p: Vec, wireId?: string): boolean {
   if (doc.ports.some((q) => samePoint([q.x, q.y], p))) return true;
+  if ((doc.blocks ?? []).some((b) => blockPins(b).some((pin) => samePoint(pin.at, p)))) return true;
   if (doc.wires.some((w) => w.id !== wireId && w.points.some((q, i) => (i === 0 ? samePoint(p, q) : onSegment(p, w.points[i - 1], q))))) return true;
   return doc.components.some((c) => worldPins(c, symbols(c.symbolKey)).some((pin) => samePoint(pin.at, p)));
 }
@@ -302,13 +320,15 @@ export function deleteItems(doc: Doc, ids: ReadonlySet<string>, symbols?: Symbol
     components: doc.components.filter(keep),
     wires: doc.wires.filter(keep),
     ports: doc.ports.filter(keep),
+    blocks: (doc.blocks ?? []).filter(keep),
   };
   const removed = doc.components.filter(isSelected(ids));
-  if (!symbols || removed.length === 0) return out;
+  const removedBlocks = (doc.blocks ?? []).filter(isSelected(ids));
+  if (!symbols || removed.length + removedBlocks.length === 0) return out;
   const orphans = orphanedWiring(
     out,
-    removed.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)),
-    out.components.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)),
+    [...removed.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)), ...removedBlocks.flatMap((b) => blockPins(b).map((p) => p.at))],
+    [...out.components.flatMap((c) => worldPins(c, symbols(c.symbolKey)).map((p) => p.at)), ...(out.blocks ?? []).flatMap((b) => blockPins(b).map((p) => p.at))],
   );
   if (orphans.size === 0) return out;
   return { ...out, wires: out.wires.filter((w) => !orphans.has(w.id)), ports: out.ports.filter((p) => !orphans.has(p.id)) };
@@ -414,4 +434,56 @@ export function addWire(doc: Doc, points: Vec[]): { doc: Doc; id: string | null 
   if (pts.length < 2) return { doc, id: null };
   const wire: Wire = { id: newId('w'), points: pts };
   return { doc: { ...doc, wires: [...doc.wires, wire] }, id: wire.id };
+}
+
+/**
+ * Brings every block's pins in step with its child sheet's hierarchical ports, without moving a
+ * pin onto another pin's wiring: pins keep their places (a renamed port keeps its slot, new ones
+ * go at the end), a removed port's slot stays empty while wiring still ends there, and pins that
+ * move up into a freed slot take their wires along.
+ */
+export function syncBlocks<T extends Pick<Project, 'wires' | 'ports' | 'sheets' | 'blocks'>>(doc: T): T {
+  if (!doc.blocks?.length) return doc;
+  const moves: { sheet: string; from: Vec; to: Vec }[] = [];
+  let changed = false;
+  const blocks = doc.blocks.map((b) => {
+    const names = hierNames(doc, b.child);
+    const sheet = sheetOf(b, doc);
+    const wired = (at: Vec) =>
+      doc.wires.some((w) => sheetOf(w, doc) === sheet && (samePoint(w.points[0], at) || samePoint(w.points[w.points.length - 1], at))) ||
+      doc.ports.some((p) => sheetOf(p, doc) === sheet && samePoint([p.x, p.y], at));
+    const removed = b.pins.filter((p) => p && !names.includes(p));
+    const added = names.filter((n) => !b.pins.includes(n));
+    const pins =
+      removed.length === 1 && added.length === 1
+        ? b.pins.map((p) => (p === removed[0] ? added[0] : p))
+        : [...b.pins.flatMap((p, i) => (names.includes(p) ? [p] : wired(blockSlot(b, i)) ? [''] : [])), ...added];
+    while (pins.length && !pins[pins.length - 1]) pins.pop();
+    if (pins.length === b.pins.length && pins.every((p, i) => p === b.pins[i])) return b;
+    changed = true;
+    const next = { ...b, pins };
+    const after = new Map(blockPins(next).map((p) => [p.name, p.at]));
+    for (const p of blockPins(b)) {
+      const to = after.get(p.name);
+      if (to && !samePoint(to, p.at)) moves.push({ sheet, from: p.at, to });
+    }
+    return next;
+  });
+  if (!changed) return doc;
+  if (!moves.length) return { ...doc, blocks };
+  const moveAt = (item: { sheet?: string }, at: Vec) => moves.find((m) => m.sheet === sheetOf(item, doc) && samePoint(m.from, at));
+  const wires = doc.wires.map((w) => {
+    if (w.points.length < 2) return w;
+    let out = w;
+    for (const end of [0, w.points.length - 1]) {
+      const m = moveAt(w, w.points[end]);
+      if (m) out = dragWireEnd(out, end === 0 ? 0 : out.points.length - 1, m.to);
+    }
+    return out;
+  });
+  const ports = doc.ports.map((p) => {
+    const m = moveAt(p, [p.x, p.y]);
+    return m ? { ...p, x: m.to[0], y: m.to[1] } : p;
+  });
+  return { ...doc, blocks, wires, ports };
 }

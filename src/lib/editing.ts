@@ -4,6 +4,7 @@
 import { useEditor } from '../store/editor';
 import { nextDesignator, splitDesignator, annotate } from './schematic/designators';
 import { componentBox, samePoint, snap, unionBoxes } from './schematic/geometry';
+import { blockBox, onSheet, sheetOf, sheetView } from './schematic/sheets';
 import { portBox } from './schematic/hit';
 import { alignItems, deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type AlignMode, type Doc } from './schematic/ops';
 import { connectionNear } from './schematic/hit';
@@ -11,40 +12,50 @@ import { elbow, simplify, wireVerticalFirst } from './schematic/route';
 import { resolverFor } from './schematic/symbols';
 import type { Component, Project, Vec } from './schematic/types';
 import { emptyProject } from '../store/editor';
-import { downloadText, pinByKey, planPinRoute, safeFileName, type ResolvedPin } from './actions';
+import { downloadText, endByKey, planPinRoute, safeFileName, type PinEnd } from './actions';
 
 const st = () => useEditor.getState();
 const selectedSet = () => new Set(st().selection);
 const symbols = () => resolverFor(st().project);
 
+/** The project as seen on the sheet being drawn on. */
+export const currentView = (): Project => sheetView(st().project, st().currentSheet);
+
+/** Commits an edit to the sheet being drawn on: geometry never reaches other sheets. */
+export const commitSheet = (edit: (view: Doc) => Doc) => st().commit((doc) => onSheet(doc, st().currentSheet, edit));
+
 export function deleteSelection() {
   const ids = selectedSet();
   if (ids.size === 0) return;
-  st().commit((doc) => deleteItems(doc, ids, symbols()));
+  commitSheet((doc) => deleteItems(doc, ids, symbols()));
   st().setSelection([]);
 }
 
 export function rotateSelection() {
   const s = st();
-  if (s.tool === 'place' || s.tool === 'label' || s.tool === 'power' || s.tool === 'ground') return s.rotatePlacement();
+  if (s.tool === 'place' || s.tool === 'label' || s.tool === 'power' || s.tool === 'ground' || s.tool === 'hier') return s.rotatePlacement();
   const ids = selectedSet();
-  if (ids.size) s.commit((doc) => rotateItems(doc, ids, symbols()));
+  if (ids.size) commitSheet((doc) => rotateItems(doc, ids, symbols()));
 }
 
 export function mirrorSelection() {
   const s = st();
   if (s.tool === 'place') return s.mirrorPlacement();
   const ids = selectedSet();
-  if (ids.size) s.commit((doc) => mirrorItems(doc, ids, symbols()));
+  if (ids.size) commitSheet((doc) => mirrorItems(doc, ids, symbols()));
 }
 
-const renameCopy = (c: Component, placed: Component[]) => nextDesignator(splitDesignator(c.designator).prefix, placed);
+/** A copy's designator, numbered after every part of the project (on any sheet). */
+const renameCopy = (c: Component, placed: Component[]) => {
+  const elsewhere = st().project.components.filter((x) => sheetOf(x, st().project) !== st().currentSheet);
+  return nextDesignator(splitDesignator(c.designator).prefix, [...elsewhere, ...placed]);
+};
 
 export function duplicateSelection() {
   const ids = selectedSet();
   if (ids.size === 0) return;
   let created: string[] = [];
-  st().commit((doc) => {
+  commitSheet((doc) => {
     const r = duplicateItems(doc, ids, [20, 20], renameCopy);
     created = r.newIds;
     return r.doc;
@@ -80,7 +91,8 @@ export function paste(at?: Vec) {
   }
   let created: string[] = [];
   st().addSymbols(clip.symbols);
-  st().commit((doc) => {
+  // Pasted onto the sheet being drawn on, wherever it was copied from.
+  commitSheet((doc) => {
     const placed = [...doc.components];
     const components = clip.components.map((c) => {
       const copy: Component = { ...c, id: newId('c'), x: c.x + off[0], y: c.y + off[1], attrs: { ...c.attrs } };
@@ -101,18 +113,18 @@ export function paste(at?: Vec) {
 /** Aligns or distributes the selected parts and labels as one undo step. */
 export function alignSelection(mode: AlignMode) {
   const ids = selectedSet();
-  st().commit((doc) => alignItems(doc, ids, mode, symbols()));
+  commitSheet((doc) => alignItems(doc, ids, mode, symbols()));
 }
 
 export function selectAll() {
-  const { project } = st();
-  st().setSelection([...project.components, ...project.wires, ...project.ports].map((i) => i.id));
+  const project = currentView();
+  st().setSelection([...project.components, ...project.wires, ...project.ports, ...(project.blocks ?? [])].map((i) => i.id));
 }
 
 export function finishWireDraft() {
   const { wireDraft: draft, wireOneShot } = st();
   st().setWireDraft(null);
-  if (draft && draft.length >= 2) st().commit((doc) => dropNoConnects(addWire(doc, draft).doc, [draft[0], draft[draft.length - 1]]));
+  if (draft && draft.length >= 2) commitSheet((doc) => dropNoConnects(addWire(doc, draft).doc, [draft[0], draft[draft.length - 1]]));
   if (wireOneShot) st().setTool('select');
 }
 
@@ -128,9 +140,9 @@ export function removeWirePoint(): boolean {
   return true;
 }
 
-const pinAt = (project: Project, p: Vec): ResolvedPin | null => {
+const pinAt = (project: Project, p: Vec): PinEnd | null => {
   const hit = connectionNear(project, resolverFor(project), p, 0.01);
-  return hit?.kind === 'pin' && hit.ref ? pinByKey(hit.ref, project) : null;
+  return (hit?.kind === 'pin' || hit?.kind === 'block') && hit.ref ? endByKey(hit.ref, project) : null;
 };
 
 /**
@@ -138,7 +150,7 @@ const pinAt = (project: Project, p: Vec): ResolvedPin | null => {
  * another it is routed around parts (unless the bend was flipped, which asks for a plain bend);
  * otherwise it is an L-bend that leaves a pin along the pin and turns at each corner.
  */
-export function wireDraftTo(draft: Vec[], to: Vec, project: Project = st().project, flip = st().wireFlip): { points: Vec[]; routed: boolean } {
+export function wireDraftTo(draft: Vec[], to: Vec, project: Project = currentView(), flip = st().wireFlip): { points: Vec[]; routed: boolean } {
   const start = pinAt(project, draft[0]);
   if (draft.length === 1 && start && !flip) {
     const end = pinAt(project, to);
@@ -155,6 +167,7 @@ export function contentBounds(project: Project) {
   const boxes = [
     ...project.components.map((c) => componentBox(c, resolve(c.symbolKey))),
     ...project.ports.map(portBox),
+    ...(project.blocks ?? []).map(blockBox),
     ...project.wires.map((w) => {
       const xs = w.points.map((p) => p[0]);
       const ys = w.points.map((p) => p[1]);
@@ -167,14 +180,22 @@ export function contentBounds(project: Project) {
 /** Height of the schematic's floating toolbar, which sits over the top of the canvas. */
 const TOOLBAR_HEIGHT = 56;
 
+/** Zooms to fit the sheet, or the given items (switching to their sheet first). */
 export function fitView(ids?: string[]) {
-  const { project, canvasSize } = st();
+  const whole = st().project;
+  if (ids?.length) {
+    const item = [...whole.components, ...whole.wires, ...whole.ports, ...(whole.blocks ?? [])].find((i) => ids.includes(i.id));
+    if (item && sheetOf(item, whole) !== st().currentSheet) st().setCurrentSheet(sheetOf(item, whole));
+  }
+  const { canvasSize } = st();
+  const project = currentView();
   const subset: Project = ids?.length
     ? {
         ...project,
         components: project.components.filter((c) => ids.includes(c.id)),
         wires: project.wires.filter((w) => ids.includes(w.id)),
         ports: project.ports.filter((p) => ids.includes(p.id)),
+        blocks: (project.blocks ?? []).filter((b) => ids.includes(b.id)),
       }
     : project;
   const b = contentBounds(subset);
@@ -194,6 +215,12 @@ export function fitView(ids?: string[]) {
     x: canvasSize.width / 2 - ((b.x1 + b.x2) / 2) * zoom,
     y: top + (canvasSize.height - top) / 2 - ((b.y1 + b.y2) / 2) * zoom,
   });
+}
+
+/** Shows another sheet, fitted to the window once it is drawn. */
+export function openSheet(id: string) {
+  st().setCurrentSheet(id);
+  requestAnimationFrame(() => fitView());
 }
 
 export function zoomBy(factor: number, at?: Vec) {
@@ -234,7 +261,7 @@ export async function openProjectFile(file: File) {
 
 /** Serializes the drawing (not the grid) as a standalone SVG. */
 export function exportSvg(svg: SVGSVGElement | null) {
-  const { project } = st();
+  const project = currentView();
   const content = svg?.querySelector('[data-layer="world"]');
   const b = contentBounds(project);
   if (!content || !b) return;
