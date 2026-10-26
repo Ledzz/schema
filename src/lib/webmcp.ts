@@ -479,7 +479,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'add_decoupling',
     title: 'Add decoupling capacitors',
     description:
-      'Add decoupling for an IC: 100 nF per supply pin (VDD, VCC, VIN…), 1 µF + 10 nF on analog supply pins (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags (one undo step). Capacitors on rails above 5 V get a voltage rating. Supply pins not yet on a named net need `rail` and are connected to it.',
+      'Add decoupling for an IC: 100 nF per supply pin (VDD, VCC, VIN…), 1 µF + 10 nF on analog supply pins (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags (one undo step). Capacitors on rails above 5 V get a voltage rating. Supply pins not yet on a named net need `rail` and are connected to it. By default it adds only what the rails lack: capacitors already between a rail and GND count against every supply pin on that rail, and `skipped` says what was left out.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -488,6 +488,7 @@ export const TOOLS: ToolDefinition[] = [
         value: { type: 'string', description: 'Capacitor per supply pin (default "100n").' },
         size: { type: 'string', description: 'Chip size for those capacitors (default "0603"); bulk capacitors are 0805.' },
         bulk: { type: 'boolean', description: 'Add a 10 µF bulk capacitor per rail (default true).' },
+        skip_existing: { type: 'boolean', description: 'Leave out what the rails already have (default true); false adds the full set.' },
       },
       required: ['designator'],
     },
@@ -498,9 +499,14 @@ export const TOOLS: ToolDefinition[] = [
         value: input.value === undefined ? undefined : String(input.value),
         size: input.size === undefined ? undefined : String(input.size),
         bulk: input.bulk === undefined ? undefined : Boolean(input.bulk),
+        skipExisting: input.skip_existing === undefined ? undefined : Boolean(input.skip_existing),
       });
       st().setSelection(r.ids);
-      return { capacitors: r.caps.map((cap) => ({ designator: cap.designator, value: cap.value, rail: cap.rail, for_pin: cap.pin ?? 'bulk' })), connected_pins: r.connected.length ? r.connected : undefined };
+      return {
+        capacitors: r.caps.map((cap) => ({ designator: cap.designator, value: cap.value, rail: cap.rail, for_pin: cap.pin ?? 'bulk' })),
+        connected_pins: r.connected.length ? r.connected : undefined,
+        skipped: r.skipped.length ? r.skipped : undefined,
+      };
     },
   },
   {

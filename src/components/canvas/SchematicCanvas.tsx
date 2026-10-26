@@ -136,6 +136,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     const s = useEditor.getState();
     svgRef.current?.setPointerCapture(e.pointerId);
     const w = toWorld(e.clientX, e.clientY);
+    // The pin's tooltip describes the drawing before this click; the next move brings it back.
+    setHover(null);
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
       interaction.current = { mode: 'pan', start: [e.clientX, e.clientY], view: { x: s.view.x, y: s.view.y } };
       return;

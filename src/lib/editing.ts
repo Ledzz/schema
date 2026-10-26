@@ -150,6 +150,9 @@ export function contentBounds(project: Project) {
   return unionBoxes(boxes);
 }
 
+/** Height of the schematic's floating toolbar, which sits over the top of the canvas. */
+const TOOLBAR_HEIGHT = 56;
+
 export function fitView(ids?: string[]) {
   const { project, canvasSize } = st();
   const subset: Project = ids?.length
@@ -166,13 +169,15 @@ export function fitView(ids?: string[]) {
     return;
   }
   const margin = 60;
+  // The floating toolbar covers the top of the canvas: fit into the area below it.
+  const top = TOOLBAR_HEIGHT;
   const w = Math.max(b.x2 - b.x1, 40);
   const h = Math.max(b.y2 - b.y1, 40);
-  const zoom = Math.min(8, Math.max(0.2, Math.min((canvasSize.width - margin * 2) / w, (canvasSize.height - margin * 2) / h)));
+  const zoom = Math.min(8, Math.max(0.2, Math.min((canvasSize.width - margin * 2) / w, (canvasSize.height - top - margin * 2) / h)));
   st().setView({
     zoom,
     x: canvasSize.width / 2 - ((b.x1 + b.x2) / 2) * zoom,
-    y: canvasSize.height / 2 - ((b.y1 + b.y2) / 2) * zoom,
+    y: top + (canvasSize.height - top) / 2 - ((b.y1 + b.y2) / 2) * zoom,
   });
 }
 

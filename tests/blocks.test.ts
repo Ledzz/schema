@@ -149,6 +149,17 @@ describe('decoupling', () => {
     for (const c of st().project.components.filter((x) => x.designator.startsWith('C'))) expect(c.y).toBeGreaterThan(40);
   });
 
+  it('adds only what the rails lack', async () => {
+    await addDecoupling('u', { rail: '+3V3' });
+    // A second press finds a capacitor for every supply pin and a bulk one already there.
+    const again = planDecoupling(st().project.components[0]);
+    expect(again.caps).toEqual([]);
+    expect(again.skipped).toEqual(['+3V3 has 4 capacitors for 4 on its supply pins', '+3V3 already has a bulk capacitor']);
+    await expect(addDecoupling('u')).rejects.toThrow(/Nothing to add for U1/);
+    // Asked for the full set, it adds it regardless.
+    expect(planDecoupling(st().project.components[0], { skipExisting: false }).caps).toHaveLength(5);
+  });
+
   it('rates capacitors on rails above 5 V', () => {
     expect(railVoltage('+3V3')).toBe(3.3);
     expect(railVoltage('+12V')).toBe(12);

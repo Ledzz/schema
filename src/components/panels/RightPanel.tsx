@@ -311,9 +311,11 @@ function DecouplingSection({ c }: { c: Component }) {
   const loose = pins.filter((p) => !p.rail);
   const chosenRail = rail ?? commonRail;
   let caps: PlannedCap[] = [];
+  let skipped: string[] = [];
   let problem: string | null = null;
   try {
-    caps = planDecoupling(c, { rail: chosenRail, bulk }, project).caps;
+    ({ caps, skipped } = planDecoupling(c, { rail: chosenRail, bulk }, project));
+    if (caps.length === 0) problem = 'The rails already have all the capacitors these pins call for';
   } catch (err) {
     problem = (err as Error).message;
   }
@@ -350,6 +352,7 @@ function DecouplingSection({ c }: { c: Component }) {
       <label className="flex items-center gap-2 text-[11px]">
         <input type="checkbox" checked={bulk} onChange={(e) => setBulk(e.target.checked)} /> 10 µF bulk capacitor per rail
       </label>
+      {skipped.length > 0 && <p className="text-[11px] text-muted">{skipped.join(' · ')}.</p>}
       <button
         onClick={() => void add()}
         disabled={busy || !!problem}
@@ -357,7 +360,7 @@ function DecouplingSection({ c }: { c: Component }) {
         className="inline-flex h-7 w-full items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 disabled:opacity-45 dark:hover:bg-white/5"
       >
         <Plus className="h-3.5 w-3.5" />
-        {busy ? 'Adding…' : `Add ${[...counts].map(([v, n]) => `${n} × ${v}`).join(', ') || 'capacitors'}`}
+        {busy ? 'Adding…' : caps.length ? `Add ${[...counts].map(([v, n]) => `${n} × ${v}`).join(', ')}` : 'Nothing to add'}
       </button>
     </div>
   );
