@@ -5,6 +5,7 @@ import {
   type PartClass,
   type PartDetail,
   type PartModel,
+  type PartStep,
   type PartSummary,
   type SearchFacets,
   type SearchQuery,
@@ -13,7 +14,7 @@ import {
 } from '../src/shared/parts';
 import { TtlCache } from './cache';
 import { countInStockByClass, getPart, searchFacets, searchParts } from './jlcpcb';
-import { getDevice, getModel, getStock } from './easyeda';
+import { getDevice, getModel, getStepModel, getStock } from './easyeda';
 import { matchPassive, type PassiveMatch } from './match';
 import { PASSIVE_KINDS, type PassiveKind } from '../src/shared/passives';
 
@@ -24,6 +25,8 @@ const partCache = new TtlCache<PartSummary | null>(2000, 30 * MINUTE);
 const deviceCache = new TtlCache<DeviceData | null>(2000, 24 * 60 * MINUTE);
 const matchCache = new TtlCache<PassiveMatch>(1000, 30 * MINUTE);
 const modelCache = new TtlCache<PartModel | null>(300, 24 * 60 * MINUTE);
+// STEP models run to megabytes each; keep a few boards' worth.
+const stepCache = new TtlCache<PartStep | null>(40, 24 * 60 * MINUTE);
 
 const LCSC_CODE = /^C\d{1,12}$/i;
 const SORTS: SortKey[] = ['relevance', 'stock', 'price', 'mpn'];
@@ -136,6 +139,18 @@ api.get('/parts/:code/model', async (c) => {
     return device ? getModel(device) : null;
   });
   if (!model) return c.json({ error: `No 3D model for ${code}` }, 404);
+  c.header('cache-control', 'public, max-age=86400');
+  return c.json(model);
+});
+
+api.get('/parts/:code/step', async (c) => {
+  const code = c.req.param('code').toUpperCase();
+  if (!LCSC_CODE.test(code)) return c.json({ error: 'Expected an LCSC part number like C25804' }, 400);
+  const model = await stepCache.get(code, async () => {
+    const device = await deviceCache.get(code, () => getDevice(code));
+    return device ? getStepModel(device) : null;
+  });
+  if (!model) return c.json({ error: `No STEP model for ${code}` }, 404);
   c.header('cache-control', 'public, max-age=86400');
   return c.json(model);
 });

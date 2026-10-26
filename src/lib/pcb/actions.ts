@@ -2,7 +2,7 @@
  * PCB editing actions shared by the PCB editor UI and the WebMCP tools.
  */
 import { ROUTE_MODE_NAMES, useEditor, type RouteMode } from '../../store/editor';
-import { fetchPartDetail } from '../api';
+import { fetchPartDetail, fetchPartStep } from '../api';
 import { downloadText, safeFileName } from '../actions';
 import { samePoint } from '../schematic/geometry';
 import { newId } from '../schematic/ops';
@@ -13,6 +13,8 @@ import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardMod
 import { pointShapeDistance, rotateDeg, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { POUR_EDGE_CLEARANCE } from './pour';
 import { applyShove, firstCollision, shove, trackMovers, type Mover, type ShoveResult } from './shove';
+import { boardStep, type StepResult } from './step';
+import type { PartStep } from '../../shared/parts';
 import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
@@ -967,6 +969,45 @@ export function exportFabrication(skip: ReadonlySet<string> = new Set(), withAss
   downloadText(`${base}-CPL.csv`, cpl, 'text/csv');
   downloadText(`${base}-BOM.csv`, bom, 'text/csv');
   return { files: [`${base}-gerbers.zip`, `${base}-CPL.csv`, `${base}-BOM.csv`] };
+}
+
+/* ---------- STEP ---------- */
+
+/** STEP models for the board's parts by component id (one fetch per LCSC part, four at a time). */
+export async function partStepModels(project: Project = st().project): Promise<Map<string, PartStep>> {
+  const { board } = boardModel(project);
+  const codes = [...new Set(board.parts.map((p) => p.component.lcsc).filter((c): c is string => !!c))];
+  const byCode = new Map<string, PartStep | null>();
+  const queue = [...codes];
+  await Promise.all(
+    Array.from({ length: 4 }, async () => {
+      for (let code = queue.shift(); code; code = queue.shift()) byCode.set(code, await fetchPartStep(code).catch(() => null));
+    }),
+  );
+  const out = new Map<string, PartStep>();
+  for (const p of board.parts) {
+    const m = p.component.lcsc ? byCode.get(p.component.lcsc) : null;
+    if (m) out.set(p.component.id, m);
+  }
+  return out;
+}
+
+/** The assembled board as a STEP file, with EasyEDA's part models fetched. */
+export async function boardStepFile(project: Project = st().project): Promise<StepResult & { file: string }> {
+  const { pcb, board } = boardModel(project);
+  if (!pcb.placements.length) throw new Error('The board is empty; update it from the schematic first');
+  const name = safeFileName(project.name);
+  return { ...boardStep({ pcb, board, name, models: await partStepModels(project) }), file: `${name}.step` };
+}
+
+/** Builds and downloads the STEP file. */
+export async function exportStep(): Promise<StepResult & { file: string }> {
+  const s = st();
+  s.notify('Building the STEP file: fetching part models…');
+  const r = await boardStepFile();
+  downloadText(r.file, r.step, 'model/step');
+  s.notify(`Downloaded ${r.file}${r.blocks.length ? `; ${r.blocks.join(', ')} have no 3D model and are blocks` : ''}`);
+  return r;
 }
 
 export type { BoardModel };

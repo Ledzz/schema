@@ -32,7 +32,7 @@ import { fitView, newProject, reannotate } from './editing';
 import { EXTENDED_SETUP_FEE, PART_CLASSES, splitPackageQuery, type PartClass, type SortKey } from '../shared/parts';
 import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
-import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
@@ -1196,6 +1196,18 @@ export const TOOLS: ToolDefinition[] = [
       properties: { hand_solder_through_hole: { type: 'boolean', description: 'Leave through-hole parts out of the assembly files (default false).' } },
     },
     execute: async (input) => exportFabrication(input.hand_solder_through_hole ? throughHoleIds() : undefined),
+  },
+  {
+    name: 'pcb_export_step',
+    title: 'Export the board as STEP',
+    description:
+      'Download the assembled board as one STEP file (AP214) for enclosure design in FreeCAD, Fusion, SolidWorks and similar: the board solid with its outline, drill holes and cutouts, and every part’s EasyEDA STEP model placed as on the board (parts without a model become blocks). Fetches the models, so it takes a few seconds.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const r = await exportStep();
+      return { file: r.file, models: r.models, blocks: r.blocks.length ? r.blocks : undefined, bytes: r.step.length };
+    },
   },
   {
     name: 'new_schematic',

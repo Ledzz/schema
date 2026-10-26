@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Box, Download, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import { BoardViewer, type LoadStatus, type View3d } from '../../lib/pcb/viewer3d';
+import { exportStep } from '../../lib/pcb/actions';
 import { cx } from '../ui';
 
 const VIEWS: { id: View3d; label: string }[] = [
@@ -18,6 +19,7 @@ export default function Board3D() {
   const components = useEditor((s) => s.project.components);
   const [status, setStatus] = useState<LoadStatus | null>(null);
   const [parts, setParts] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     const v = new BoardViewer(host.current!);
@@ -54,6 +56,19 @@ export default function Board3D() {
           data-tip="Show or hide the parts"
         >
           {parts ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} Parts
+        </button>
+        <button
+          onClick={() => {
+            if (exporting) return;
+            setExporting(true);
+            exportStep()
+              .catch((err) => useEditor.getState().notify(`STEP export failed: ${(err as Error).message}`, 'error'))
+              .finally(() => setExporting(false));
+          }}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10"
+          data-tip="Download the assembled board as a STEP file for enclosure design (FreeCAD, Fusion, SolidWorks …)"
+        >
+          {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} STEP
         </button>
         <button onClick={() => useEditor.getState().setPcb3d(false)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10" data-tip="Back to the 2D editor (3)">
           <Box className="h-3.5 w-3.5" /> 2D

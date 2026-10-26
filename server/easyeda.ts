@@ -1,6 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
-import type { DeviceData, LibraryDoc, PartModel, StockInfo } from '../src/shared/parts';
+import type { DeviceData, LibraryDoc, PartModel, PartStep, StockInfo } from '../src/shared/parts';
 
 /*
  * EasyEDA Pro library access, reverse-engineered from pro.easyeda.com (EasyEDA Pro v3.2.209):
@@ -120,6 +120,22 @@ export async function getModel(device: DeviceData): Promise<PartModel | null> {
   const obj = await fetch(`https://modules.easyeda.com/3dmodel/${encodeURIComponent(file)}`);
   if (!obj.ok) return null;
   return { lcsc: device.lcsc, title: device.attributes['3D Model Title'] ?? '', transform: transform.slice(0, 9), obj: await obj.text() };
+}
+
+/** The STEP original of a device's 3D model (same model and transform as getModel). */
+export async function getStepModel(device: DeviceData): Promise<PartStep | null> {
+  const uuid = device.attributes['3D Model'];
+  const transform = (device.attributes['3D Model Transform'] ?? '').split(',').map(Number);
+  if (!uuid || transform.length < 9 || transform.some((n) => !Number.isFinite(n))) return null;
+  const res = await fetch(`${ORIGIN}/api/v2/components/${encodeURIComponent(uuid)}?path=${SYSTEM_LIBRARY}`, { headers: { accept: 'application/json' } });
+  const doc = (await res.json().catch(() => null)) as { success?: boolean; result?: { dataStr?: string } } | null;
+  if (!doc?.success || !doc.result?.dataStr) return null;
+  const file = (JSON.parse(doc.result.dataStr) as { model?: string }).model;
+  if (!file) return null;
+  const step = await fetch(`https://modules.easyeda.com/qAxj6KHrDKw4blvCG8QJPs7Y/${encodeURIComponent(file)}`);
+  const text = step.ok ? await step.text() : '';
+  if (!text.startsWith('ISO-10303-21')) return null;
+  return { lcsc: device.lcsc, title: device.attributes['3D Model Title'] ?? '', transform: transform.slice(0, 9), file, step: text };
 }
 
 export async function getStock(codes: string[]): Promise<StockInfo[]> {

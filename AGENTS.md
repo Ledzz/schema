@@ -34,7 +34,7 @@ lazy-loaded modules changed.
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
   (`render.ts`), push-and-shove and segment dragging (`shove.ts`), silkscreen text, logos and
   designator labels (`silk.ts`, `font.ts`, `logo.ts`),
-  3D (`model3d.ts`, `viewer3d.ts`), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
+  3D (`model3d.ts`, `viewer3d.ts`), STEP export (`step.ts`), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
   whose `JLC` constants hold JLCPCB's published limits).
 - `src/lib/actions.ts`, `src/lib/passives.ts` – schematic actions shared by the UI and the tools.
 - `src/lib/webmcp.ts` – every agent tool (`TOOLS`), input validation and `runTool`.

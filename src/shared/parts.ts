@@ -97,6 +97,17 @@ export interface DeviceData {
 }
 
 /** A part's 3D model as EasyEDA serves it. */
+/** A part's STEP model (AP214, millimetres) and how EasyEDA places it, for the STEP export. */
+export interface PartStep {
+  lcsc: string;
+  title: string;
+  /** Same layout as PartModel.transform. */
+  transform: number[];
+  /** EasyEDA's model file id: parts sharing a model share it. */
+  file: string;
+  step: string;
+}
+
 export interface PartModel {
   lcsc: string;
   title: string;

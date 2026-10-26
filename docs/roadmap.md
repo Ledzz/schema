@@ -6,17 +6,21 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **STEP export of the assembled board** — the 3D view already has the models; enclosure
-   design needs the board as a STEP file.
-2. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
-3. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
+1. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
+2. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
    other.
-4. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
+3. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
    router still leaves a connection or two for manual routing.
-5. **Length tuning and differential pairs** — for USB and other matched signals.
+4. **Length tuning and differential pairs** — for USB and other matched signals.
+5. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+   parts that collide with it.
 
 ## Done
 
+- **STEP export of the assembled board** (2026-10-26): one AP214 file with the board solid
+  (outline, cylindrical drill and mounting holes, slots, cutouts) and EasyEDA's STEP model of
+  every part, each model included once and placed as in the 3D view; from the File menu, the 3D
+  view, an agent tool and the command line. Checked by reading it with OpenCascade.
 - **Push-and-shove routing and track dragging** (2026-10-26): Push, Walk around and Ignore
   routing modes (`M`); routes and dragged segments push other nets' tracks aside recursively,
   keeping their ends with 45° jogs and stopping at pads, vias and the edge; walk-around routes
@@ -90,7 +94,7 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Outputs and ordering
 
-- ODB++, IPC-356, DXF, PDF fabrication and assembly drawings, STEP export, export to Altium or
+- ODB++, IPC-356, DXF, PDF fabrication and assembly drawings, export to Altium or
   KiCad.
 - Fully one-click ordering (EasyEDA uses JLC's internal upload service; ours is the guided
   order sheet).
@@ -98,7 +102,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## 3D and mechanical
 
-- STEP export, height and clearance checks, enclosure design (the 3D view itself is done).
+- Height and clearance checks, enclosure design (the 3D view and STEP export are done); copper
+  and silkscreen in the STEP file (it has the bare board shape today).
 
 ## Simulation
 

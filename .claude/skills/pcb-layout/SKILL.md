@@ -181,6 +181,10 @@ annular rings and silkscreen too small to print. Fix every `fail` before exporti
   assembly (CPL y is measured up from the bottom edge, as JLCPCB expects);
 - `<slug>.net.txt`: the netlist, for reference.
 
+If the user designs an enclosure or asks for a 3D model of the board, `pcb_export_step` writes
+`<slug>-fab/<slug>.step` (the board with every part's STEP model, about 20 MB for a small board;
+parts without a model become blocks, listed in `blocks`).
+
 Then tell the user:
 
 - board size, layer count, part count, that DRC passed, and anything worth a look (DRC warnings

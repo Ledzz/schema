@@ -1,4 +1,4 @@
-import type { PartDetail, PartModel, SearchFacets, SearchQuery, SearchResult, StockInfo } from '../shared/parts';
+import type { PartDetail, PartModel, PartStep, SearchFacets, SearchQuery, SearchResult, StockInfo } from '../shared/parts';
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -45,6 +45,12 @@ export function fetchPartDetail(lcsc: string): Promise<PartDetail> {
 const modelCache = new Map<string, Promise<PartModel | null>>();
 
 /** A part's 3D model, or null when EasyEDA has none (results are kept for the session). */
+/** A part's STEP model for the STEP export, or null when EasyEDA has none. */
+export async function fetchPartStep(lcsc: string): Promise<PartStep | null> {
+  const res = await fetch(`/api/parts/${encodeURIComponent(lcsc.trim().toUpperCase())}/step`);
+  return res.ok ? ((await res.json()) as PartStep) : null;
+}
+
 export function fetchPartModel(lcsc: string): Promise<PartModel | null> {
   const code = lcsc.trim().toUpperCase();
   let hit = modelCache.get(code);

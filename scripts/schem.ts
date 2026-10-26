@@ -168,6 +168,15 @@ async function main() {
         hand_soldered: st().project.components.filter((c) => skip.has(c.id)).map((c) => c.designator),
       };
     },
+    pcb_export_step: async () => {
+      const { boardStepFile } = await import('../src/lib/pcb/actions');
+      const r = await boardStepFile(st().project);
+      const dir = join(dirname(projectPath), `${slug}-fab`);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, r.file);
+      writeFileSync(file, r.step);
+      return { file, models: r.models, blocks: r.blocks.length ? r.blocks : undefined, megabytes: Math.round(r.step.length / 1e5) / 10 };
+    },
     pcb_add_logo: async (input) => placeTracedLogo(input, await rasterizeImage(String(input.image), TRACE_RESOLUTION)),
     pcb_render: async (input) => {
       const { svg, widthPx, heightPx } = pcbPicture(input);
@@ -181,6 +190,8 @@ async function main() {
     },
   };
   const cliDescriptions: Record<string, string> = {
+    pcb_export_step:
+      'Write the assembled board as a STEP file (AP214) to <project>-fab/<name>.step for enclosure design: the board solid with outline, drill holes and cutouts, and every part’s EasyEDA STEP model in place (parts without one become blocks). Returns the path, how many distinct models it includes and which parts are blocks.',
     new_schematic: 'Replace the project with an empty one (optionally named). Nothing is asked; the old content is gone from this file.',
     pcb_export:
       'Write the fabrication files to <project>-fab/ next to the project file: Gerber + drill zip, JLCPCB BOM and CPL (pick-and-place, y measured up from the bottom edge as JLCPCB expects) and a netlist. Returns the paths, any DRC errors and any failed items of the JLCPCB checklist (see pcb_jlcpcb_check). With hand_solder_through_hole, through-hole parts stay out of the BOM and CPL so JLCPCB does not charge for soldering them.',

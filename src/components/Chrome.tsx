@@ -40,7 +40,7 @@ import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
 import { startPassive } from '../lib/passives';
 import { detachDesign, openDesign, saveDesign } from '../lib/designs';
-import { boardModel, changeRouteMode, enterPcb } from '../lib/pcb/actions';
+import { boardModel, changeRouteMode, enterPcb, exportStep } from '../lib/pcb/actions';
 import { LAYER_NAMES } from '../lib/pcb/types';
 import { PASSIVES, type PassiveKind } from '../shared/passives';
 
@@ -102,6 +102,10 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             },
             { label: 'Export netlist', onSelect: () => downloadText(`${safeFileName(s().project.name)}.net.txt`, formatNetlist(connectivity())) },
             { label: 'Export SVG', onSelect: () => exportSvg(svgRef.current) },
+            {
+              label: 'Export 3D board (STEP)',
+              onSelect: () => void exportStep().catch((err) => s().notify(`STEP export failed: ${(err as Error).message}`, 'error')),
+            },
             { label: 'Order from JLCPCB…', separatorBefore: true, onSelect: () => s().setOrderOpen(true) },
           ]}
         />
