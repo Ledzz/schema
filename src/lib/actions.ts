@@ -399,6 +399,44 @@ export function disconnectPin(pinRef: string): { wires: number; labels: string[]
   return { wires: wires.length, labels: ports.map((p) => p.name || p.kind) };
 }
 
+/**
+ * Renames a net everywhere: every label and power or ground flag called `from` takes the name
+ * `to`, so the net stays in one piece. If `to` is already used, the two nets become one.
+ */
+export function renameNet(from: string, to: string): { renamed: number; merged: boolean } {
+  const name = to.trim();
+  if (!name) throw new Error('Give the net a name');
+  const project = state().project;
+  const named = (p: NetPort) => p.kind !== 'noconnect' && p.name === from;
+  const renamed = project.ports.filter(named).length;
+  if (!renamed) throw new Error(`No label or flag is called "${from}"; unnamed nets get a name with nameNet or add_net_label`);
+  const merged = name !== from && project.ports.some((p) => p.kind !== 'noconnect' && p.name === name);
+  if (name !== from) state().commit((doc) => ({ ...doc, ports: doc.ports.map((p) => (named(p) ? { ...p, name } : p)) }));
+  return { renamed, merged };
+}
+
+/**
+ * Gives the net of a wire or label a name: renames it when it already has one, otherwise adds
+ * a label on one of its pins (or at the wire's end when it reaches no pin).
+ */
+export function nameNet(itemId: string, name: string): void {
+  const project = state().project;
+  const conn = connectivity(project);
+  const netName = conn.itemNet.get(itemId);
+  const net = conn.nets.find((n) => n.name === netName);
+  if (net && !net.auto) {
+    renameNet(net.name, name);
+    return;
+  }
+  const member = net?.members[0];
+  if (member) {
+    attachPort(`${member.designator}.${member.pinNumber}`, 'label', name.trim());
+    return;
+  }
+  const wire = project.wires.find((w) => w.id === itemId);
+  if (wire) addPort('label', name.trim(), wire.points[wire.points.length - 1]);
+}
+
 export function markNoConnect(pinRef: string): NetPort {
   const pin = findPin(pinRef);
   return addPort('noconnect', '', pin.at, 0);

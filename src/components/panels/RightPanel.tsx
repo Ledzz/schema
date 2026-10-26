@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Bot, ExternalLink, FlipHorizontal2, Play, Plus, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import { useWebMcp } from '../../store/webmcp';
-import { connectivity, findNoFeeAlternative } from '../../lib/actions';
+import { connectivity, findNoFeeAlternative, nameNet, renameNet } from '../../lib/actions';
 import { deleteSelection, fitView, mirrorSelection, rotateSelection } from '../../lib/editing';
 import { addDecoupling, planDecoupling, supplyPins, type PlannedCap } from '../../lib/decoupling';
 import { worldPins } from '../../lib/schematic/geometry';
@@ -367,23 +367,35 @@ function DecouplingSection({ c }: { c: Component }) {
 }
 
 function PortInspector({ p }: { p: NetPort }) {
+  const ports = useEditor((s) => s.project.ports);
   const [name, setName] = useState(p.name);
+  const [onlyThis, setOnlyThis] = useState(false);
   useEffect(() => setName(p.name), [p.name]);
-  const update = (patch: Partial<NetPort>) => useEditor.getState().updatePort(p.id, patch);
   const title = { label: 'Net label', power: 'Power flag', ground: 'Ground flag', noconnect: 'No-connect flag' }[p.kind];
+  const sameName = ports.filter((q) => q.kind !== 'noconnect' && q.name === p.name).length;
+  const joins = name.trim() !== p.name && ports.some((q) => q.kind !== 'noconnect' && q.name === name.trim());
+  const commit = () => {
+    const next = name.trim();
+    if (!next || next === p.name) return setName(p.name);
+    if (onlyThis) useEditor.getState().updatePort(p.id, { name: next });
+    else renameNet(p.name, next);
+  };
   return (
     <div className="space-y-3 p-3 text-xs">
       <div className="text-sm font-semibold">{title}</div>
       {p.kind !== 'noconnect' && (
-        <Field label="Net name">
-          <input
-            className={inputClass}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => name.trim() && name !== p.name && update({ name: name.trim() })}
-            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          />
-        </Field>
+        <div className="space-y-1.5">
+          <Field label="Net name">
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+          </Field>
+          {sameName > 1 && (
+            <label className="flex items-center gap-2 text-[11px] text-muted">
+              <input type="checkbox" checked={onlyThis} onChange={(e) => setOnlyThis(e.target.checked)} />
+              Rename only this {p.kind === 'label' ? 'label' : 'flag'} (not the other {sameName - 1} called {p.name})
+            </label>
+          )}
+          {joins && <p className="text-[11px] text-amber-600 dark:text-amber-400">{name.trim()} already exists: this joins the two nets.</p>}
+        </div>
       )}
       {p.kind !== 'noconnect' && (
         <button onClick={() => useEditor.getState().setHighlightNet(p.name)} className="inline-flex h-7 w-full items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5">
@@ -399,11 +411,25 @@ function WireInspector({ id }: { id: string }) {
   const project = useEditor((s) => s.project);
   const conn = useMemo(() => connectivity(project), [project]);
   const net = conn.itemNet.get(id);
+  const auto = !net || conn.nets.find((n) => n.name === net)?.auto;
+  const [name, setName] = useState(auto ? '' : (net ?? ''));
+  useEffect(() => setName(auto ? '' : (net ?? '')), [net, auto]);
+  const commit = () => {
+    const next = name.trim();
+    if (next && next !== net) nameNet(id, next);
+  };
   return (
     <div className="space-y-3 p-3 text-xs">
       <div className="text-sm font-semibold">Wire</div>
       <Field label="Net">
-        <span className="truncate">{net ?? 'not connected to a pin'}</span>
+        <input
+          className={inputClass}
+          value={name}
+          placeholder={auto ? `${net ?? 'unconnected'} · type to name it` : undefined}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+        />
       </Field>
       {net && (
         <button onClick={() => useEditor.getState().setHighlightNet(net)} className="inline-flex h-7 w-full items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5">

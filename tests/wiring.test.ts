@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEditor } from '../src/store/editor';
-import { pinByKey, planAttach } from '../src/lib/actions';
+import { attachPort, connectPins, connectivity, nameNet, pinByKey, planAttach, renameNet } from '../src/lib/actions';
 import { finishWireDraft, removeWirePoint, wireDraftTo } from '../src/lib/editing';
 import { componentBox, worldPins } from '../src/lib/schematic/geometry';
 import { resolverFor } from '../src/lib/schematic/symbols';
@@ -96,5 +96,27 @@ describe('wiring in the editor', () => {
     st().startPort('ground');
     st().startPort('power');
     expect(st().portTemplate.name).toBe('+5V');
+  });
+});
+
+describe('naming nets', () => {
+  it('renames every label and flag of a net together', () => {
+    attachPort('R1.1', 'label', 'SIG');
+    attachPort('R2.2', 'label', 'SIG');
+    attachPort('R3.1', 'label', 'OTHER');
+    expect(renameNet('SIG', 'DATA')).toEqual({ renamed: 2, merged: false });
+    const data = connectivity().nets.find((n) => n.name === 'DATA')!;
+    expect(data.members.map((m) => `${m.designator}.${m.pinNumber}`).sort()).toEqual(['R1.1', 'R2.2']);
+    // Renaming onto a name in use joins the nets, and says so.
+    expect(renameNet('DATA', 'OTHER')).toEqual({ renamed: 2, merged: true });
+    expect(connectivity().nets.find((n) => n.name === 'OTHER')!.members).toHaveLength(3);
+    expect(() => renameNet('NOPE', 'X')).toThrow(/No label or flag/);
+  });
+
+  it('names an unnamed net with a label on one of its pins', () => {
+    const { wireId } = connectPins('R1.2', 'R3.1');
+    nameNet(wireId, 'LINK');
+    const link = connectivity().nets.find((n) => n.name === 'LINK')!;
+    expect(link.members.map((m) => `${m.designator}.${m.pinNumber}`).sort()).toEqual(['R1.2', 'R3.1']);
   });
 });

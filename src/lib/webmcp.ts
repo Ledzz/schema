@@ -12,6 +12,7 @@ import { fetchPartDetail, fetchSearch } from './api';
 import {
   attachPort,
   connectPins,
+  renameNet,
   connectivity,
   designatorPrefix,
   disconnectPin,
@@ -452,6 +453,17 @@ export const TOOLS: ToolDefinition[] = [
       markNoConnect(String(input.pin));
       return { ok: true };
     },
+  },
+  {
+    name: 'rename_net',
+    title: 'Rename net',
+    description: 'Rename a net everywhere: every net label and power or ground flag called `from` is renamed to `to`. Renaming to a name already in use joins the two nets (the result says so).',
+    inputSchema: {
+      type: 'object',
+      properties: { from: { type: 'string', description: 'Current net name.' }, to: { type: 'string', description: 'New net name.' } },
+      required: ['from', 'to'],
+    },
+    execute: async (input) => renameNet(String(input.from), String(input.to)),
   },
   {
     name: 'insert_block',

@@ -327,6 +327,9 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     if (s.tool !== 'select') return;
     const id = hitTest(project, symbols, toWorld(e.clientX, e.clientY), tolerance());
     if (id && project.components.find((c) => c.id === id)?.generic) s.setQuickEdit(id);
+    // On a wire or label: highlight its net, or stop highlighting it.
+    const net = id ? conn.itemNet.get(id) : undefined;
+    if (net) s.setHighlightNet(s.highlightNet === net ? null : net);
   };
 
   // Ghost previews.
