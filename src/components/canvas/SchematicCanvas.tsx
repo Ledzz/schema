@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { MousePointerClick, Search } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import { addPort, commitAttach, pinByKey, placeComponent, planAttach } from '../../lib/actions';
@@ -13,6 +13,7 @@ import type { Component, NetPort, PortKind, Vec } from '../../lib/schematic/type
 import { ComponentGraphic, PortGraphic } from './graphics';
 import { cx, inputClass, Kbd } from '../ui';
 import { QuickEdit } from '../passives/QuickEdit';
+import { ContextMenu, schematicMenu, type ContextMenuState } from './ContextMenu';
 import { PassiveEditor } from '../passives/PassiveEditor';
 import { pickPlacingPart, updatePlacingPassive } from '../../lib/passives';
 
@@ -57,6 +58,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const [inside, setInside] = useState(false);
   const [box, setBox] = useState<{ a: Vec; b: Vec } | null>(null);
   const [hover, setHover] = useState<{ text: string; at: Vec } | null>(null);
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const symbols = useMemo(() => resolverFor(project), [project.symbols]); // eslint-disable-line react-hooks/exhaustive-deps
   const conn = useMemo(
@@ -319,6 +322,11 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     const s = useEditor.getState();
     if (s.wireDraft) finishWireDraft();
     else if (s.tool !== 'select') s.setTool('select');
+    else {
+      const rect = svgRef.current!.getBoundingClientRect();
+      const m = schematicMenu(toWorld(e.clientX, e.clientY), tolerance());
+      if (m.items.length) setMenu({ ...m, at: [e.clientX - rect.left, e.clientY - rect.top] });
+    }
   };
 
   const onDoubleClick = (e: React.MouseEvent) => {
@@ -502,6 +510,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
       <QuickEdit />
+      {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
       {isNamedPortTool(tool) && <PortNameBar kind={tool} />}
       {tool === 'place' && placing?.template.generic && (
         <div className="absolute left-1/2 top-16 z-10 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl border border-line bg-panel/95 px-3 py-2 text-xs shadow-lg backdrop-blur">

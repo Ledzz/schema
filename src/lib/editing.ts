@@ -3,7 +3,7 @@
  */
 import { useEditor } from '../store/editor';
 import { nextDesignator, splitDesignator, annotate } from './schematic/designators';
-import { componentBox, samePoint, unionBoxes } from './schematic/geometry';
+import { componentBox, samePoint, snap, unionBoxes } from './schematic/geometry';
 import { portBox } from './schematic/hit';
 import { deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type Doc } from './schematic/ops';
 import { connectionNear } from './schematic/hit';
@@ -66,22 +66,30 @@ export function copySelection() {
   };
 }
 
-export function paste() {
+export const hasClipboard = () => clipboard !== null;
+
+/** Pastes the copied items, 30 units further on, or with their top-left corner at `at`. */
+export function paste(at?: Vec) {
   if (!clipboard) return;
   const clip = clipboard;
-  const off = 30;
+  let off: Vec = [30, 30];
+  if (at) {
+    const xs = [...clip.components.map((c) => c.x), ...clip.wires.flatMap((w) => w.points.map((p) => p[0])), ...clip.ports.map((p) => p.x)];
+    const ys = [...clip.components.map((c) => c.y), ...clip.wires.flatMap((w) => w.points.map((p) => p[1])), ...clip.ports.map((p) => p.y)];
+    off = [snap(at[0] - Math.min(...xs), 10), snap(at[1] - Math.min(...ys), 10)];
+  }
   let created: string[] = [];
   st().addSymbols(clip.symbols);
   st().commit((doc) => {
     const placed = [...doc.components];
     const components = clip.components.map((c) => {
-      const copy: Component = { ...c, id: newId('c'), x: c.x + off, y: c.y + off, attrs: { ...c.attrs } };
+      const copy: Component = { ...c, id: newId('c'), x: c.x + off[0], y: c.y + off[1], attrs: { ...c.attrs } };
       copy.designator = renameCopy(copy, placed);
       placed.push(copy);
       return copy;
     });
-    const wires = clip.wires.map((w) => ({ id: newId('w'), points: w.points.map(([x, y]) => [x + off, y + off] as Vec) }));
-    const ports = clip.ports.map((p) => ({ ...p, id: newId('n'), x: p.x + off, y: p.y + off }));
+    const wires = clip.wires.map((w) => ({ id: newId('w'), points: w.points.map(([x, y]) => [x + off[0], y + off[1]] as Vec) }));
+    const ports = clip.ports.map((p) => ({ ...p, id: newId('n'), x: p.x + off[0], y: p.y + off[1] }));
     created = [...components, ...wires, ...ports].map((i) => i.id);
     // Repeated pastes cascade instead of stacking.
     clipboard = { ...clip, components, wires, ports };
