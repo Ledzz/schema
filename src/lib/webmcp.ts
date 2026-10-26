@@ -35,12 +35,13 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { BLOCKS, insertBlock } from './blocks';
 import { addDecoupling } from './decoupling';
-import { addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
 import { rasterizeInBrowser, traceBitmap, type Bitmap } from './pcb/logo';
 import type { Box } from './pcb/geometry';
+import type { DxfUnits } from './pcb/dxf';
 import { boardEdges, circlePolygon, cornerHolePositions, edgeDistance, insideBoard, rectOutline, selfIntersects } from './pcb/outline';
 import { runDrc, shellAreas } from './pcb/drc';
 import { renderPcbSvg } from './pcb/render';
@@ -825,7 +826,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_set_board',
     title: 'Set board shape',
     description:
-      'Set the board size in millimetres (a rectangle with optional corner radius), or give `outline` for a custom shape (an L, a notched or angled board, one that fits an enclosure); the corner radius rounds its corners too. Width/height go back to a rectangle. Parts outside the new shape show up in pcb_check. `layers` switches between 2 and 4 copper layers (top, inner1, inner2, bottom); going back to 2 deletes inner-layer tracks and pours.',
+      'Set the board size in millimetres (a rectangle with optional corner radius), or give `outline` for a custom shape (an L, a notched or angled board, one that fits an enclosure), with `outline_bulges` to make edges arcs; the corner radius rounds its straight corners too. Width/height go back to a rectangle. To copy an enclosure drawing, pcb_import_dxf reads its DXF instead. Parts outside the new shape show up in pcb_check. `layers` switches between 2 and 4 copper layers (top, inner1, inner2, bottom); going back to 2 deletes inner-layer tracks and pours.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -834,19 +835,57 @@ export const TOOLS: ToolDefinition[] = [
         corner_radius: { type: 'number', minimum: 0 },
         layers: { type: 'integer', enum: [2, 4], description: 'Copper layers (default 2). 4 adds two inner layers, usually a GND plane and a power plane.' },
         outline: outlineSchema('Custom board shape.'),
+        outline_bulges: {
+          type: 'array',
+          items: { type: 'number' },
+          description:
+            'With outline: one number per edge (edge i runs from point i to the next), 0 for a straight edge, otherwise the arc’s bulge as in DXF: tan(sweep / 4), so ±1 is a half circle and ±0.414 a quarter. Positive bows to the left of the edge’s direction as seen on screen (y down), negative to the right.',
+        },
       },
     },
     execute: async (input) => {
       if (input.outline !== undefined && (input.width !== undefined || input.height !== undefined)) throw new Error('Give either outline or width/height, not both');
-      if (input.outline !== undefined) setBoardOutline(areaInput(input, 'board'));
+      const bulges = input.outline_bulges as number[] | undefined;
+      if (bulges && input.outline === undefined) throw new Error('outline_bulges needs an outline');
+      if (bulges && bulges.length !== (input.outline as unknown[]).length) throw new Error(`outline_bulges needs one number per edge: ${(input.outline as unknown[]).length}, got ${bulges.length}`);
+      if (input.outline !== undefined) setBoardOutline(areaInput(input, 'board'), bulges);
       const patch: Partial<Pcb['board']> = {};
-      if (input.width !== undefined || input.height !== undefined) patch.outline = undefined;
+      if (input.width !== undefined || input.height !== undefined) {
+        patch.outline = undefined;
+        patch.outlineBulges = undefined;
+      }
       if (input.width !== undefined) patch.width = Number(input.width);
       if (input.height !== undefined) patch.height = Number(input.height);
       if (input.corner_radius !== undefined) patch.cornerRadius = Number(input.corner_radius);
       if (Object.keys(patch).length) updateBoard(patch);
       const removed = input.layers === undefined ? undefined : setLayerCount(Number(input.layers) as 2 | 4);
       return { board: currentPcb().board, removed: removed && (removed.removedTracks || removed.removedPours) ? { inner_tracks: removed.removedTracks, inner_pours: removed.removedPours } : undefined };
+    },
+  },
+  {
+    name: 'pcb_import_dxf',
+    title: 'Board outline from DXF',
+    description:
+      'Take the board shape from an enclosure’s DXF drawing: lines, arcs, circles, polylines and splines are joined into closed shapes; the biggest becomes the board outline (arcs kept exact), circles up to 8 mm inside it become mounting holes (replacing the board’s holes) and other shapes inside it become cutouts. The outline is moved so its top-left corner is at (0, 0). Units come from the drawing’s $INSUNITS (millimetres when it has none) unless `units` is given. Parts outside the new shape show up in pcb_check.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dxf: { type: 'string', description: 'The DXF file’s contents (ASCII DXF).' },
+        units: { type: 'string', enum: ['mm', 'cm', 'm', 'inch', 'mil'], description: 'Drawing units, if the file does not say or says wrongly.' },
+      },
+      required: ['dxf'],
+    },
+    execute: async (input) => {
+      const r = importDxfOutline(String(input.dxf), input.units as DxfUnits | undefined);
+      return {
+        width: r.width,
+        height: r.height,
+        arcs: r.bulges.filter((b) => b !== 0).length,
+        cutouts: r.cutouts.length,
+        mounting_holes: r.holes.map((h) => ({ x: h.x, y: h.y, diameter: h.diameter })),
+        units: r.units,
+        warnings: r.warnings.length ? r.warnings : undefined,
+      };
     },
   },
   {

@@ -20,6 +20,7 @@ import { runDrc, shellAreas } from './drc';
 import { builtinFootprintDoc } from './footprint';
 import { generateCpl, generateGerbers } from './gerber';
 import { boardEdges, edgeDistance, insideBoard, keepoutAreas, withOutline } from './outline';
+import { parseDxfOutline, type DxfOutline, type DxfUnits } from './dxf';
 import { edgeField, routeConnection, simplifyPath } from './router';
 import { DEFAULT_HOLE, DEFAULT_POUR, copperLayers, emptyPcb, isInner, sideOfLayer, type CopperLayer, type Side, type Cutout, type DesignatorLabel, type Keepout, type MountingHole, type Pcb, type Placement, type Pour, type SilkLogo, type SilkText, type StoredFootprint, type Track, type Via } from './types';
 import { labelId, TEXT_SIZE } from './silk';
@@ -267,9 +268,24 @@ export function placeMountingHole(at: Vec) {
   st().setPcbSelection([hole.id]);
 }
 
-/** Sets a custom board outline (closed polygon), or goes back to the rectangle with null. */
-export function setBoardOutline(outline: Vec[] | null) {
-  commitPcb((pcb) => ({ ...pcb, board: withOutline(pcb.board, outline) }));
+/** Sets a custom board outline (closed polygon, with arcs as bulges), or goes back to the rectangle with null. */
+export function setBoardOutline(outline: Vec[] | null, bulges?: number[]) {
+  commitPcb((pcb) => ({ ...pcb, board: withOutline(pcb.board, outline, bulges) }));
+}
+
+/**
+ * Takes the board shape from a DXF drawing (one undo step): its outline with arcs, cutouts for
+ * the other closed shapes inside it, and mounting holes for small circles (replacing the board's
+ * own holes only when the drawing has some). Corner rounding is turned off: the drawing is exact.
+ */
+export function importDxfOutline(text: string, units?: DxfUnits): DxfOutline {
+  const r = parseDxfOutline(text, units);
+  commitPcb((pcb) => ({
+    ...pcb,
+    board: { ...withOutline({ ...pcb.board, cornerRadius: 0 }, r.outline, r.bulges), cutouts: r.cutouts.map((outline) => ({ id: newId('cut'), outline })) },
+    holes: r.holes.length ? r.holes.map((h) => ({ id: newId('hole'), x: h.x, y: h.y, diameter: h.diameter, keepout: h.diameter * 2 })) : pcb.holes,
+  }));
+  return r;
 }
 
 export function addCutout(outline: Vec[]): Cutout {

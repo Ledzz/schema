@@ -4,7 +4,7 @@
  * router, pours, Gerbers and the 3D view all ask here instead of assuming a rectangle.
  */
 import type { Vec } from '../schematic/types';
-import { boardOutline, pointInPolygon, pointSegDist, shapeDistance, type CopperShape } from './geometry';
+import { boardOutline, flattenOutline, pointInPolygon, pointSegDist, shapeDistance, type CopperShape } from './geometry';
 import { copperLayers, type Board, type CopperLayer, type Keepout, type MountingHole, type Pcb } from './types';
 
 export interface BoardEdges {
@@ -34,13 +34,14 @@ export function boundsOf(points: Vec[]): { x: number; y: number; width: number; 
 }
 
 /** A board patch for a new custom outline: the polygon plus its bounding box. */
-export function withOutline(board: Board, outline: Vec[] | null): Board {
-  if (!outline || outline.length < 3) {
-    const { outline: _drop, ...rect } = board;
-    return rect;
-  }
+export function withOutline(board: Board, outline: Vec[] | null, bulges?: number[]): Board {
+  const { outline: _drop, outlineBulges: _arcs, ...rect } = board;
+  if (!outline || outline.length < 3) return rect;
   const open = ring(outline).slice(0, -1);
-  return { ...board, ...boundsOf(open), outline: open };
+  const arcs = bulges?.some((b) => Math.abs(b) > 1e-9) ? open.map((_, i) => bulges[i] ?? 0) : undefined;
+  // Arcs can reach past the corners: the bounding box comes from the flattened shape.
+  const shape = arcs ? flattenOutline(open, arcs).points.slice(0, -1) : open;
+  return { ...rect, ...boundsOf(shape), outline: open, ...(arcs ? { outlineBulges: arcs } : {}) };
 }
 
 export function boardEdges(pcb: Pick<Pcb, 'board' | 'holes'>): BoardEdges {

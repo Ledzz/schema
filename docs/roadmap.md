@@ -6,17 +6,19 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Arcs in outlines and DXF outline import** — to match an enclosure drawing exactly.
-2. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
+1. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
    other.
-3. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
+2. **A smarter auto-router** — rip-up and retry around dense fine-pitch parts, where the grid
    router still leaves a connection or two for manual routing.
-4. **Length tuning and differential pairs** — for USB and other matched signals.
-5. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+3. **Length tuning and differential pairs** — for USB and other matched signals.
+4. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
 
 ## Done
 
+- **Curved outlines and DXF import** (2026-10-26): outline edges can be arcs (bent by a handle in
+  the editor, or `outline_bulges` for agents), and an enclosure's DXF drawing gives the outline
+  with exact arcs, cutouts and mounting holes (`pcb_import_dxf`).
 - **Copper and silkscreen in the STEP export** (2026-10-26): the outer copper and silkscreen as
   thin coloured solids, a part per piece grouped by layer, read back with OpenCascade.
 - **Track corners, whole tracks and via pushing** (2026-10-26): corners drag with 45° bends,
@@ -83,8 +85,8 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## PCB: board and placement
 
-- Arcs in board outlines and DXF outline import (outlines are straight-sided polygons with
-  rounded corners today).
+- DXF export of the outline, and true arcs (rather than fine polylines) in the Gerber outline and
+  the STEP board.
 - 6+ layers, a layer stack manager, JLC's impedance calculator, blind and buried vias (2 and 4
   layers with through vias today).
 - Align and distribute, part locking, rooms, measure tool, dimension lines, grid setting.

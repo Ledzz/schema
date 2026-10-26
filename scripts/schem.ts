@@ -178,6 +178,12 @@ async function main() {
       return { file, models: r.models, blocks: r.blocks.length ? r.blocks : undefined, megabytes: Math.round(r.step.length / 1e5) / 10 };
     },
     pcb_add_logo: async (input) => placeTracedLogo(input, await rasterizeImage(String(input.image), TRACE_RESOLUTION)),
+    // A path to a .dxf file works as well as its contents.
+    pcb_import_dxf: async (input) => {
+      const dxf = String(input.dxf);
+      const text = /\.dxf$/i.test(dxf.trim()) && existsSync(dxf.trim()) ? readFileSync(dxf.trim(), 'utf8') : dxf;
+      return runTool(TOOLS.find((t) => t.name === 'pcb_import_dxf')!, { ...input, dxf: text });
+    },
     pcb_render: async (input) => {
       const { svg, widthPx, heightPx } = pcbPicture(input);
       const { Resvg } = await import('@resvg/resvg-js');

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, Eye, EyeOff, FlipHorizontal2, Image as ImageIcon, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Type, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, Eye, EyeOff, FileUp, FlipHorizontal2, Image as ImageIcon, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Type, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
 import {
   addLogo,
@@ -15,6 +15,7 @@ import {
   deleteSelectedCopper,
   exportFabrication,
   flipSelected,
+  importDxfOutline,
   pcbOutOfDate,
   removePcbItems,
   rotateSelected,
@@ -208,6 +209,44 @@ function DrcList() {
 }
 
 /* ---------- inspector ---------- */
+
+/** Takes the board shape from an enclosure's DXF drawing. */
+function DxfImportButton() {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button
+        onClick={() => input.current?.click()}
+        data-tip="Outline (with arcs), cutouts and mounting holes from a DXF drawing"
+        className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
+      >
+        <FileUp className="h-3.5 w-3.5" /> Outline from DXF…
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept=".dxf,image/vnd.dxf,application/dxf"
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          const s = useEditor.getState();
+          try {
+            const r = importDxfOutline(await file.text());
+            fitPcbView();
+            s.setPcbIssues(checkPcb().issues);
+            const arcs = r.bulges.filter((b) => b !== 0).length;
+            const parts = [`${r.width} × ${r.height} mm`, arcs && `${arcs} arc${arcs === 1 ? '' : 's'}`, r.cutouts.length && `${r.cutouts.length} cutout${r.cutouts.length === 1 ? '' : 's'}`, r.holes.length && `${r.holes.length} mounting hole${r.holes.length === 1 ? '' : 's'}`].filter(Boolean);
+            s.notify(`Board outline from ${file.name} (${r.units}): ${parts.join(', ')}${r.warnings.length ? ` · ${r.warnings.join('; ')}` : ''}`);
+          } catch (err) {
+            s.notify((err as Error).message, 'error');
+          }
+        }}
+      />
+    </>
+  );
+}
 
 export function PcbInspector() {
   const project = useEditor((s) => s.project);
@@ -435,7 +474,11 @@ export function PcbInspector() {
             >
               <CircleDot className="h-3.5 w-3.5" /> Mounting holes in the corners
             </button>
-            <p className="text-[10px] leading-snug text-muted">Draw an outline, keepouts, cutouts and pour zones, or add text and logos, with the tools on the left.</p>
+            <DxfImportButton />
+            <p className="text-[10px] leading-snug text-muted">
+              Draw an outline, keepouts, cutouts and pour zones, or add text and logos, with the tools on the left. With the outline tool, drag the handle in the middle of an edge to
+              bend it into an arc.
+            </p>
           </section>
           <section className="space-y-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">Design rules</h3>

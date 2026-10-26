@@ -133,6 +133,11 @@ export interface Board {
   layers?: 2 | 4;
   /** Custom outline, a closed polygon in mm; x/y/width/height are then its bounding box. */
   outline?: Vec[];
+  /**
+   * Arcs in the custom outline: the bulge of the edge from outline[i] to outline[i + 1] (tan of a
+   * quarter of its sweep, as in DXF; 0 for a straight edge). A corner radius leaves arcs alone.
+   */
+  outlineBulges?: number[];
   /** Openings milled through the board. */
   cutouts?: Cutout[];
 }

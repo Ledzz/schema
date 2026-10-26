@@ -64,7 +64,10 @@ harder to route; leave more room when there are many connections.
 Add the mechanical features now, before placing, because they take board space:
 
 - **Shape:** `pcb_set_board` with `outline` (corner points in order) when the board must fit an
-  enclosure or needs a notch or chamfer; corners are rounded by `corner_radius`.
+  enclosure or needs a notch or chamfer; corners are rounded by `corner_radius`, and
+  `outline_bulges` turns edges into arcs. When the user has the enclosure's drawing as a DXF,
+  `pcb_import_dxf` (a file path works from the command line) takes the outline, cutouts and
+  mounting holes from it exactly; check the reported size and units before placing.
 - **Mounting holes:** if the user wants the board screwed down (or it goes in an enclosure),
   `pcb_add_mounting_holes` with `"corners": true` puts M3 holes (3.2 mm, 6.4 mm copper-free
   ring) in each corner. Allow about 7 mm × 7 mm per corner for them when sizing the board.

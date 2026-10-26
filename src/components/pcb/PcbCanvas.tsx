@@ -3,11 +3,11 @@ import { CircuitBoard, RefreshCcw } from 'lucide-react';
 import { ROUTE_MODE_NAMES, SHAPE_TOOLS, useEditor } from '../../store/editor';
 import type { Vec } from '../../lib/schematic/types';
 import { buildBoard, pcbConnectivity, type BoardModel, type PcbConnectivity } from '../../lib/pcb/board';
-import { pointInPolygon, pointSegDist, shapeDistance, type WorldPad } from '../../lib/pcb/geometry';
+import { bulgeThrough, pointInPolygon, pointSegDist, shapeDistance, type WorldPad } from '../../lib/pcb/geometry';
 import { areasToSvgPath, pointInArea } from '../../lib/pcb/pour';
 import { designatorLabel, labelBox, labelComponent, labelId, labelStrokes, logoAreas, logoBox, pinLabels, silkTextBox, strokeFor, textItemStrokes, textStroke } from '../../lib/pcb/silk';
 import type { Box } from '../../lib/pcb/geometry';
-import { boardSvgPath, rectOutline } from '../../lib/pcb/outline';
+import { boardSvgPath, rectOutline, withOutline } from '../../lib/pcb/outline';
 import { addText, addVia, beginTrackEdit, endTrackEdit, finishDraft, finishShape, movableIds, movePlacements, placeMountingHole, posture, previewTrackEdit, snapMm, syncPcb, trackWidthFor } from '../../lib/pcb/actions';
 import { dragCorner, dragSegment, moveTrack, trackMovers } from '../../lib/pcb/shove';
 import { edgeField, routeConnection } from '../../lib/pcb/router';
@@ -60,6 +60,8 @@ export function PcbCanvas() {
     /** Dragging a track's inner corner, or (Alt) the whole track. */
     | { mode: 'corner'; track: Track; vertex: number; startPx: Vec; moved: boolean; to: Vec }
     | { mode: 'track-move'; track: Track; start: Vec; startPx: Vec; moved: boolean; delta: Vec; fixed: [boolean, boolean] }
+    /** Bending a board outline edge into an arc by its middle. */
+    | { mode: 'bend'; edge: number; outline: Vec[]; bulges: number[] }
   >({ mode: 'none' });
   const spaceDown = useRef(false);
 
@@ -69,6 +71,21 @@ export function PcbCanvas() {
     return { board, conn: pcbConnectivity(board, pcb) };
   }, [project.components, project.wires, project.ports, project.symbols, pcb]); // eslint-disable-line react-hooks/exhaustive-deps
   const selected = useMemo(() => new Set(selection), [selection]);
+  // The outline's corners and edge bulges (a rectangle counts as four corners), and a handle in
+  // the middle of each edge (on the arc for a curved one) for bending it.
+  const { outlineCorners, outlineBulges, outlineHandles } = useMemo(() => {
+    const b = pcb.board;
+    const corners: Vec[] = b.outline && b.outline.length >= 3 ? b.outline : rectOutline(b.x, b.y, b.x + b.width, b.y + b.height);
+    const bulges = corners.map((_, i) => b.outlineBulges?.[i] ?? 0);
+    const handles = corners.map((a, i) => {
+      const c = corners[(i + 1) % corners.length];
+      const d: Vec = [c[0] - a[0], c[1] - a[1]];
+      const sag = (bulges[i] * Math.hypot(d[0], d[1])) / 2;
+      const l = Math.hypot(d[0], d[1]) || 1;
+      return [(a[0] + c[0]) / 2 + (sag * d[1]) / l, (a[1] + c[1]) / 2 - (sag * d[0]) / l] as Vec;
+    });
+    return { outlineCorners: corners, outlineBulges: bulges, outlineHandles: handles };
+  }, [pcb.board]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -271,6 +288,15 @@ export function PcbCanvas() {
       }
       return;
     }
+    if (s.pcbTool === 'outline' && !s.shapeDraft) {
+      // On an edge's middle handle: bend the edge.
+      const edge = outlineHandles.findIndex((h) => Math.hypot(h[0] - w[0], h[1] - w[1]) <= 6 / view.zoom);
+      if (edge >= 0) {
+        s.beginTransient();
+        interaction.current = { mode: 'bend', edge, outline: outlineCorners, bulges: [...outlineBulges] };
+        return;
+      }
+    }
     if (SHAPE_TOOLS.includes(s.pcbTool)) {
       const at = snap(w);
       const corners = s.shapeDraft;
@@ -393,6 +419,17 @@ export function PcbCanvas() {
         );
         setEdit({ blocked: r.ok ? null : (r.reason ?? 'no room'), walk: null });
       });
+    } else if (it.mode === 'bend') {
+      const a = it.outline[it.edge];
+      const b = it.outline[(it.edge + 1) % it.outline.length];
+      // Close to straight snaps straight.
+      const raw = bulgeThrough(a, b, w);
+      const bulge = Math.abs(raw) < 0.02 ? 0 : Math.round(raw * 1000) / 1000;
+      const bulges = it.bulges.map((x, i) => (i === it.edge ? bulge : x));
+      s.updateTransient((base) => {
+        const p = base.pcb ?? emptyPcb();
+        return { ...base, pcb: { ...p, board: withOutline(p.board, it.outline, bulges) } };
+      });
     } else if (it.mode === 'box') setBox({ a: it.start, b: w });
     else if (it.mode === 'shape') setBox({ a: it.start, b: snap(w) });
     else if (s.routeDraft && s.routeMode !== 'ignore') throttled(() => setEdit(routePreview(w)));
@@ -403,7 +440,7 @@ export function PcbCanvas() {
     const it = interaction.current;
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
-    if (it.mode === 'drag') s.endTransient();
+    if (it.mode === 'drag' || it.mode === 'bend') s.endTransient();
     if (it.mode === 'segment' || it.mode === 'corner' || it.mode === 'track-move') {
       if (frame.current !== null) cancelAnimationFrame(frame.current);
       frame.current = null;
@@ -501,6 +538,15 @@ export function PcbCanvas() {
             ))}
           </g>
           {issuesShown && <DrcMarkers zoom={view.zoom} />}
+          {tool === 'outline' && !shapeDraft && (
+            <g fill="var(--pcb-bg)" stroke="var(--select)" strokeWidth={1.5 / view.zoom}>
+              {outlineHandles.map((h, i) => (
+                <circle key={i} cx={h[0]} cy={h[1]} r={4 / view.zoom}>
+                  <title>Drag to bend this edge into an arc</title>
+                </circle>
+              ))}
+            </g>
+          )}
           {shapeDraft && (
             <g fill="none" stroke="var(--select)" strokeWidth={1.5 / view.zoom}>
               <polyline points={pts([...shapeDraft, snap(pointer)])} strokeDasharray={`${4 / view.zoom} ${3 / view.zoom}`} />

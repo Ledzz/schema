@@ -281,9 +281,9 @@ export const boxesOverlap = (a: Box, b: Box, pad = 0) => a.x1 - pad <= b.x2 && a
 
 /**
  * Rounds every corner of a polygon with radius r (limited so neighbouring arcs don't overlap),
- * returning a closed ring. Works for convex and concave corners.
+ * returning a closed ring. Works for convex and concave corners. Corners marked in `sharp` stay.
  */
-export function filletPolygon(points: Vec[], r: number, segments = 8): Vec[] {
+export function filletPolygon(points: Vec[], r: number, segments = 8, sharp?: readonly boolean[]): Vec[] {
   const ring = points.length > 1 && points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1] ? points.slice(0, -1) : points;
   if (r <= 0 || ring.length < 3) return [...ring, ring[0]];
   const out: Vec[] = [];
@@ -297,7 +297,7 @@ export function filletPolygon(points: Vec[], r: number, segments = 8): Vec[] {
     const v1: Vec = [(prev[0] - cur[0]) / l1, (prev[1] - cur[1]) / l1];
     const v2: Vec = [(next[0] - cur[0]) / l2, (next[1] - cur[1]) / l2];
     const angle = Math.acos(Math.max(-1, Math.min(1, v1[0] * v2[0] + v1[1] * v2[1])));
-    if (angle > Math.PI - 1e-3) {
+    if (angle > Math.PI - 1e-3 || sharp?.[i]) {
       out.push(cur);
       continue;
     }
@@ -322,9 +322,69 @@ export function filletPolygon(points: Vec[], r: number, segments = 8): Vec[] {
   return out;
 }
 
-/** Board outline polygon (rounded corners approximated), closed. */
+/**
+ * The arc from `a` to `b` with a bulge as in DXF (tan of a quarter of the sweep; positive turns
+ * the way angles grow in these coordinates, clockwise on screen with y down), as points after
+ * `a` up to `b`, never more than `tolerance` mm from the true arc.
+ */
+export function arcPoints(a: Vec, b: Vec, bulge: number, tolerance = 0.01): Vec[] {
+  const chord = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (Math.abs(bulge) < 1e-9 || chord < 1e-9) return [b];
+  const sweep = 4 * Math.atan(bulge);
+  const r = chord / (2 * Math.sin(Math.abs(sweep) / 2));
+  const d: Vec = [(b[0] - a[0]) / chord, (b[1] - a[1]) / chord];
+  const n: Vec = [-d[1], d[0]];
+  const h = r * Math.cos(sweep / 2) * Math.sign(sweep);
+  const c: Vec = [(a[0] + b[0]) / 2 + n[0] * h, (a[1] + b[1]) / 2 + n[1] * h];
+  const start = Math.atan2(a[1] - c[1], a[0] - c[0]);
+  const step = tolerance < r ? 2 * Math.acos(1 - tolerance / r) : Math.PI / 4;
+  const count = Math.max(1, Math.ceil(Math.abs(sweep) / step));
+  const out: Vec[] = [];
+  for (let k = 1; k < count; k++) {
+    const t = start + (sweep * k) / count;
+    out.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]);
+  }
+  out.push(b);
+  return out;
+}
+
+/** The bulge of an arc from `a` to `b` whose middle passes through `p` (by its distance from the chord). */
+export function bulgeThrough(a: Vec, b: Vec, p: Vec): number {
+  const chord = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (chord < 1e-9) return 0;
+  // Signed sagitta: positive on the side a positive bulge bows to.
+  const sagitta = ((p[0] - (a[0] + b[0]) / 2) * (b[1] - a[1]) - (p[1] - (a[1] + b[1]) / 2) * (b[0] - a[0])) / chord;
+  return (2 * sagitta) / chord;
+}
+
+/**
+ * A closed outline whose edges may be arcs (`bulges[i]` for the edge from point i to i + 1) as a
+ * polygon, closed. `sharp` marks the corners that touch an arc or lie on one, which a corner
+ * radius must not round.
+ */
+export function flattenOutline(points: Vec[], bulges: readonly number[] = [], tolerance = 0.01): { points: Vec[]; sharp: boolean[] } {
+  const ring = points.length > 1 && points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1] ? points.slice(0, -1) : points;
+  const n = ring.length;
+  const arc = (i: number) => Math.abs(bulges[(i + n) % n] ?? 0) > 1e-9;
+  const out: Vec[] = [];
+  const sharp: boolean[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(ring[i]);
+    sharp.push(arc(i) || arc(i - 1));
+    const along = arcPoints(ring[i], ring[(i + 1) % n], bulges[i] ?? 0, tolerance).slice(0, -1);
+    out.push(...along);
+    sharp.push(...along.map(() => true));
+  }
+  return { points: [...out, out[0]], sharp };
+}
+
+/** Board outline polygon (rounded corners and arcs approximated), closed. */
 export function boardOutline(b: Board): Vec[] {
-  if (b.outline && b.outline.length >= 3) return filletPolygon(b.outline, b.cornerRadius);
+  if (b.outline && b.outline.length >= 3) {
+    if (!b.outlineBulges?.some((x) => Math.abs(x) > 1e-9)) return filletPolygon(b.outline, b.cornerRadius);
+    const flat = flattenOutline(b.outline, b.outlineBulges);
+    return filletPolygon(flat.points, b.cornerRadius, 8, flat.sharp);
+  }
   const r = Math.min(b.cornerRadius, b.width / 2, b.height / 2);
   if (r <= 0) {
     return [
