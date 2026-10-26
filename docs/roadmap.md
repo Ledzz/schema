@@ -6,14 +6,17 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Cross-probing between schematic and PCB** — select a part or net in one, see it in the
-   other.
-2. **Length tuning and differential pairs** — for USB and other matched signals.
-3. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+1. **Length tuning and differential pairs** — for USB and other matched signals.
+2. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
+3. **Quick add** — type a part or passive by name at the cursor instead of going through the
+   library panel.
 
 ## Done
 
+- **Cross-probing** (2026-10-27): part selection and the highlighted net are shared by the
+  schematic and the PCB; ⇧X (or the right-click menu and PCB inspector) shows them in the other
+  editor, and the two can be shown side by side, each keeping what the other selects in view.
 - **Symbol, footprint and part editors** (2026-10-26): symbols from a pin list or drawn on the
   grid, footprints from IPC-7351 land patterns for common packages or pad by pad, and parts that
   pair them with their fields, all saved in the project. Library parts' symbols and footprints can
@@ -80,7 +83,6 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - Drawing tools: text, lines, rectangles, images, sheet frame and title block.
 - Find and replace, select similar, a property table for bulk edits (bulk editing exists only
   for passives).
-- ★ Cross-probing between schematic and PCB.
 - Net classes and differential-pair marking.
 - Stricter design check: pin-type conflicts such as two outputs on one net.
 - Shared team block libraries (your own blocks are saved per browser, with export/import).

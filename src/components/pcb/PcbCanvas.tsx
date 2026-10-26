@@ -12,7 +12,7 @@ import { addText, addVia, beginTrackEdit, endTrackEdit, finishDraft, finishShape
 import { dragCorner, dragSegment, moveTrack, trackMovers } from '../../lib/pcb/shove';
 import { edgeField, routeConnection } from '../../lib/pcb/router';
 import { keepoutAreas } from '../../lib/pcb/outline';
-import { fitPcbView, zoomPcbBy } from '../../lib/pcb/view';
+import { fitPcbView, zoomPcbBy, framePcb } from '../../lib/pcb/view';
 import { copperLayers, emptyPcb, isInner, LAYER_NAMES, type CopperLayer, type Pcb, type Track } from '../../lib/pcb/types';
 import { Kbd } from '../ui';
 
@@ -96,7 +96,11 @@ export function PcbCanvas() {
       useEditor.getState().setPcbCanvasSize(s);
       if (first && s.width > 0) {
         first = false;
-        fitPcbView(s);
+        const frame = useEditor.getState().pendingFrame;
+        if (frame?.editor === 'pcb') {
+          useEditor.getState().setPendingFrame(null);
+          framePcb(frame.ids, s);
+        } else fitPcbView(s);
       }
     });
     ro.observe(el);

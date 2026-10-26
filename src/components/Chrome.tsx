@@ -5,6 +5,7 @@ import {
   Split,
   Cable,
   CircleOff,
+  Columns2,
   FlipHorizontal2,
   Maximize,
   Moon,
@@ -38,6 +39,7 @@ import {
   zoomBy,
 } from '../lib/editing';
 import { formatNetlist } from '../lib/schematic/netlist';
+import { crossProbe } from '../lib/crossprobe';
 import { bomToJlcpcbCsv, buildBom } from '../lib/schematic/bom';
 import { focusLibrarySearch } from '../lib/libraryFocus';
 import { IconButton, MenuButton, cx } from './ui';
@@ -90,6 +92,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
   const canRedo = useEditor((s) => s.future.length > 0);
   const selectionCount = useEditor((s) => s.selection.length);
   const mode = useEditor((s) => s.mode);
+  const split = useEditor((s) => s.split);
   const status = useWebMcp((s) => s.status);
   const sourceFile = useEditor((s) => s.sourceFile);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -171,6 +174,8 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Zoom to fit', shortcut: 'F', onSelect: () => fitView() },
             { label: 'Zoom in', shortcut: '+', onSelect: () => zoomBy(1.25) },
             { label: 'Zoom out', shortcut: '−', onSelect: () => zoomBy(0.8) },
+            { label: split ? 'One editor at a time' : 'Schematic and PCB side by side', separatorBefore: true, onSelect: () => s().setSplit(!split) },
+            { label: mode === 'pcb' ? 'Show in schematic' : 'Show on PCB', shortcut: '⇧X', onSelect: () => void crossProbe() },
             { label: 'Toggle library', shortcut: 'L', separatorBefore: true, onSelect: () => s().setLibraryOpen(!s().libraryOpen) },
             { label: theme === 'dark' ? 'Light theme' : 'Dark theme', onSelect: () => s().toggleTheme() },
           ]}
@@ -237,7 +242,9 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
 
 function ModeSwitch() {
   const mode = useEditor((s) => s.mode);
+  const split = useEditor((s) => s.split);
   return (
+    <div className="flex items-center gap-1">
     <div className="flex items-center rounded-lg border border-line bg-panel-2 p-0.5" role="tablist" aria-label="Editor">
       {(['schematic', 'pcb'] as const).map((m) => (
         <button
@@ -250,6 +257,10 @@ function ModeSwitch() {
           {m === 'pcb' ? 'PCB' : 'Schematic'}
         </button>
       ))}
+    </div>
+      <IconButton label={split ? 'One editor at a time' : 'Schematic and PCB side by side'} active={split} className="h-7 w-7" onClick={() => useEditor.getState().setSplit(!split)}>
+        <Columns2 className="h-4 w-4" />
+      </IconButton>
     </div>
   );
 }

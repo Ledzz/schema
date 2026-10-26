@@ -19,6 +19,15 @@ export interface PartsEditorState {
   componentId?: string;
 }
 
+/**
+ * The parts among selected ids, for the other editor's selection (cross-probing): a PCB designator
+ * label stands for its part, and wires, tracks and the like have no counterpart.
+ */
+export function partsIn(ids: string[], project: Pick<Project, 'components'>): string[] {
+  const parts = new Set(project.components.map((c) => c.id));
+  return [...new Set(ids.map((id) => (id.startsWith('label:') ? id.slice(6) : id)).filter((id) => parts.has(id)))];
+}
+
 export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'hier' | 'place';
 /** How routing and track dragging treat other nets' tracks in the way. */
 export type RouteMode = 'push' | 'walk' | 'ignore';
@@ -154,8 +163,15 @@ interface EditorState {
   pcb3d: boolean;
   setPcb3d: (on: boolean) => void;
 
+  /** The editor being worked in; with `split` both show and this is the active one. */
   mode: 'schematic' | 'pcb';
   setMode: (mode: 'schematic' | 'pcb') => void;
+  /** Schematic and PCB side by side. */
+  split: boolean;
+  setSplit: (split: boolean) => void;
+  /** Items an editor that is about to appear frames instead of fitting the whole drawing. */
+  pendingFrame: { editor: 'schematic' | 'pcb'; ids: string[] } | null;
+  setPendingFrame: (frame: { editor: 'schematic' | 'pcb'; ids: string[] } | null) => void;
   pcbView: View;
   setPcbView: (view: View) => void;
   pcbTool: PcbTool;
@@ -336,6 +352,23 @@ export const useEditor = create<EditorState>()((set, get) => ({
     if (get().routeDraft && get().transientBase) get().endTransient();
     set({ mode, routeDraft: null, shapeDraft: null, quickEditId: null });
   },
+  split: (() => {
+    try {
+      return localStorage.getItem('schematics:split') === '1';
+    } catch {
+      return false;
+    }
+  })(),
+  setSplit: (split) => {
+    try {
+      localStorage.setItem('schematics:split', split ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+    set({ split });
+  },
+  pendingFrame: null,
+  setPendingFrame: (pendingFrame) => set({ pendingFrame }),
   pcbView: { x: 120, y: 80, zoom: 12 },
   setPcbView: (pcbView) => set({ pcbView }),
   pcbTool: 'select',
@@ -347,13 +380,13 @@ export const useEditor = create<EditorState>()((set, get) => ({
   activeLayer: 'top',
   setActiveLayer: (activeLayer) => set({ activeLayer }),
   pcbSelection: [],
-  setPcbSelection: (pcbSelection) => set({ pcbSelection }),
+  setPcbSelection: (pcbSelection) => set({ pcbSelection, selection: partsIn(pcbSelection, get().project) }),
   routeDraft: null,
   setRouteDraft: (routeDraft) => set({ routeDraft }),
   shapeDraft: null,
   setShapeDraft: (shapeDraft) => set({ shapeDraft }),
   pcbHighlightNet: null,
-  setPcbHighlightNet: (pcbHighlightNet) => set({ pcbHighlightNet }),
+  setPcbHighlightNet: (pcbHighlightNet) => set({ pcbHighlightNet, highlightNet: pcbHighlightNet }),
   pcbCursor: [0, 0],
   setPcbCursor: (pcbCursor) => set({ pcbCursor }),
   pcbLeftTab: 'parts',
@@ -463,7 +496,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   mirrorPlacement: () => set({ placementMirror: !get().placementMirror }),
 
-  setSelection: (selection) => set({ selection }),
+  setSelection: (selection) => set({ selection, pcbSelection: partsIn(selection, get().project) }),
   setView: (view) => set({ view }),
   setCanvasSize: (canvasSize) => set({ canvasSize }),
   setCursor: (cursor) => set({ cursor }),
@@ -482,7 +515,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setLeftTab: (leftTab) => set({ leftTab }),
   setRightTab: (rightTab) => set({ rightTab }),
   requestLibrary: (q, replaceId, types) => set({ libraryOpen: true, libraryRequest: { q, nonce: Date.now(), replaceId, types } }),
-  setHighlightNet: (highlightNet) => set({ highlightNet }),
+  setHighlightNet: (highlightNet) => set({ highlightNet, pcbHighlightNet: highlightNet }),
   logAgent: (entry) =>
     set({ agentLog: [{ ...entry, id: newId('log'), at: Date.now() }, ...get().agentLog].slice(0, 100) }),
   notify: (message, tone = 'info') => set({ toast: { id: ++toastId, message, tone } }),

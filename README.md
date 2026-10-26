@@ -57,6 +57,10 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - **Circuit blocks** (`B`, Place menu or toolbar): proven sub-circuits inserted with their parts, wiring, labels and flags in one undo step — 3.3 V regulator (AMS1117), USB-C 5 V power input, indicator LED, I2C pull-ups, push button, reset/enable RC, crystal with load capacitors, 555 astable timer, SWD header and voltage divider. Rails, net names and values are set before inserting; passives are matched to the cheapest JLCPCB part as usual. Your own blocks: select parts and choose **Save as block** (Edit menu or right-click); they appear under My blocks with their net names renameable on insert, and can be exported to a file and imported elsewhere.
   - **Sheets and hierarchical blocks.** Tabs along the bottom of the canvas add, switch, rename (double-click) and delete sheets. Labels and power flags of the same name connect across sheets. A hierarchical block (Place menu) stands for another sheet and gets a pin for each hierarchical port on it; wire or label its pins like a part's, and double-click it to open its sheet. Pins keep their places when ports are added or renamed, and a removed port's place stays empty while wiring still ends there. A net named only by hierarchical ports is called `Sheet/port`, so the same port name on two sheets stays two nets.
   - **Add decoupling** (inspector of a selected IC): 100 nF per supply pin, 1 µF + 10 nF on analog supplies (VDDA, AVCC) and a 10 µF bulk capacitor per rail, in a row under the part with rail and GND flags. Capacitors on rails above 5 V get a voltage rating; supply pins not yet on a rail get connected to the one you choose.
+- **Cross-probing** between schematic and PCB:
+  - Parts selected in one editor are selected in the other, and a highlighted net is highlighted in both.
+  - **Show on PCB / Show in schematic** (`⇧X`, the right-click menu on a part, pin, wire or label, or the PCB inspector) switches to the other editor and zooms to the selected parts, or to the parts on the highlighted net.
+  - **Side by side** (the button next to the Schematic / PCB switch, or the View menu) shows both editors at once with a draggable divider. Clicking a pane makes it the active editor, with its panels, tools and keys. Each pane pans, or changes sheet, to keep the parts selected in the other in view.
 - **PCB editor** (Schematic / PCB switch in the top bar)
   - **Sync from the schematic.** Loads each part's footprint: one made in the project, the JLCPCB one, or a built-in IPC footprint for unmatched passives. On the first sync it sizes the board and packs parts in schematic order.
   - **Parts.** Drag to move, `R` rotates, `X` flips a part to the bottom side, which mirrors it and moves its pads and silkscreen to the bottom layers.
@@ -95,7 +99,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
 - **Schematic:**
   - `list_components`, `connect_pins` (obstacle-avoiding router), `add_net_label`, `add_power_flag`, `mark_no_connect`, `disconnect_pin`
   - `insert_block` (circuit blocks), `add_decoupling`, `rename_net`
-  - `update_component`, `delete_components`, `annotate`, `focus_components`, `check_pin`, `new_schematic`
+  - `update_component`, `delete_components`, `annotate`, `focus_components` (in the schematic or on the PCB), `check_pin`, `new_schematic`
   - `list_sheets`, `add_sheet`, `switch_sheet`, `place_block` (hierarchical block for a sheet)
 - **Custom parts:** `create_symbol` (from a pin list), `create_footprint` (IPC-7351 from a package name, or pad by pad), `create_part`, `place_custom_part`, `set_footprint` (a project footprint for placed parts), `list_custom_parts`, `delete_custom_item`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)

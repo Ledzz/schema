@@ -39,11 +39,12 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { BLOCKS, insertBlock } from './blocks';
 import { addDecoupling } from './decoupling';
+import { showInSchematic, showOnPcb } from './crossprobe';
 import { deleteLibraryItem, deletePart, findCustomPart, partWarnings, placeCustomPart, saveFootprint, savePart, saveSymbol, setFootprint, symbolPinNumbers, userFootprints, userKey, userSymbols } from './library';
 import { dim, generateFootprint, packageSpec, PACKAGE_EXAMPLES, padNumbers } from './pcb/ipc';
 import type { FootprintGeom, PadGeom } from './pcb/footprint';
 import { icSymbol, type PinSpec } from './schematic/symbolgen';
-import { importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { enterPcb, importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
@@ -805,14 +806,29 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'focus_components',
     title: 'Show components',
-    description: 'Select components and zoom the view to them so the user can see them. Pass no designators to fit the whole schematic.',
-    inputSchema: { type: 'object', properties: { designators: { type: 'array', items: { type: 'string' } } } },
+    description:
+      'Select components and zoom the view to them so the user can see them, in the schematic (default) or on the PCB; they are selected in both. Pass no designators to fit the whole schematic or board.',
+    inputSchema: {
+      type: 'object',
+      properties: { designators: { type: 'array', items: { type: 'string' } }, editor: { type: 'string', enum: ['schematic', 'pcb'], description: 'Where to show them (default schematic).' } },
+    },
     annotations: { readOnlyHint: true },
     execute: async (input) => {
       const list = Array.isArray(input.designators) ? (input.designators as string[]).map(byDesignator) : [];
-      st().setSelection(list.map((c) => c.id));
-      fitView(list.length ? list.map((c) => c.id) : undefined);
-      return { focused: list.map((c) => c.designator) };
+      const ids = list.map((c) => c.id);
+      st().setSelection(ids);
+      if (input.editor === 'pcb') {
+        if (ids.length) await showOnPcb(ids);
+        else {
+          await enterPcb();
+          fitPcbView();
+        }
+      } else if (ids.length) await showInSchematic(ids);
+      else {
+        st().setMode('schematic');
+        fitView();
+      }
+      return { focused: list.map((c) => c.designator), editor: input.editor === 'pcb' ? 'pcb' : 'schematic' };
     },
   },
   {

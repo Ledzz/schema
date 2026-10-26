@@ -3,6 +3,7 @@ import { useEditor } from '../../store/editor';
 import { addPort, commitAttach, connectivity, disconnectPin, endByKey, findNoFeeAlternative, markNoConnect, nameNet, pinByKey, planAttach, renameNet, type PinEnd } from '../../lib/actions';
 import { addDecoupling, supplyPins } from '../../lib/decoupling';
 import { editFootprintOf, editSymbolOf } from '../../lib/library';
+import { partsOnNet, showOnPcb } from '../../lib/crossprobe';
 import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, openSheet, paste, rotateSelection, selectAll } from '../../lib/editing';
 import { samePoint } from '../../lib/schematic/geometry';
 import { sheetsOf, sheetView } from '../../lib/schematic/sheets';
@@ -73,6 +74,9 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
   const port = project.ports.find((p) => p.id === id);
   const near = !port || port.kind === 'noconnect' ? connectionNear(project, symbols, w, tol) : null;
   const highlight = (net: string | undefined): ContextItem[] => (net ? [{ label: 'Highlight net', onSelect: () => s.setHighlightNet(net) }] : []);
+  // The net highlighted on the board, framed around its parts.
+  const netOnPcb = (net: string | undefined): ContextItem[] =>
+    net && partsOnNet(net).length ? [{ label: 'Show net on PCB', onSelect: () => (s.setHighlightNet(net), showOnPcb(partsOnNet(net))) }] : [];
 
   // A pin.
   const pin = near?.kind === 'pin' && near.ref ? pinByKey(near.ref, project) : null;
@@ -94,6 +98,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
           : { label: 'Mark as not connected', separatorBefore: true, disabled: !!net && wired, onSelect: () => markNoConnect(ref) },
         { label: 'Disconnect', disabled: !wired, onSelect: () => disconnectPin(ref) },
         ...highlight(net),
+        ...netOnPcb(net),
       ],
     };
   }
@@ -159,7 +164,8 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
         ...(component.partClass === 'extended' ? [{ label: 'Find a no-fee alternative…', onSelect: () => findNoFeeAlternative(component) }] : []),
         ...(hasSupply ? [{ label: 'Add decoupling', onSelect: () => addDecoupling(component.id, { rail: mostUsedRail(project) }).then((r) => s.notify(`Added ${r.caps.length} capacitors`)) }] : []),
         ...(datasheet && /^https?:\/\//.test(datasheet) ? [{ label: 'Open datasheet', onSelect: () => window.open(datasheet, '_blank', 'noopener') }] : []),
-        { label: 'Edit symbol…', separatorBefore: true, onSelect: () => editSymbolOf(component) },
+        { label: 'Show on PCB', shortcut: '⇧X', separatorBefore: true, onSelect: () => showOnPcb([component.id]) },
+        { label: 'Edit symbol…', onSelect: () => editSymbolOf(component) },
         { label: 'Edit footprint…', onSelect: () => editFootprintOf(component).catch((err: Error) => s.notify(err.message, 'error')) },
         saveBlock,
         remove,
@@ -175,6 +181,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
       items: [
         ...(port.kind !== 'noconnect' ? [{ label: 'Rename net', input: { initial: port.name, onSubmit: (v: string) => v.trim() && v.trim() !== port.name && renameNet(port.name, v) } }] : []),
         ...highlight(net),
+        ...netOnPcb(net),
         { label: 'Rotate', shortcut: 'R', separatorBefore: true, onSelect: rotateSelection },
         remove,
       ],
@@ -201,6 +208,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
       items: [
         { label: named ? 'Rename net' : 'Name net', input: { initial: named, placeholder: 'Net name', onSubmit: (v) => v.trim() && v.trim() !== named && nameNet(wire.id, v) } },
         ...highlight(net),
+        ...netOnPcb(net),
         ...(segment !== null && wire.points.length > 2
           ? [{ label: 'Delete this segment', separatorBefore: true, onSelect: () => s.commit((doc) => deleteWireSegment(doc, wire.id, segment)) }]
           : []),

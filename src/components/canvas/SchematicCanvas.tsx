@@ -91,10 +91,12 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     let first = true;
     const ro = new ResizeObserver(([entry]) => {
       useEditor.getState().setCanvasSize({ width: entry.contentRect.width, height: entry.contentRect.height });
-      // Fit the drawing once the real canvas size is known.
+      // Fit the drawing once the real canvas size is known, or what cross-probing asked to show.
       if (first && entry.contentRect.width > 0) {
         first = false;
-        fitView();
+        const frame = useEditor.getState().pendingFrame;
+        if (frame?.editor === 'schematic') useEditor.getState().setPendingFrame(null);
+        fitView(frame?.editor === 'schematic' ? frame.ids : undefined);
       }
     });
     ro.observe(el);

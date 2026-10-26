@@ -24,6 +24,7 @@ import type { PassiveKind } from '../shared/passives';
 import { changeRouteMode, currentPcb, deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
 import { copperLayers } from '../lib/pcb/types';
 import { fitPcbView, zoomPcbBy } from '../lib/pcb/view';
+import { crossProbe } from '../lib/crossprobe';
 
 const PASSIVE_KEYS: Record<string, PassiveKind> = { r: 'resistor', c: 'capacitor', l: 'inductor', f: 'ferrite', d: 'diode', e: 'led' };
 
@@ -143,6 +144,13 @@ export function useShortcuts() {
           e.preventDefault();
           command();
         }
+        return;
+      }
+
+      // Shift+X: show the selection (or highlighted net) in the other editor.
+      if (e.shiftKey && key === 'x' && !s.pcb3d) {
+        e.preventDefault();
+        void crossProbe();
         return;
       }
 

@@ -31,6 +31,7 @@ import {
   updateText,
   updateTrack,
 } from '../../lib/pcb/actions';
+import { partsOnNet, showInSchematic } from '../../lib/crossprobe';
 import { DESIGNATOR_SIZE, designatorLabel, labelComponent, strokeFor } from '../../lib/pcb/silk';
 import { rasterizeInBrowser, traceBitmap } from '../../lib/pcb/logo';
 import { JlcpcbChecklistPanel } from './Checklist';
@@ -248,6 +249,28 @@ function DxfImportButton() {
   );
 }
 
+/** A net's name, with a link that highlights it and shows its parts in the schematic. */
+function NetInSchematic({ net }: { net: string | null | undefined }) {
+  if (!net) return <span>—</span>;
+  const parts = partsOnNet(net);
+  return (
+    <span className="flex min-w-0 items-baseline justify-between gap-2">
+      <span className="truncate">{net}</span>
+      {parts.length > 0 && (
+        <button
+          onClick={() => {
+            useEditor.getState().setPcbHighlightNet(net);
+            void showInSchematic(parts);
+          }}
+          className="shrink-0 text-[11px] text-indigo-500 hover:underline"
+        >
+          In schematic
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function PcbInspector() {
   const project = useEditor((s) => s.project);
   const selection = useEditor((s) => s.pcbSelection);
@@ -338,9 +361,14 @@ export function PcbInspector() {
 
       {placement && component && (
         <section className="space-y-1.5">
-          <h3 className="text-sm font-semibold">
-            {component.designator} <span className="font-normal text-muted">{component.value}</span>
-          </h3>
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="min-w-0 truncate text-sm font-semibold">
+              {component.designator} <span className="font-normal text-muted">{component.value}</span>
+            </h3>
+            <button onClick={() => void showInSchematic([component.id])} className="shrink-0 text-[11px] text-indigo-500 hover:underline" data-tip="Show in schematic" data-tip-key="⇧X">
+              In schematic
+            </button>
+          </div>
           <Field label="X (mm)">
             <NumberInput label="X" value={placement.x} onCommit={(x) => updatePlacement(placement.componentId, { x })} />
           </Field>
@@ -371,7 +399,7 @@ export function PcbInspector() {
         <section className="space-y-1.5">
           <h3 className="text-sm font-semibold">Track</h3>
           <Field label="Net">
-            <span>{conn.itemNet.get(track.id) ?? track.net ?? '—'}</span>
+            <NetInSchematic net={conn.itemNet.get(track.id) ?? track.net} />
           </Field>
           <Field label="Width (mm)">
             <NumberInput label="Track width" value={track.width} min={0.1} onCommit={(width) => updateTrack(track.id, { width })} />
@@ -394,7 +422,7 @@ export function PcbInspector() {
         <section className="space-y-1.5">
           <h3 className="text-sm font-semibold">Via</h3>
           <Field label="Net">
-            <span>{conn.itemNet.get(via.id) ?? via.net ?? '—'}</span>
+            <NetInSchematic net={conn.itemNet.get(via.id) ?? via.net} />
           </Field>
           <Field label="Size">
             <span>

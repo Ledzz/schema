@@ -180,25 +180,25 @@ export function contentBounds(project: Project) {
 /** Height of the schematic's floating toolbar, which sits over the top of the canvas. */
 const TOOLBAR_HEIGHT = 56;
 
+/** Bounds of the given items on the sheet shown, after switching to their sheet when none are on it. */
+function itemBounds(ids: string[]) {
+  const whole = st().project;
+  const items = [...whole.components, ...whole.wires, ...whole.ports, ...(whole.blocks ?? [])].filter((i) => ids.includes(i.id));
+  if (items.length && !items.some((i) => sheetOf(i, whole) === st().currentSheet)) st().setCurrentSheet(sheetOf(items[0], whole));
+  const project = currentView();
+  return contentBounds({
+    ...project,
+    components: project.components.filter((c) => ids.includes(c.id)),
+    wires: project.wires.filter((w) => ids.includes(w.id)),
+    ports: project.ports.filter((p) => ids.includes(p.id)),
+    blocks: (project.blocks ?? []).filter((b) => ids.includes(b.id)),
+  });
+}
+
 /** Zooms to fit the sheet, or the given items (switching to their sheet first). */
 export function fitView(ids?: string[]) {
-  const whole = st().project;
-  if (ids?.length) {
-    const item = [...whole.components, ...whole.wires, ...whole.ports, ...(whole.blocks ?? [])].find((i) => ids.includes(i.id));
-    if (item && sheetOf(item, whole) !== st().currentSheet) st().setCurrentSheet(sheetOf(item, whole));
-  }
+  const b = ids?.length ? itemBounds(ids) : contentBounds(currentView());
   const { canvasSize } = st();
-  const project = currentView();
-  const subset: Project = ids?.length
-    ? {
-        ...project,
-        components: project.components.filter((c) => ids.includes(c.id)),
-        wires: project.wires.filter((w) => ids.includes(w.id)),
-        ports: project.ports.filter((p) => ids.includes(p.id)),
-        blocks: (project.blocks ?? []).filter((b) => ids.includes(b.id)),
-      }
-    : project;
-  const b = contentBounds(subset);
   if (!b) {
     st().setView({ x: canvasSize.width / 2, y: canvasSize.height / 2, zoom: 2.5 });
     return;
@@ -215,6 +215,21 @@ export function fitView(ids?: string[]) {
     x: canvasSize.width / 2 - ((b.x1 + b.x2) / 2) * zoom,
     y: top + (canvasSize.height - top) / 2 - ((b.y1 + b.y2) / 2) * zoom,
   });
+}
+
+/**
+ * Brings items into view at the current zoom: switches to their sheet when none are on this one,
+ * centres them when any part is out of view, and fits them only when they don't fit.
+ */
+export function revealItems(ids: string[]) {
+  const b = itemBounds(ids);
+  const { view, canvasSize: size } = st();
+  if (!b || !size.width) return;
+  const k = view.zoom;
+  const seen = { x1: -view.x / k, y1: (TOOLBAR_HEIGHT - view.y) / k, x2: (size.width - view.x) / k, y2: (size.height - view.y) / k };
+  if (b.x1 >= seen.x1 && b.x2 <= seen.x2 && b.y1 >= seen.y1 && b.y2 <= seen.y2) return;
+  if (b.x2 - b.x1 > (seen.x2 - seen.x1) * 0.9 || b.y2 - b.y1 > (seen.y2 - seen.y1) * 0.9) return fitView(ids);
+  st().setView({ zoom: k, x: size.width / 2 - ((b.x1 + b.x2) / 2) * k, y: (size.height + TOOLBAR_HEIGHT) / 2 - ((b.y1 + b.y2) / 2) * k });
 }
 
 /** Shows another sheet, fitted to the window once it is drawn. */
