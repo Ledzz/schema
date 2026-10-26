@@ -129,7 +129,7 @@ export function LibraryPanel() {
               <button
                 key={t}
                 onClick={() => toggleType(t)}
-                title={CLASS_HINT[t]}
+                data-tip={CLASS_HINT[t]}
                 aria-pressed={on}
                 className={cx(
                   'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
@@ -146,7 +146,7 @@ export function LibraryPanel() {
           <button
             onClick={() => update({ types: noFee ? [] : ['basic', 'preferred'] })}
             aria-pressed={noFee}
-            title="Basic + Preferred: no extended-part setup fee"
+            data-tip="Basic + Preferred: no extended-part setup fee"
             className={cx('h-7 rounded-md px-2 text-xs font-medium', noFee ? 'bg-indigo-500/15 text-indigo-500 dark:text-indigo-300' : 'text-muted hover:text-[var(--text)]')}
           >
             No setup fee
@@ -278,7 +278,7 @@ function Facets({ lib }: { lib: ReturnType<typeof useLibrarySearch> }) {
                   disabled={implied}
                   onClick={() => update({ packages: on ? filters.packages.filter((x) => x !== p.name) : [...filters.packages, p.name] })}
                   className={cx('rounded-md border px-1.5 py-0.5 text-[11px]', on ? 'border-indigo-500 bg-indigo-500/10' : 'border-line hover:border-indigo-400')}
-                  title={implied ? 'Taken from your search text' : `${p.count.toLocaleString()} parts`}
+                  data-tip={implied ? 'Taken from your search text' : `${p.count.toLocaleString()} parts`}
                 >
                   {p.name}
                 </button>
@@ -354,7 +354,7 @@ function ResultsTable({
             <td className="px-1 py-1">
               <button
                 aria-label={`Place ${p.mpn}`}
-                title="Place on schematic"
+                data-tip="Place on schematic"
                 onClick={(e) => {
                   e.stopPropagation();
                   onPlace(p.lcsc);
@@ -424,7 +424,7 @@ function PartDetailPane({
               setTimeout(() => setCopied(false), 1200);
             }}
             className="inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 font-mono text-[11px] hover:border-indigo-400"
-            title="Copy LCSC part number"
+            data-tip="Copy LCSC part number"
           >
             {part.lcsc}
             {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3 text-muted" />}
@@ -477,7 +477,7 @@ function PartDetailPane({
               onReplaced();
             }}
             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line px-3 text-[13px] hover:bg-black/5 dark:hover:bg-white/5"
-            title={`Swap the part used by ${replaceTarget.designator}`}
+            data-tip={`Swap the part used by ${replaceTarget.designator}`}
           >
             <Replace className="h-4 w-4" /> Replace {replaceTarget.designator}
           </button>

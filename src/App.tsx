@@ -9,6 +9,7 @@ import { LibraryPanel } from './components/library/LibraryPanel';
 import { LeftPanel } from './components/panels/LeftPanel';
 import { RightPanel } from './components/panels/RightPanel';
 import { SchematicToolbar, StatusBar, Toast, TopBar } from './components/Chrome';
+import { TooltipLayer } from './components/Tooltip';
 import { PcbCanvas } from './components/pcb/PcbCanvas';
 import { OrderDialog } from './components/pcb/OrderDialog';
 import { PcbLeftPanel, PcbToolRail } from './components/pcb/PcbPanels';
@@ -89,6 +90,7 @@ export default function App() {
       )}
       <StatusBar />
       <Toast />
+      <TooltipLayer />
       <OrderDialog />
     </div>
   );

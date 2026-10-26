@@ -142,7 +142,7 @@ function BomView() {
                 key={l.key}
                 onClick={() => c && findNoFeeAlternative(c)}
                 className="flex w-full items-center justify-between rounded-md px-1.5 py-1 text-left hover:bg-amber-500/10"
-                title="Search basic / preferred alternatives"
+                data-tip="Search basic / preferred alternatives"
               >
                 <span className="truncate">
                   {l.designators.join(', ')} · {l.value}

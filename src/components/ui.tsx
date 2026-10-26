@@ -27,22 +27,32 @@ export function Button({ variant = 'outline', size = 'md', className, ...props }
   );
 }
 
+/**
+ * Square icon button with an instant tooltip (label and shortcut). A disabled one stays hoverable,
+ * so its tooltip still explains it: it is marked aria-disabled and ignores clicks rather than using
+ * the native attribute, which stops browsers from sending it hover events.
+ */
 export function IconButton({
   label,
   active,
   className,
   children,
   shortcut,
+  disabled,
+  onClick,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean; shortcut?: string; children: ReactNode }) {
   return (
     <button
       {...props}
       aria-label={label}
-      title={shortcut ? `${label} (${shortcut})` : label}
+      aria-disabled={disabled || undefined}
+      data-tip={label}
+      data-tip-key={shortcut}
+      onClick={disabled ? undefined : onClick}
       className={cx(
-        'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors disabled:opacity-40',
-        active ? 'bg-indigo-500/15 text-indigo-500 dark:text-indigo-300' : 'text-muted hover:bg-black/5 hover:text-[var(--text)] dark:hover:bg-white/8',
+        'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors',
+        disabled ? 'cursor-default text-muted opacity-40' : active ? 'bg-indigo-500/15 text-indigo-500 dark:text-indigo-300' : 'text-muted hover:bg-black/5 hover:text-[var(--text)] dark:hover:bg-white/8',
         className,
       )}
     >
@@ -104,7 +114,7 @@ export function ClassBadge({ value, compact }: { value: PartClass | null | undef
   if (!value) return <span className="text-muted">—</span>;
   const s = CLASS_STYLES[value];
   return (
-    <span title={CLASS_HINT[value]} className={cx('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset', s.chip)}>
+    <span data-tip={CLASS_HINT[value]} className={cx('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset', s.chip)}>
       <span className={cx('h-1.5 w-1.5 rounded-full', s.dot)} />
       {compact ? PART_CLASS_LABEL[value][0] : PART_CLASS_LABEL[value]}
     </span>

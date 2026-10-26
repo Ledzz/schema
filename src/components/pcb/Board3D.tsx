@@ -51,11 +51,11 @@ export default function Board3D() {
             viewer.current?.setPartsVisible(!parts);
           }}
           className={cx('inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10', !parts && 'text-muted')}
-          title="Show or hide the parts"
+          data-tip="Show or hide the parts"
         >
           {parts ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />} Parts
         </button>
-        <button onClick={() => useEditor.getState().setPcb3d(false)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10" title="Back to the 2D editor (3)">
+        <button onClick={() => useEditor.getState().setPcb3d(false)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-black/5 dark:hover:bg-white/10" data-tip="Back to the 2D editor (3)">
           <Box className="h-3.5 w-3.5" /> 2D
         </button>
       </div>

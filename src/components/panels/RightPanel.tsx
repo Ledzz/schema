@@ -243,7 +243,7 @@ function ComponentInspector({ c }: { c: Component }) {
           <button
             onClick={() => findNoFeeAlternative(c)}
             className="inline-flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-amber-500/40 text-amber-600 hover:bg-amber-500/10 dark:text-amber-300"
-            title="Search basic / preferred parts like this one"
+            data-tip="Search basic / preferred parts like this one"
           >
             <Sparkles className="h-3.5 w-3.5" /> No-fee alt.
           </button>

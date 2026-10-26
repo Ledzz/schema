@@ -181,7 +181,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
         <div className="mx-1 h-5 w-px bg-[var(--line)]" />
         <button
           onClick={() => s().setRightTab('agent')}
-          title={status?.api ? `WebMCP: ${status.registered.length} tools registered via ${status.api}` : 'WebMCP not detected in this browser'}
+          data-tip={status?.api ? `WebMCP: ${status.registered.length} tools registered via ${status.api}` : 'WebMCP not detected in this browser'}
           className={cx(
             'inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs',
             status?.api ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-300' : 'border-line text-muted',

@@ -146,7 +146,7 @@ function NetsList({ conn, board }: { conn: ReturnType<typeof boardModel>['conn']
             <span className="shrink-0 text-[10px] text-muted">{pads} pads</span>
             {open > 0 ? (
               <button
-                title={`Auto-route ${open} connection${open > 1 ? 's' : ''}`}
+                data-tip={`Auto-route ${open} connection${open > 1 ? 's' : ''}`}
                 onClick={() => {
                   const r = autoroute(net);
                   useEditor.getState().notify(r.failed.length ? `Routed ${r.routed}; ${r.failed.length} could not be routed` : `Routed ${r.routed} connection${r.routed === 1 ? '' : 's'}`);
@@ -265,7 +265,7 @@ export function PcbInspector() {
             useEditor.getState().setPcbIssues(checkPcb().issues);
           }}
           className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 disabled:opacity-40 dark:hover:bg-white/5"
-          title="Experimental grid router"
+          data-tip="Experimental grid router"
         >
           <Wand2 className="h-3.5 w-3.5" /> Auto-route
         </button>
@@ -278,14 +278,14 @@ export function PcbInspector() {
             exportFabrication();
           }}
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
-          title="Download the Gerber zip, BOM and pick-and-place files"
+          data-tip="Download the Gerber zip, BOM and pick-and-place files"
         >
           <Download className="h-3.5 w-3.5" /> Export files
         </button>
         <button
           onClick={() => useEditor.getState().setOrderOpen(true)}
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-indigo-600 font-medium text-white hover:bg-indigo-500"
-          title="Check the board, download the files and open JLCPCB's order page"
+          data-tip="Check the board, download the files and open JLCPCB's order page"
         >
           <ShoppingCart className="h-3.5 w-3.5" /> Order from JLCPCB
         </button>
@@ -514,7 +514,7 @@ function PoursSection({ fills }: { fills: PourFill[] }) {
           </select>
           <button
             aria-label="Add copper pour"
-            title="Add a pour on the chosen net (replaces existing pours of that net on those layers)"
+            data-tip="Add a pour on the chosen net (replaces existing pours of that net on those layers)"
             onClick={() => {
               const created = addPours(chosen, layers === 'both' ? ['top', 'bottom'] : [layers]);
               useEditor.getState().setPcbSelection(created.length === 1 ? [created[0].id] : []);
@@ -625,7 +625,7 @@ function DeleteButton({ id, what }: { id: string; what: string }) {
         useEditor.getState().setPcbSelection([]);
       }}
       className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-muted hover:bg-black/5 hover:text-red-500 dark:hover:bg-white/5"
-      title={`Delete ${what}`}
+      data-tip={`Delete ${what}`}
     >
       <Trash2 className="h-3.5 w-3.5" /> Delete
     </button>
@@ -730,7 +730,7 @@ function LabelEditor({ placement, at }: { placement: Placement; at: [number, num
       <h4 className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted">
         Designator
         <span className="flex items-center gap-1 normal-case tracking-normal">
-          <button onClick={() => set({ hidden: !l.hidden })} className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 hover:bg-black/5 dark:hover:bg-white/5" title={l.hidden ? 'Show on the board' : 'Hide from the board'}>
+          <button onClick={() => set({ hidden: !l.hidden })} className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 hover:bg-black/5 dark:hover:bg-white/5" data-tip={l.hidden ? 'Show on the board' : 'Hide from the board'}>
             {l.hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />} {l.hidden ? 'Hidden' : 'Shown'}
           </button>
           {placement.label && (
@@ -909,7 +909,8 @@ export function PcbToolRail() {
       {(stack.split(',') as CopperLayer[]).map((l) => (
         <button
           key={l}
-          title={`${LAYER_NAMES[l]} layer (${LAYER_KEYS[l]})`}
+          data-tip={`${LAYER_NAMES[l]} layer`}
+          data-tip-key={LAYER_KEYS[l]}
           aria-pressed={layer === l}
           onClick={() => s().setActiveLayer(l)}
           className={cx('flex h-7 w-8 items-center justify-center rounded-md text-[10px] font-semibold', layer === l ? 'ring-2 ring-[var(--select)]' : 'opacity-60 hover:opacity-100')}
