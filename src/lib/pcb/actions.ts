@@ -13,6 +13,7 @@ import { buildBoard, footprintGeom, pcbConnectivity, type Airwire, type BoardMod
 import { boxesOverlap, pointShapeDistance, rotateDeg, shapeBox, shapeDistance, trackItems, viaItem, worldToPlacement, type CopperItem, type CopperShape } from './geometry';
 import { POUR_EDGE_CLEARANCE } from './pour';
 import { applyShove, firstCollision, posture, shove, trackMovers, type Mover, type ShoveResult } from './shove';
+import { routePairOn } from './tuning';
 export { posture } from './shove';
 import { boardStep, type StepResult } from './step';
 import type { PartStep } from '../../shared/parts';
@@ -672,6 +673,8 @@ export interface AutorouteReport {
   planes: number;
   /** Pads that found no room for a via to their plane. */
   planeFailed: string[];
+  /** Differential pair connections that could not be routed side by side (routed singly instead, if at all). */
+  pairFailed?: string[];
 }
 
 /** Distance from narrow end copper within which a necked-down track stays narrow. */
@@ -1024,7 +1027,16 @@ export function autoroute(net?: string, width?: number): AutorouteReport {
   const wanted = (a: Airwire) => !net || a.net === net;
   const signals = (a: Airwire) => wanted(a) && !planeNets.has(a.net);
   const before = unroutedCount(st().project, signals);
-  let project = routeAirwires(st().project, signals, width, report);
+  // Differential pairs first, side by side; what doesn't fit is routed net by net below.
+  let project = st().project;
+  for (const pair of currentPcb().diffPairs ?? []) {
+    if (net && pair.positive !== net && pair.negative !== net) continue;
+    const r = routePairOn(project, pair);
+    project = r.project;
+    report.routed += r.routed;
+    if (r.failed.length) report.pairFailed = [...(report.pairFailed ?? []), ...r.failed];
+  }
+  project = routeAirwires(project, signals, width, report);
   // Rip up and retry what the first pass left.
   if (report.failed.length) {
     project = ripUpAndRetry(project, signals, width, RIP_UP_BUDGET_MS);

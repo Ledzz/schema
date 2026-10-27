@@ -148,6 +148,13 @@ Then run it once more without a net for the rest. Check `failed` in the result a
 - The router keeps other nets out from under metal connector shells (`metal_shell` parts in
   `pcb_get_state`) where it can. When it can't, DRC warns that a track runs under the shell; move
   the connector or the parts next to it, clear that net and route again.
+- **USB and other differential pairs:** `pcb_net_lengths` lists pairs the net names suggest
+  (USB_DP/USB_DN, D+/D-). Add them with `pcb_add_diff_pair` before routing, then `pcb_autoroute`
+  routes each pair side by side first.
+  - Place the two ends so the pair doesn't have to swap sides; `pairs_not_coupled` in the result says when it would. USB-C's own D+/D- bridge between A6/B6 and A7/B7 always crosses and is routed singly; that's expected.
+  - After routing, `pcb_check` warns if the pair's lengths differ by more than its tolerance. Fix it with `pcb_tune_length` and `"match": "pair"`.
+  - USB 2.0 full speed (most microcontrollers) is forgiving about impedance. A true 90 Ω pair needs a 4-layer board, as `pcb_net_lengths` shows in its impedance estimate.
+- **Length matching** other nets: `pcb_tune_length` with `target_length` or `"match": "<net>"` adds meanders; `short` in the result is length that found no room.
 
 ### 6. Silkscreen
 
@@ -214,6 +221,7 @@ Then tell the user:
 
 - The auto-router is a grid router with rip-up and retry, meant for small boards. Good placement
   matters more than anything else.
-- There are no differential pairs or length tuning yet.
+- Differential pairs are routed on one layer; a pair that must cross over or change layer is
+  routed singly, or by hand.
 - Keepouts don't move existing tracks: after adding one over routed copper, clear the nets
   `pcb_check` names and route them again.

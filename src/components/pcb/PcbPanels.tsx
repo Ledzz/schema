@@ -31,12 +31,14 @@ import {
   updateText,
   updateTrack,
 } from '../../lib/pcb/actions';
+import { addDiffPair, diffPairs, lengthsOf, matchPair, removeDiffPair, routeDiffPair, suggestedPairs, tuneLength, updateDiffPair } from '../../lib/pcb/tuning';
+import { diffImpedance, netLengths, outerDielectric, pairLengths } from '../../lib/pcb/diffpair';
 import { partsOnNet, showInSchematic } from '../../lib/crossprobe';
 import { DESIGNATOR_SIZE, designatorLabel, labelComponent, strokeFor } from '../../lib/pcb/silk';
 import { rasterizeInBrowser, traceBitmap } from '../../lib/pcb/logo';
 import { JlcpcbChecklistPanel } from './Checklist';
 import { fitPcbView, zoomPcbBy, zoomPcbTo } from '../../lib/pcb/view';
-import { DEFAULT_HOLE, copperLayers, isInner, LAYER_NAMES, sideOfLayer, type Side, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
+import { DEFAULT_HOLE, copperLayers, isInner, LAYER_NAMES, sideOfLayer, type DiffPair, type Side, type CopperLayer, type Cutout, type Keepout, type MountingHole, type Placement, type Pour, type SilkLogo, type SilkText } from '../../lib/pcb/types';
 import { cornerHolePositions } from '../../lib/pcb/outline';
 import type { PourFill } from '../../lib/pcb/pour';
 import { Field, IconButton, Tabs, cx, inputClass } from '../ui';
@@ -129,22 +131,120 @@ function PartsList({ board }: { board: ReturnType<typeof boardModel>['board'] })
   );
 }
 
+/** A pair's settings, impedance estimate and length difference, with routing and matching. */
+function PairRow({ pair, conn, open }: { pair: DiffPair; conn: ReturnType<typeof boardModel>['conn']; open: boolean }) {
+  const pcb = useEditor((s) => currentPcb(s.project));
+  const stack = outerDielectric(pcb.board.layers ?? 2);
+  const l = pairLengths(pair, pcb, (id, fallback) => conn.itemNet.get(id) ?? fallback);
+  const skew = l.positive - l.negative;
+  const routed = !open && l.positive > 0 && l.negative > 0;
+  const off = routed && Math.abs(skew) > pair.tolerance;
+  const run = (fn: () => string) => {
+    try {
+      useEditor.getState().notify(fn());
+    } catch (err) {
+      useEditor.getState().notify((err as Error).message, 'error');
+    }
+  };
+  return (
+    <div className="space-y-1.5 border-b border-line px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-medium" title={`${pair.positive} / ${pair.negative}`}>
+          {pair.name} <span className="font-normal text-muted">{pair.positive} / {pair.negative}</span>
+        </span>
+        <button aria-label={`Remove pair ${pair.name}`} data-tip="Remove the pair (tracks stay)" onClick={() => removeDiffPair(pair.id)} className="shrink-0 rounded p-0.5 text-muted hover:text-rose-500">
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-1">
+        {(['width', 'gap', 'tolerance'] as const).map((key) => (
+          <label key={key} className="space-y-0.5">
+            <span className="text-[10px] capitalize text-muted">{key === 'tolerance' ? 'Max skew' : key}</span>
+            <NumberInput label={`${pair.name} ${key}`} value={pair[key]} min={key === 'tolerance' ? 0 : 0.1} onCommit={(v) => updateDiffPair(pair.id, { [key]: v })} />
+          </label>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="text-muted" data-tip={`Edge-coupled microstrip over ${stack.height} mm (εr ${stack.er}), IPC-2141 estimate`}>
+          ≈ {Math.round(diffImpedance(pair.width, pair.gap, stack.height, stack.er))} Ω
+        </span>
+        {routed && <span className={off ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-400'}>skew {Math.abs(skew).toFixed(2)} mm</span>}
+        <span className="flex-1" />
+        {open && (
+          <button
+            onClick={() => run(() => {
+              const r = routeDiffPair(pair.id);
+              return r.failed.length ? r.failed.join('; ') : `Routed ${pair.name} side by side`;
+            })}
+            className="inline-flex items-center gap-0.5 rounded bg-indigo-500/15 px-1.5 py-0.5 text-indigo-600 hover:bg-indigo-500/25 dark:text-indigo-300"
+          >
+            <Route className="h-3 w-3" /> Route
+          </button>
+        )}
+        {off && (
+          <button
+            onClick={() => run(() => {
+              const r = matchPair(pair.id);
+              return r.short > 0.05 ? `Added ${(r.after - r.before).toFixed(2)} mm to ${r.net}; ${r.short.toFixed(2)} mm found no room` : `${r.net} lengthened to ${r.after.toFixed(2)} mm`;
+            })}
+            className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 hover:bg-amber-500/25 dark:text-amber-300"
+          >
+            Match lengths
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Defined differential pairs, and the ones the net names suggest. */
+function PairsSection({ conn }: { conn: ReturnType<typeof boardModel>['conn'] }) {
+  const project = useEditor((s) => s.project);
+  const pairs = diffPairs(currentPcb(project));
+  const suggested = useMemo(() => suggestedPairs(project), [project]);
+  if (!pairs.length && !suggested.length) return null;
+  return (
+    <div className="border-b border-line">
+      <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-muted">Differential pairs</div>
+      {pairs.map((p) => (
+        <PairRow key={p.id} pair={p} conn={conn} open={(conn.unrouted.get(p.positive) ?? 0) + (conn.unrouted.get(p.negative) ?? 0) > 0} />
+      ))}
+      {suggested.map((p) => (
+        <div key={p.positive} className="flex items-center gap-2 px-3 py-1.5">
+          <span className="min-w-0 flex-1 truncate text-muted">
+            {p.positive} / {p.negative}
+          </span>
+          <button onClick={() => addDiffPair(p.positive, p.negative, { name: p.name })} className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-500/15 px-1.5 py-0.5 text-[11px] text-indigo-600 hover:bg-indigo-500/25 dark:text-indigo-300">
+            <Plus className="h-3 w-3" /> Pair
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function NetsList({ conn, board }: { conn: ReturnType<typeof boardModel>['conn']; board: ReturnType<typeof boardModel>['board'] }) {
   const highlight = useEditor((s) => s.pcbHighlightNet);
+  const tracks = useEditor((s) => currentPcb(s.project).tracks);
+  const vias = useEditor((s) => currentPcb(s.project).vias);
+  const lengths = useMemo(() => netLengths({ tracks, vias }, (id, fallback) => conn.itemNet.get(id) ?? fallback), [tracks, vias, conn]);
   const nets = useMemo(() => {
     const count = new Map<string, number>();
     for (const p of board.pads) if (p.net) count.set(p.net, (count.get(p.net) ?? 0) + 1);
     return [...count].filter(([, n]) => n > 1).sort((a, b) => (conn.unrouted.get(b[0]) ?? 0) - (conn.unrouted.get(a[0]) ?? 0) || a[0].localeCompare(b[0], undefined, { numeric: true }));
   }, [board, conn]);
   return (
-    <div className="py-1">
+    <div className="pb-1">
+      <PairsSection conn={conn} />
       {nets.map(([net, pads]) => {
         const open = conn.unrouted.get(net) ?? 0;
+        const length = lengths.get(net)?.length ?? 0;
         return (
           <div key={net} className={cx('group flex items-center gap-2 px-3 py-1', highlight === net ? 'bg-pink-500/12' : 'hover:bg-black/5 dark:hover:bg-white/5')}>
             <button onClick={() => useEditor.getState().setPcbHighlightNet(highlight === net ? null : net)} className="min-w-0 flex-1 truncate text-left">
               {net}
             </button>
+            {length > 0 && <span className="tabular shrink-0 text-[10px] text-muted">{length.toFixed(1)} mm</span>}
             <span className="shrink-0 text-[10px] text-muted">{pads} pads</span>
             {open > 0 ? (
               <button
@@ -245,6 +345,61 @@ function DxfImportButton() {
           }
         }}
       />
+    </>
+  );
+}
+
+/** The routed length of a track's net, with meanders (on this track first) to bring it to a target length. */
+function TuneField({ net, trackId }: { net: string | null | undefined; trackId: string }) {
+  const project = useEditor((s) => s.project);
+  const length = useMemo(() => (net ? (lengthsOf(project).get(net)?.length ?? 0) : 0), [net, project]);
+  const pair = net ? diffPairs(currentPcb(project)).find((p) => p.positive === net || p.negative === net) : undefined;
+  const [target, setTarget] = useState('');
+  if (!net || !length) return null;
+  const tune = (to: number) => {
+    try {
+      const r = tuneLength(net, to, { prefer: (t) => t.id === trackId });
+      useEditor.getState().notify(r.short > 0.05 ? `${net}: added ${(r.after - r.before).toFixed(2)} mm, ${r.short.toFixed(2)} mm found no room` : `${net} is now ${r.after.toFixed(2)} mm`);
+    } catch (err) {
+      useEditor.getState().notify((err as Error).message, 'error');
+    }
+  };
+  return (
+    <>
+      <Field label="Net length">
+        <span>{length.toFixed(2)} mm</span>
+      </Field>
+      <Field label="Tune to (mm)">
+        <div className="flex gap-1">
+          <input
+            aria-label="Target length"
+            className={inputClass}
+            inputMode="decimal"
+            placeholder={(length + 2).toFixed(1)}
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter' && Number(target) > length) tune(Number(target));
+            }}
+          />
+          <button disabled={!(Number(target) > length)} onClick={() => tune(Number(target))} className="shrink-0 rounded-md border border-line px-2 text-[11px] hover:bg-black/5 disabled:opacity-40 dark:hover:bg-white/5" data-tip="Add meanders up to this length">
+            Tune
+          </button>
+        </div>
+      </Field>
+      {pair && (
+        <button onClick={() => {
+          try {
+            const r = matchPair(pair.id);
+            useEditor.getState().notify(`${r.net} is now ${r.after.toFixed(2)} mm${r.short > 0.05 ? `; ${r.short.toFixed(2)} mm found no room` : ''}`);
+          } catch (err) {
+            useEditor.getState().notify((err as Error).message, 'error');
+          }
+        }} className="w-full rounded-md border border-line py-1 text-[11px] hover:bg-black/5 dark:hover:bg-white/5">
+          Match lengths of pair {pair.name}
+        </button>
+      )}
     </>
   );
 }
@@ -416,6 +571,7 @@ export function PcbInspector() {
           <Field label="Length">
             <span>{track.points.slice(1).reduce((s, p, i) => s + Math.hypot(p[0] - track.points[i][0], p[1] - track.points[i][1]), 0).toFixed(2)} mm</span>
           </Field>
+          <TuneField net={conn.itemNet.get(track.id) ?? track.net} trackId={track.id} />
         </section>
       )}
       {via && (

@@ -41,6 +41,8 @@ import { BLOCKS, insertBlock } from './blocks';
 import { addDecoupling } from './decoupling';
 import { showInSchematic, showOnPcb } from './crossprobe';
 import { deleteLibraryItem, deletePart, findCustomPart, partWarnings, placeCustomPart, saveFootprint, savePart, saveSymbol, setFootprint, symbolPinNumbers, userFootprints, userKey, userSymbols } from './library';
+import { addDiffPair, diffPairs, findPair, lengthsOf, matchPair, pairLengthsOf, removeDiffPair, routeDiffPair, suggestedPairs, tuneLength } from './pcb/tuning';
+import { diffImpedance, outerDielectric } from './pcb/diffpair';
 import { dim, generateFootprint, packageSpec, PACKAGE_EXAMPLES, padNumbers } from './pcb/ipc';
 import type { FootprintGeom, PadGeom } from './pcb/footprint';
 import { icSymbol, type PinSpec } from './schematic/symbolgen';
@@ -1527,7 +1529,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'pcb_autoroute',
     title: 'Auto-route PCB',
     description:
-      'Route unrouted connections with the built-in grid router (shortest first) on the board’s layers. Supply and ground nets (GND, VCC, VIN, VM, +5V, +3V3 …) get the power track width, others the signal width. On a 4-layer board with inner planes (whole-board pours on inner1/inner2), each SMD pad of a plane net first gets a short stub and a via into its plane (`planes` in the result), and the router keeps off the plane layers. Optionally limit to one net, and set `width` to route a high-current net such as a motor output or sense-resistor connection wider. Check the result with pcb_check.',
+      'Route unrouted connections with the built-in grid router (shortest first) on the board’s layers. Supply and ground nets (GND, VCC, VIN, VM, +5V, +3V3 …) get the power track width, others the signal width. On a 4-layer board with inner planes (whole-board pours on inner1/inner2), each SMD pad of a plane net first gets a short stub and a via into its plane (`planes` in the result), and the router keeps off the plane layers. Differential pairs (pcb_add_diff_pair) are routed first, side by side; `pairs_not_coupled` lists connections that did not fit and were routed singly or not at all. Optionally limit to one net, and set `width` to route a high-current net such as a motor output or sense-resistor connection wider. Check the result with pcb_check.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1537,7 +1539,118 @@ export const TOOLS: ToolDefinition[] = [
     },
     execute: async (input) => {
       const r = autoroute(input.net ? String(input.net) : undefined, input.width === undefined ? undefined : Number(input.width));
-      return { routed: r.routed, failed: r.failed.map((f) => f.net), planes: r.planes || undefined, plane_failed: r.planeFailed.length ? r.planeFailed : undefined };
+      return { routed: r.routed, failed: r.failed.map((f) => f.net), planes: r.planes || undefined, plane_failed: r.planeFailed.length ? r.planeFailed : undefined, pairs_not_coupled: r.pairFailed };
+    },
+  },
+  {
+    name: 'pcb_net_lengths',
+    title: 'Net lengths and differential pairs',
+    description:
+      'Routed track length (mm) and via count of each net, the differential pairs with their width, gap, length difference (skew) and an impedance estimate on the board’s stack-up, and pairs the net names suggest (USB_DP/USB_DN, D+/D-, CLK_P/CLK_N) that are not defined yet.',
+    inputSchema: { type: 'object', properties: { nets: { type: 'array', items: { type: 'string' }, description: 'Only these nets (default all routed nets).' } } },
+    annotations: { readOnlyHint: true },
+    execute: async (input) => {
+      const pcb = currentPcb();
+      const lengths = lengthsOf();
+      const want = Array.isArray(input.nets) ? new Set(input.nets as string[]) : null;
+      const stack = outerDielectric(pcb.board.layers ?? 2);
+      const round = (v: number) => Math.round(v * 100) / 100;
+      return {
+        nets: [...lengths]
+          .filter(([n]) => !want || want.has(n))
+          .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+          .map(([net, l]) => ({ net, length: round(l.length), vias: l.vias || undefined })),
+        pairs: diffPairs(pcb).map((p) => ({
+          name: p.name,
+          positive: p.positive,
+          negative: p.negative,
+          width: p.width,
+          gap: p.gap,
+          tolerance: p.tolerance,
+          skew: round(pairLengthsOf(p).positive - pairLengthsOf(p).negative),
+          impedance_ohm: Math.round(diffImpedance(p.width, p.gap, stack.height, stack.er)),
+        })),
+        suggested_pairs: suggestedPairs(),
+      };
+    },
+  },
+  {
+    name: 'pcb_add_diff_pair',
+    title: 'Add differential pair',
+    description:
+      'Make two nets a differential pair (USB D+/D-, LVDS, CAN): pcb_autoroute and pcb_route_diff_pair route them side by side at `width` and `gap`, DRC allows the gap between them, and pcb_check warns when their lengths differ by more than `tolerance`. USB 2.0 full speed is forgiving; for 90 Ω (USB high speed) a 4-layer board is needed (pcb_net_lengths estimates the impedance).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        positive: { type: 'string', description: 'The positive net, e.g. "USB_DP".' },
+        negative: { type: 'string', description: 'The negative net, e.g. "USB_DN".' },
+        name: { type: 'string' },
+        width: { type: 'number', minimum: 0.1, maximum: 2, description: 'Track width (mm, default the board’s signal width).' },
+        gap: { type: 'number', minimum: 0.1, maximum: 2, description: 'Edge-to-edge gap (mm, default the clearance).' },
+        tolerance: { type: 'number', minimum: 0, description: 'Largest length difference before DRC warns (mm, default 0.5).' },
+      },
+      required: ['positive', 'negative'],
+    },
+    execute: async (input) => {
+      const pair = addDiffPair(String(input.positive), String(input.negative), {
+        name: input.name === undefined ? undefined : String(input.name),
+        width: input.width === undefined ? undefined : Number(input.width),
+        gap: input.gap === undefined ? undefined : Number(input.gap),
+        tolerance: input.tolerance === undefined ? undefined : Number(input.tolerance),
+      });
+      const stack = outerDielectric(currentPcb().board.layers ?? 2);
+      return { pair: pair.name, width: pair.width, gap: pair.gap, tolerance: pair.tolerance, impedance_ohm: Math.round(diffImpedance(pair.width, pair.gap, stack.height, stack.er)) };
+    },
+  },
+  {
+    name: 'pcb_remove_diff_pair',
+    title: 'Remove differential pair',
+    description: 'Stop treating two nets as a differential pair (their tracks stay).',
+    inputSchema: { type: 'object', properties: { pair: { type: 'string', description: 'Pair name or one of its nets.' } }, required: ['pair'] },
+    annotations: { consequentialHint: true },
+    execute: async (input) => {
+      const pair = findPair(String(input.pair));
+      removeDiffPair(pair.id);
+      return { removed: pair.name };
+    },
+  },
+  {
+    name: 'pcb_route_diff_pair',
+    title: 'Route differential pair',
+    description:
+      'Route a pair’s unrouted connections side by side on one layer at its width and gap: the pair leaves its pads square to their row, runs coupled, and joins the pads at the other end. pcb_autoroute does this for every pair before routing the rest. Fails with the reason when the pair would have to swap sides (route that by hand) or there is no room.',
+    inputSchema: { type: 'object', properties: { pair: { type: 'string', description: 'Pair name or one of its nets.' } }, required: ['pair'] },
+    execute: async (input) => routeDiffPair(String(input.pair)),
+  },
+  {
+    name: 'pcb_tune_length',
+    title: 'Tune length',
+    description:
+      'Add meanders to a routed net until it reaches a length: `target_length` in mm, or `match` another net (its length) or "pair" (the longer net of the net’s differential pair, with small bumps that keep the pair coupled). Meanders go on the net’s longest straight runs, on whichever side has room, clear of other copper; `short` in the result is what found no room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        net: { type: 'string' },
+        target_length: { type: 'number', minimum: 0 },
+        match: { type: 'string', description: 'Another net to match, or "pair".' },
+        amplitude: { type: 'number', minimum: 0.1, maximum: 5, description: 'Largest meander height (mm, default 1, or small for a pair).' },
+      },
+      required: ['net'],
+    },
+    execute: async (input) => {
+      const net = String(input.net);
+      const amplitude = input.amplitude === undefined ? undefined : Number(input.amplitude);
+      const round = (v: number) => Math.round(v * 100) / 100;
+      let r;
+      if (input.match === 'pair') {
+        const pair = findPair(net);
+        r = matchPair(pair.id, amplitude ? { amplitude } : {});
+      } else {
+        const target = input.target_length !== undefined ? Number(input.target_length) : input.match !== undefined ? lengthsOf().get(String(input.match))?.length : undefined;
+        if (target === undefined) throw new Error(input.match !== undefined ? `${input.match} has no routed tracks` : 'Give target_length or match');
+        r = tuneLength(net, target, amplitude ? { amplitude } : {});
+      }
+      return { net: r.net, before: round(r.before), after: round(r.after), target: round(r.target), short: r.short > 0.05 ? round(r.short) : undefined };
     },
   },
   {

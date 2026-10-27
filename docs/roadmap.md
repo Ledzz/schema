@@ -6,12 +6,16 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Length tuning and differential pairs** — for USB and other matched signals.
-2. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+1. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
 
 ## Done
 
+- **Differential pairs and length tuning** (2026-10-27): pairs found by net name and routed side
+  by side on one layer (straight out of the pads, coupled at the gap, crossing-free pad choice on
+  connectors with repeated pins), DRC allowing the pair gap and warning about skew measured over
+  the pair's own tracks, an impedance estimate on JLCPCB's stack-ups, net lengths, and meanders
+  that lengthen a net to a target or match a pair.
 - **Quick add** (2026-10-27): `A` opens a box at the cursor that places a passive by value, a
   rail, ground, net label or no-connect (on the pin under the cursor when there is one), another
   copy of a part in the design, a custom part, a circuit block or a JLCPCB part by keyword.
@@ -110,9 +114,9 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 ## PCB: routing
 
 - Glossing (tidying routed tracks), pushing pads' parts, dragging vias with their tracks.
-- Differential pairs, length matching (serpentines), curved tracks, teardrops, BGA fanout.
-- Smarter routing still: negotiated congestion for whole boards, differential pairs and length
-  matching in the auto-router, BGA fanout.
+- Curved tracks, teardrops, BGA fanout; interactive (push-and-shove) routing of a pair, pairs
+  changing layer, and length-matching groups beyond pairs.
+- Smarter routing still: negotiated congestion for whole boards, BGA fanout.
 
 ## PCB: copper, rules, checks
 

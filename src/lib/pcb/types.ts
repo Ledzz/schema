@@ -85,6 +85,8 @@ export interface Track {
   width: number;
   points: Vec[];
   net: string | null;
+  /** The differential pair (id) it was routed as part of; its length counts towards the pair's skew. */
+  pair?: string;
 }
 
 export interface Via {
@@ -191,6 +193,20 @@ export interface StoredFootprint {
   geom?: FootprintGeom;
 }
 
+/** Two nets routed side by side at a set width and gap (USB D+/D-, LVDS, CAN). */
+export interface DiffPair {
+  id: string;
+  name: string;
+  positive: string;
+  negative: string;
+  /** Track width (mm). */
+  width: number;
+  /** Gap between the two tracks, edge to edge (mm); DRC allows it between them. */
+  gap: number;
+  /** Largest length difference between the two nets (mm) before DRC warns. */
+  tolerance: number;
+}
+
 export interface Pcb {
   board: Board;
   rules: DesignRules;
@@ -202,6 +218,7 @@ export interface Pcb {
   keepouts?: Keepout[];
   texts?: SilkText[];
   logos?: SilkLogo[];
+  diffPairs?: DiffPair[];
   /** Footprint documents keyed like "lcsc:C25804" or "builtin:0603". */
   footprints: Record<string, StoredFootprint>;
   /** componentId -> footprint key (null: no footprint available). */

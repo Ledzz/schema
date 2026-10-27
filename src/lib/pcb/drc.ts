@@ -4,6 +4,7 @@ import { pointInPolygon, pointShapeDistance, shapeDistance, type CopperItem, typ
 import { boardEdges, insideBoard, keepoutAreas, shapeEdgeDistance } from './outline';
 import { designatorLabel, labelStrokes, logoAreas, strokeFor, textItemStrokes, textStroke } from './silk';
 import type { CopperLayer, Pcb } from './types';
+import { pairLengths } from './diffpair';
 
 export interface DrcIssue {
   severity: 'error' | 'warning';
@@ -187,9 +188,11 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
   const issues: DrcIssue[] = [];
   const { clearance } = pcb.rules;
 
-  // Clearance between copper of different nets (sweep over x).
+  // Clearance between copper of different nets (sweep over x); a differential pair's two nets
+  // only need their gap.
   const items = [...board.items].sort((a, b) => a.box.x1 - b.box.x1);
   const nets = new Map(items.map((it) => [it.key, effectiveNet(it, conn)]));
+  const pairGap = new Map((pcb.diffPairs ?? []).flatMap((p) => [[`${p.positive}|${p.negative}`, p.gap] as const, [`${p.negative}|${p.positive}`, p.gap] as const]));
   const seen = new Set<string>();
   for (let i = 0; i < items.length; i++) {
     const a = items[i];
@@ -203,13 +206,15 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
       // Pads of one footprint are spaced by its designer.
       if (a.type === 'pad' && b.type === 'pad' && a.ref.split(':')[0] === b.ref.split(':')[0]) continue;
       const d = shapeDistance(a.shape, b.shape);
-      if (d < clearance - 1e-6) {
+      const need = Math.min(clearance, pairGap.get(`${nets.get(a.key)}|${nets.get(b.key)}`) ?? clearance);
+      // A micrometre of slack: coordinates carry rounding that no fab can see.
+      if (d < need - 1e-3) {
         const pair = [a.ref, b.ref].sort().join('|');
         if (seen.has(pair)) continue;
         seen.add(pair);
         issues.push({
           severity: 'error',
-          message: d === 0 ? `${label(a, board, conn)} touches ${label(b, board, conn)} (different nets)` : `Clearance ${d.toFixed(3)} mm between ${label(a, board, conn)} and ${label(b, board, conn)} (min ${clearance} mm)`,
+          message: d === 0 ? `${label(a, board, conn)} touches ${label(b, board, conn)} (different nets)` : `Clearance ${d.toFixed(3)} mm between ${label(a, board, conn)} and ${label(b, board, conn)} (min ${need} mm)`,
           at: center(a),
           refs: [a.ref.split(':')[0], b.ref.split(':')[0]],
         });
@@ -221,6 +226,17 @@ export function runDrc(board: BoardModel, pcb: Pcb, conn: PcbConnectivity): DrcI
 
   for (const [net, n] of conn.unrouted) {
     if (n > 0) issues.push({ severity: 'error', message: `${net}: ${n} unrouted connection${n > 1 ? 's' : ''}`, at: null, refs: [] });
+  }
+
+  // Differential pairs whose two routed nets differ in length by more than they allow.
+  for (const pair of pcb.diffPairs ?? []) {
+    if (conn.unrouted.get(pair.positive) || conn.unrouted.get(pair.negative)) continue;
+    const l = pairLengths(pair, pcb, (id, fallback) => conn.itemNet.get(id) ?? fallback);
+    const skew = l.positive - l.negative;
+    if (Math.abs(skew) > pair.tolerance && l.positive && l.negative) {
+      const [long, short] = skew > 0 ? [pair.positive, pair.negative] : [pair.negative, pair.positive];
+      issues.push({ severity: 'warning', message: `Pair ${pair.name}: ${long} is ${Math.abs(skew).toFixed(2)} mm longer than ${short} (tolerance ${pair.tolerance} mm)`, at: null, refs: [] });
+    }
   }
 
   // Copper must sit on the board and keep clear of every edge: outline, cutouts, hole walls.
