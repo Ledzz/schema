@@ -1,0 +1,21 @@
+# The API server on the NAS. Paste this into TrueNAS SCALE's Apps → Discover → Custom App
+# (Install via YAML), or run `docker compose up -d` next to a .env file with the keys.
+#
+# The image is built and published by .github/workflows/deploy.yml on every push to main;
+# to update, pull the new image and recreate the container (`docker compose pull && docker
+# compose up -d`). The app itself is served from GitHub Pages and talks to this API, so the
+# address below must be reachable over HTTPS from the browsers that use it and CORS_ORIGIN
+# must name the Pages site.
+services:
+  schematics-api:
+    image: ghcr.io/ledzz/schema:latest
+    container_name: schematics-api
+    restart: unless-stopped
+    ports:
+      - '8787:8787'
+    environment:
+      # Either key makes the Assistant tab work for everyone without entering one.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Origins allowed to call the API: the GitHub Pages site (add others comma-separated).
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://ledzz.github.io}
