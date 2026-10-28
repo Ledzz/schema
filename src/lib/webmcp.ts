@@ -39,6 +39,8 @@ import { PASSIVES, PASSIVE_KINDS, type PassiveKind } from '../shared/passives';
 import { assignPassive, noFeeSizes, placePassiveAt } from './passives';
 import { BLOCKS, insertBlock } from './blocks';
 import { addDecoupling } from './decoupling';
+import { addGroup, describeGroup, findGroup, fitGroup, groupItems, groupOfComponent, removeGroup, updateGroup } from './grouping';
+import { GROUP_COLOR_NAMES } from './schematic/groups';
 import { showInSchematic, showOnPcb } from './crossprobe';
 import { deleteLibraryItem, deletePart, findCustomPart, partWarnings, placeCustomPart, saveFootprint, savePart, saveSymbol, setFootprint, symbolPinNumbers, userFootprints, userKey, userSymbols } from './library';
 import { addDiffPair, diffPairs, findPair, lengthsOf, matchPair, pairLengthsOf, removeDiffPair, routeDiffPair, suggestedPairs, tuneLength } from './pcb/tuning';
@@ -108,6 +110,7 @@ function componentInfo(c: Component, withPins = true) {
     rotation: c.rotation,
     // Only worth saying once there is more than one sheet.
     sheet: project.sheets && project.sheets.length > 1 ? sheetsOf(project).find((s) => s.id === sheetOf(c, project))?.name : undefined,
+    group: project.groups?.length ? groupOfComponent(c)?.name : undefined,
     pins,
   };
 }
@@ -578,7 +581,7 @@ export const TOOLS: ToolDefinition[] = [
   {
     name: 'insert_block',
     title: 'Insert circuit block',
-    description: `Insert a proven sub-circuit with its parts, wiring, labels and power flags in one step (one undo step), to the right of the drawing unless x/y are given. Blocks: ${BLOCKS.map((b) => `${b.id} (${b.title}; params ${b.params.map((p) => `${p.key}="${p.default}"`).join(', ')})`).join('; ')}. Parameters left out take those defaults. Returns the designator of each part and the nets it uses; check the result with check_design and move the parts where they belong.`,
+    description: `Insert a proven sub-circuit with its parts, wiring, labels and power flags in one step (one undo step), to the right of the drawing unless x/y are given. Blocks: ${BLOCKS.map((b) => `${b.id} (${b.title}; params ${b.params.map((p) => `${p.key}="${p.default}"`).join(', ')})`).join('; ')}. Parameters left out take those defaults. Returns the designator of each part and the nets it uses; check the result with check_design and move the parts where they belong. With \`group\`, the block is framed as a named group (see add_group), which moves as one.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -586,15 +589,107 @@ export const TOOLS: ToolDefinition[] = [
         params: { type: 'object', description: 'Net names and values, e.g. {"VIN": "+5V", "VOUT": "+3V3"}.', additionalProperties: { type: 'string' } },
         x: { type: 'number' },
         y: { type: 'number' },
+        group: { type: 'string', description: 'Frame the inserted parts as a group with this name, e.g. "Power".' },
       },
       required: ['block'],
     },
     execute: async (input) => {
       const params = Object.fromEntries(Object.entries((input.params as Record<string, unknown>) ?? {}).map(([k, v]) => [k, String(v)]));
       const at: [number, number] | undefined = input.x !== undefined && input.y !== undefined ? [Number(input.x), Number(input.y)] : undefined;
-      const r = await insertBlock(String(input.block), params, at);
-      st().setSelection(r.ids);
-      return { parts: r.parts, nets: r.nets };
+      const r = await insertBlock(String(input.block), params, at, input.group === undefined ? undefined : String(input.group));
+      st().setSelection(r.group ? [r.group.id] : r.ids);
+      return { parts: r.parts, nets: r.nets, group: r.group?.name };
+    },
+  },
+  {
+    name: 'add_group',
+    title: 'Add group',
+    description:
+      'Draw a named frame around parts of the schematic ("Power", "MCU", "Sensors") so readers see its functional blocks. A group is a region: whatever is inside it belongs to it and moves with it; deleting the frame leaves the parts. Frame it around parts (`around`, padded to fit them and their labels) or give the box yourself. Groups are on the current sheet.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The group’s name, shown on its tab.' },
+        around: { type: 'array', items: { type: 'string' }, description: 'Designators of the parts to frame, e.g. ["U1", "C1", "C2"].' },
+        x: { type: 'number', description: 'Top-left corner, instead of `around`.' },
+        y: { type: 'number' },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        color: { type: 'string', enum: GROUP_COLOR_NAMES, description: 'Frame colour; by default the palette colour least used so far.' },
+      },
+      required: ['name'],
+    },
+    execute: async (input) => {
+      const name = String(input.name);
+      const color = input.color as (typeof GROUP_COLOR_NAMES)[number] | undefined;
+      if (Array.isArray(input.around) && input.around.length) {
+        const ids = (input.around as string[]).map((d) => byDesignator(String(d)).id);
+        return describeGroup(groupItems(ids, name, color));
+      }
+      if ([input.x, input.y, input.width, input.height].some((v) => v === undefined)) throw new Error('Give `around` (designators to frame) or x, y, width and height.');
+      const frame = { x: Number(input.x), y: Number(input.y), width: Number(input.width), height: Number(input.height) };
+      if (frame.width < 40 || frame.height < 40) throw new Error('A group is at least 40 units wide and high.');
+      return describeGroup(addGroup(name, frame, color));
+    },
+  },
+  {
+    name: 'list_groups',
+    title: 'List groups',
+    description: 'The groups on each sheet with their frames and the parts inside them.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => {
+      const project = st().project;
+      const sheets = sheetsOf(project);
+      const current = st().currentSheet;
+      const out: Record<string, unknown>[] = [];
+      for (const sheet of sheets) {
+        const v = sheetView(project, sheet.id);
+        if (!v.groups?.length) continue;
+        // Parts inside are found on the group's own sheet.
+        st().setCurrentSheet(sheet.id);
+        for (const g of v.groups) out.push({ ...describeGroup(g), sheet: sheets.length > 1 ? sheet.name : undefined });
+      }
+      st().setCurrentSheet(current);
+      return { groups: out };
+    },
+  },
+  {
+    name: 'update_group',
+    title: 'Update group',
+    description: 'Rename, recolour, move or resize a group on the current sheet, or refit its frame around what is inside it (`fit`). Moving the frame does not move the parts; use update_component for those.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        group: { type: 'string', description: 'The group’s current name.' },
+        name: { type: 'string' },
+        color: { type: 'string', enum: GROUP_COLOR_NAMES },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        fit: { type: 'boolean', description: 'Shrink or grow the frame to fit its contents.' },
+      },
+      required: ['group'],
+    },
+    execute: async (input) => {
+      const g = findGroup(String(input.group));
+      const patch: Record<string, unknown> = {};
+      for (const key of ['name', 'color', 'x', 'y', 'width', 'height'] as const) if (input[key] !== undefined) patch[key] = key === 'name' || key === 'color' ? String(input[key]) : Number(input[key]);
+      if (Object.keys(patch).length) updateGroup(g.id, patch);
+      if (input.fit) fitGroup(g.id);
+      return describeGroup(findGroup(g.id));
+    },
+  },
+  {
+    name: 'remove_group',
+    title: 'Remove group',
+    description: 'Remove a group’s frame from the current sheet; the parts inside stay where they are.',
+    inputSchema: { type: 'object', properties: { group: { type: 'string', description: 'The group’s name.' } }, required: ['group'] },
+    execute: async (input) => {
+      const g = findGroup(String(input.group));
+      removeGroup(g.id);
+      return { removed: g.name };
     },
   },
   {

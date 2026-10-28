@@ -6,6 +6,7 @@ import { PASSIVES, PASSIVE_SYMBOLS, parsePassiveValue, type PassiveKind } from '
 import type { PartSummary } from '../shared/parts';
 import type { Component } from './schematic/types';
 import { onPinGrid, placeComponent } from './actions';
+import { apiUrl } from './api';
 
 export interface PassiveMatch {
   canonical: string | null;
@@ -49,7 +50,7 @@ export function fetchMatch(kind: PassiveKind, value: string, size: string): Prom
   const key = `${kind}|${value}|${size}`;
   let hit = matches.get(key);
   if (!hit) {
-    hit = fetch(`/api/parts/match?${new URLSearchParams({ kind, value, size })}`).then(async (res) => {
+    hit = fetch(apiUrl(`/api/parts/match?${new URLSearchParams({ kind, value, size })}`)).then(async (res) => {
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? `Match failed (${res.status})`);
       return body as PassiveMatch;

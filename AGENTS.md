@@ -7,15 +7,16 @@ features and architecture; this file covers how to work on the code.
 
 A schematic and PCB editor in the browser, modelled on EasyEDA Pro and built around JLCPCB parts
 and assembly. Vite + React 19 + TypeScript on the client, a Hono API that proxies the JLCPCB and
-EasyEDA endpoints, and a zustand store with undo. The editor's operations are also tools: WebMCP
+EasyEDA endpoints, and a zustand store with undo. The editor's operations are also tools: the in-app assistant, WebMCP
 for in-browser agents and the `pnpm schem` CLI for headless use (the Claude Code skills in
-`.claude/skills/` drive that CLI).
+`.claude/skills/` drive that CLI and are also the assistant's system prompt).
 
 ## Commands
 
 ```bash
 pnpm install
 pnpm dev                 # UI + API in one Vite server; uses the next free port if 5173 is taken
+ANTHROPIC_API_KEY=… pnpm dev   # the Assistant tab then needs no key from the user (GEMINI_API_KEY for Gemini)
 pnpm typecheck           # tsc, strict, noUnusedLocals/Parameters (tests included)
 pnpm test                # vitest, no network
 pnpm build               # production bundle; the chunk-size warning is expected
@@ -26,10 +27,22 @@ pnpm -s schem <file> batch steps.json | summary | tools [name] | export
 Before committing, run `pnpm typecheck` and `pnpm test`; run `pnpm build` when imports or
 lazy-loaded modules changed.
 
+Deployment is `.github/workflows/deploy.yml`: a push to `main` publishes the app to GitHub Pages
+(built with `BASE_PATH=/<repo>/` and `VITE_API_BASE` from the repository variable `API_BASE`) and
+the API server's image to GHCR (`Dockerfile`; `deploy/docker-compose.yml` runs it). Client code
+reaches the API through `apiUrl()` in `src/lib/api.ts`, never a bare `/api/...` string, so the
+Pages build can point at a server elsewhere; the server allows those origins with `CORS_ORIGIN`.
+
 ## Where things are
 
 - `src/lib/schematic/` – schematic model, geometry, netlist, ops, wire router, BOM, sheets
-  (`sheets.ts`) and generated symbols (`symbolgen.ts`).
+  (`sheets.ts`), groups (`groups.ts`: frame, tab and contents geometry; the store-aware actions
+  are `src/lib/grouping.ts`) and generated symbols (`symbolgen.ts`).
+- `src/lib/projects.ts` – the project library and files: every project is autosaved into
+  IndexedDB (`src/lib/db.ts`, with an in-memory fallback for tests and the CLI) and listed on the
+  start screen (`components/StartScreen.tsx`); Save/Open use the File System Access API where
+  the browser has it and downloads elsewhere. `src/lib/designs.ts` is the dev-only sync with
+  `designs/`. The assistant's chats are in the same database, per project.
 - `src/lib/pcb/` – PCB model (`types.ts`), board model and connectivity (`board.ts`), board shape,
   holes and keepouts (`outline.ts`), pours (`pour.ts`, Clipper), DRC (`drc.ts`), A* router
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
@@ -50,6 +63,15 @@ lazy-loaded modules changed.
   in step between the editors (`partsIn`); this shows them in the other editor and keeps them in
   view side by side (`split`).
 - `src/lib/webmcp.ts` – every agent tool (`TOOLS`), input validation and `runTool`.
+- `src/lib/assistant/` – the in-app assistant: `prompt.ts` (system prompt from the skills),
+  `loop.ts` (one turn: request, tool calls, results, repeat), `tools.ts` (the tools in the API's
+  shape, `pcb_render` as an image, the editor-state line), `stream.ts` and `transport.ts` (SSE).
+  The conversation and settings are in `src/store/assistant.ts`, the chat in
+  `components/panels/AssistantPanel.tsx`, and `server/assistant.ts` is the route that calls the
+  Claude API (official SDK, streaming, prompt caching, server-side fallback on refusals) or, via
+  `server/gemini.ts`, Gemini: the conversation stays in the Claude API's shape and that module
+  translates it both ways (contents, function calls and responses, thought signatures kept in a
+  field of their own on the stored blocks), and lists the models the key can use.
 - `scripts/schem.ts` – the CLI: browser shims, then the same `TOOLS`, with CLI overrides for tools
   that would download files in a browser (`pcb_export`, `pcb_render`, …).
 - `server/` – Hono API; `designs.ts` is the dev-only read/write of `designs/*.json`.
@@ -65,7 +87,17 @@ lazy-loaded modules changed.
   `commitPcb(pcb => …)` in `pcb/actions.ts`, so undo works. Drags use `beginTransient` /
   `updateTransient` / `endTransient` and become one undo step.
 - **Derived data is recomputed, never stored.** Board model, pour fills, connectivity, airwires
-  and DRC come from `buildBoard` / `pcbConnectivity` / `runDrc` on the current project.
+  and DRC come from `buildBoard` / `pcbConnectivity` / `runDrc` on the current project. A group
+  is a region, not a list: `groupMembers` finds its contents by geometry whenever they matter
+  (`moveItems` takes them along with the frame), so nothing has to be kept in step.
+- **Big schematics must stay smooth.** `connectivity()` in `lib/actions.ts` caches one analysis
+  per document and hands back the pre-drag result while a transient edit is in progress; use it
+  rather than calling `analyze` yourself, so every panel shares the work. The schematic canvas
+  draws the sheet in a memoised `Drawing` layer whose props change only with the drawing,
+  selection or highlighted net; pointer-driven state (ghosts, hover, the box) lives outside it.
+  `analyze` finds T-junctions through a grid of cells, not every wire end against every segment.
+  Measure with a duplicated STM32 sheet (⌘A, ⌘D a few times gives ~250 parts) before and after
+  touching the canvas or the netlist.
 - **UI and tools share actions.** Put new behaviour in `src/lib/**/actions.ts` (or a lib module)
   and call it from both the component and the tool, rather than writing it twice.
 - **Sides vs layers.** `Side` (`top`/`bottom`) is where parts, silkscreen, mask and paste are;
@@ -87,6 +119,12 @@ lazy-loaded modules changed.
   `{ error }`. Mark read-only tools with `readOnlyHint` and destructive ones with
   `consequentialHint`. A new tool shows up in the CLI automatically; add a CLI override only when
   the browser behaviour (downloads, SVG) makes no sense in a terminal.
+- **The skills are the assistant's prompt.** `src/lib/assistant/prompt.ts` imports the skill
+  Markdown as raw text and drops the frontmatter, the title line and the `## Setup` section
+  (which must stay the only command-line-specific section). Design knowledge belongs in the skill
+  bodies and `references/recipes.md`, where both the CLI skills and the assistant read it; the
+  preamble in `prompt.ts` only explains how the app differs from the command line. The system
+  prompt is identical for every request so it caches; keep anything that varies out of it.
 - **Heavy dependencies stay lazy.** three.js loads only when the 3D view opens (`Board3D` is
   `lazy()`-loaded in `App.tsx` and is the only importer of `pcb/viewer3d.ts`); don't import
   either from code on the main path. `clipper-lib` is

@@ -4,9 +4,10 @@ import type { Box } from '../easyeda/symbol';
 import { simplify } from './route';
 import type { SymbolResolver } from './symbols';
 import { blockPins, blockSlot, hierNames, sheetOf } from './sheets';
-import type { Component, NetPort, Project, SheetBlock, Vec, Wire } from './types';
+import { shiftGroup, withGroupContents } from './groups';
+import type { Component, NetPort, Project, SchematicGroup, SheetBlock, Vec, Wire } from './types';
 
-export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'footprints' | 'parts' | 'pcb' | 'sheets' | 'blocks'>;
+export type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'symbols' | 'footprints' | 'parts' | 'pcb' | 'sheets' | 'blocks' | 'groups'>;
 
 let counter = 0;
 export function newId(prefix: string): string {
@@ -96,8 +97,10 @@ function transformItems(
   return { components, wires, ports, blocks };
 }
 
-export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: number, symbols: SymbolResolver): Doc {
+export function moveItems(doc: Doc, selected: ReadonlySet<string>, dx: number, dy: number, symbols: SymbolResolver): Doc {
   if (dx === 0 && dy === 0) return doc;
+  // A group frame takes everything inside it along.
+  const ids = withGroupContents(doc, selected, symbols);
   const { components, wires, ports, blocks } = transformItems(
     doc,
     ids,
@@ -127,6 +130,7 @@ export function moveItems(doc: Doc, ids: ReadonlySet<string>, dx: number, dy: nu
     }),
     ports,
     blocks,
+    groups: doc.groups?.length ? doc.groups.map((g) => (ids.has(g.id) ? shiftGroup(g, dx, dy) : g)) : doc.groups,
   };
 }
 
@@ -315,12 +319,14 @@ export function mirrorItems(doc: Doc, ids: ReadonlySet<string>, symbols: SymbolR
  */
 export function deleteItems(doc: Doc, ids: ReadonlySet<string>, symbols?: SymbolResolver): Doc {
   const keep = (item: { id: string }) => !ids.has(item.id);
+  // Deleting a group frame leaves its contents where they are.
   const out: Doc = {
     ...doc,
     components: doc.components.filter(keep),
     wires: doc.wires.filter(keep),
     ports: doc.ports.filter(keep),
     blocks: (doc.blocks ?? []).filter(keep),
+    groups: doc.groups?.length ? doc.groups.filter(keep) : doc.groups,
   };
   const removed = doc.components.filter(isSelected(ids));
   const removedBlocks = (doc.blocks ?? []).filter(isSelected(ids));
@@ -416,8 +422,19 @@ export function duplicateItems(
     newIds.push(copy.id);
     return copy;
   });
+  const groups = (doc.groups ?? []).filter(isSelected(ids)).map((g) => {
+    const copy: SchematicGroup = { ...g, id: newId('g'), x: g.x + offset[0], y: g.y + offset[1] };
+    newIds.push(copy.id);
+    return copy;
+  });
   return {
-    doc: { ...doc, components: [...doc.components, ...components], wires: [...doc.wires, ...wires], ports: [...doc.ports, ...ports] },
+    doc: {
+      ...doc,
+      components: [...doc.components, ...components],
+      wires: [...doc.wires, ...wires],
+      ports: [...doc.ports, ...ports],
+      ...(groups.length ? { groups: [...(doc.groups ?? []), ...groups] } : {}),
+    },
     newIds,
   };
 }

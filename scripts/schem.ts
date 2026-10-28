@@ -273,10 +273,19 @@ async function main() {
           drc_warnings: issues.filter((i) => i.severity === 'warning').map((i) => i.message),
         };
       }
+      const { groupMembers } = await import('../src/lib/schematic/groups');
+      const { sheetOf, sheetView } = await import('../src/lib/schematic/sheets');
+      const { resolverFor } = await import('../src/lib/schematic/symbols');
+      const groups = (project.groups ?? []).map((g) => {
+        const view = sheetView(project, sheetOf(g, project));
+        const inside = new Set(groupMembers(view, g, resolverFor(project)));
+        return `${g.name}: ${view.components.filter((c) => inside.has(c.id)).map((c) => c.designator).join(', ') || 'empty'}`;
+      });
       output = {
         file: projectPath,
         name: project.name,
         components: project.components.map((c) => `${c.designator} ${c.value}${c.lcsc ? ` ${c.lcsc} ${c.partClass ?? ''}` : ' (no LCSC part)'}`.trim()),
+        groups: groups.length ? groups : undefined,
         nets: conn.nets.length,
         schematic_issues: conn.issues.map((i) => `${i.severity}: ${i.message}`),
         bom: { unique: bom.uniqueParts, by_type: bom.byClass, extended_setup_fee_usd: bom.setupFee },

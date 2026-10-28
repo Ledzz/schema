@@ -93,7 +93,8 @@ board to check the result.
 - Decoupling capacitors go within 1–2 mm of the IC pin they serve (match the pad nets); crystals
   sit right next to the MCU's oscillator pins.
 - Group parts by function and rotate them so pins face the parts they connect to; fewer
-  crossings mean the router succeeds more often.
+  crossings mean the router succeeds more often. `list_groups` tells which parts the schematic
+  frames together ("Power", "MCU"…); keep each such set together on the board.
 - Keep at least 0.5 mm between part outlines and 1 mm between other parts and the board edge.
   DRC reports overlapping parts and copper too close to the edge.
 - Use the bottom side (`"side": "bottom"`) only when the top is truly full. Assembly on both sides

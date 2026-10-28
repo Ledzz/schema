@@ -100,6 +100,11 @@ pitches and keep some pins between grid lines, which still connect fine.
   power flag on the upper pin and the ground flag on the lower one.
 - Leave about 30 units of free space around pins that will get flags or labels. The tools refuse
   rather than touch another net, so cramped parts mean refusals and rework.
+- **Name the blocks.** Once a functional block is placed and wired, frame it with `add_group`
+  (`"name": "Power"`, `"around": ["U1", "C1", "C2"]`): a labelled, tinted frame that readers see
+  at a glance and that moves as one. `insert_block` takes a `group` name to frame what it
+  inserts. Keep names short ("Power", "MCU", "USB", "Sensors"); `list_groups` shows what is in
+  each, and `update_group` with `"fit": true` refits a frame after parts moved.
 - **Bigger designs on several sheets.** Past roughly 25 parts, or with clearly separate functions
   (power, MCU, motor driver), give each its own sheet: `add_sheet` with a name makes it current,
   so the parts, labels and flags you place next go on it, and each sheet has its own coordinates.

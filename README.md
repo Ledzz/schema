@@ -3,7 +3,8 @@
 A web-based schematic and PCB editor modelled on EasyEDA Pro. Its focus is quick JLCPCB part
 selection: every search result shows whether a part is **Basic**, **Preferred** (promotional
 extended, no setup fee) or **Extended** ($3 setup fee per unique part), and you can filter on
-that. The editor also exposes its tools to in-browser AI agents through **WebMCP**.
+that. A built-in **assistant** designs and edits boards from a description, and the editor
+exposes the same tools to in-browser AI agents through **WebMCP** and to scripts through a CLI.
 
 How EasyEDA Pro and the JLCPCB parts API work, and how that was worked out, is in
 [docs/reverse-engineering.md](docs/reverse-engineering.md).
@@ -15,16 +16,55 @@ pnpm install
 pnpm dev          # http://localhost:5173 — UI and API proxy in one Vite server
 ```
 
-Production:
+With `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` set where the server runs, the Assistant tab works
+for everyone without entering a key; otherwise each user enters their own in the tab's settings.
+
+Production, all in one process:
 
 ```bash
 pnpm build && pnpm start   # serves dist/ and the API on http://localhost:8787 (PORT to change)
 ```
 
+### Deploying: the app on GitHub Pages, the API on your own server
+
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on every push to `main`: it
+checks and builds the app and publishes it to GitHub Pages, and builds the API server's Docker
+image ([`Dockerfile`](Dockerfile)) and publishes it to GHCR as `ghcr.io/<owner>/<repo>:latest`.
+
+- **The server** (a NAS, a VPS…) only pulls the image: [`deploy/docker-compose.yml`](deploy/docker-compose.yml)
+  runs it on port 8787 with `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` for the assistant and
+  `CORS_ORIGIN` naming the Pages site. The GHCR package must be public, or the server logs in
+  to GHCR to pull. Browsers only let an HTTPS page call an HTTPS API, so put TLS in front of the
+  container (a reverse proxy with a certificate, Tailscale `serve`, or a Cloudflare Tunnel).
+- **The app** needs the API's address at build time: set the repository variable `API_BASE`
+  (Settings → Secrets and variables → Actions → Variables) to it, e.g. `https://nas.example.net`,
+  and run the workflow again. Without it the editor works, but the parts library and the
+  assistant have nothing to talk to.
+- Projects live in the browser, so the server keeps no state; it can be replaced any time.
+
 Checks: `pnpm typecheck`, `pnpm test`.
 
 ## Features
 
+- **Assistant** (the Assistant tab, or the button in the top bar) — a chat that designs and
+  edits the open project with the same tools agents and the CLI use. Describe a board ("a USB-C
+  powered board with a 3.3 V regulator and a status LED") and it picks in-stock JLCPCB parts
+  (Basic first), places and wires them, checks the design, then lays out the PCB, routes it,
+  runs DRC and the JLCPCB checklist and exports the files; or ask it to change, check or explain
+  what is on the canvas. It reads the design before editing it, so you can take turns.
+  - Every tool call shows in the chat with its input and result (errors in red); board pictures
+    it renders are shown inline, and the same pictures are what it looks at. Each call is one
+    undo step.
+  - Its system prompt is the two Claude Code skills below plus the circuit recipes, so the
+    in-app assistant and the command-line skills share one body of design advice.
+  - It runs on Claude (Opus 5.5, Sonnet 5.5 or Haiku 5.5) or on Gemini, chosen in the panel's
+    settings, through the app's own server with the server's `ANTHROPIC_API_KEY` /
+    `GEMINI_API_KEY` or a key entered in the panel (kept in the browser). Gemini's models are
+    listed live from Google's API, and the Gemini free tier is enough to try the assistant. Effort
+    is a setting; the token count (and, for Claude, the estimated cost) of the conversation are
+    shown under the chat. Replies stream, and Stop ends a turn after the tool that is running.
+  - Chats are saved with the project in the browser: a reload or a switch to another project and
+    back brings the conversation up where it was, and the history button reopens earlier ones.
 - **Parts library** (bottom panel, `/` to focus) — searches 7M+ JLCPCB/LCSC parts.
   - Part type filters with live in-stock counts (Basic, Preferred, Extended), a "No setup fee" preset, and an in-stock toggle.
   - Sort by relevance, stock, price or part number.
@@ -45,6 +85,7 @@ Checks: `pnpm typecheck`, `pnpm test`.
 - **Schematic editor**
   - Places real EasyEDA library symbols, including multi-unit parts.
   - Drawing tools: wires, net labels, power and ground flags, hierarchical ports (`H`), no-connect markers.
+  - **Groups**: select the parts that belong together and press `⌘G` (or drag a frame with `⇧G`) for a named, tinted frame ("Power", "MCU", "Sensors"). Dragging the frame moves what is inside, its corners resize it, double-clicking the tab renames it, and deleting the frame leaves the parts. Circuit blocks arrive framed with their name.
   - **Quick add** (`A`, the toolbar, Place menu or right-click): type at the cursor and press Enter to place it right there.
     - Passives by value and size ("10k", "100n 0402", "10uF 16V 0805", "LED red").
     - Rails and ground ("3v3" becomes `+3V3`, "gnd"), net labels (existing nets are offered as you type), and "nc" for a no-connect.
@@ -93,17 +134,22 @@ Checks: `pnpm typecheck`, `pnpm test`.
   - BOM grouped by part, with counts per part type and the extended setup fee.
   - "Find no-fee alternative" for extended parts, and stock refresh.
   - JLCPCB BOM CSV export.
-- **Files** — autosave in the browser, plus save/open project JSON, export SVG and netlist. In
+- **Projects and files** — every project is kept in the browser as you work, and the start screen
+  (the logo, or File → Recent projects) lists them with a sketch of each, newest first. `⌘S` saves
+  a project file; in Chrome and Edge it keeps writing to that file (File System Access API), elsewhere
+  it downloads a copy. `⌘O` or dropping a `.json` anywhere on the window opens one. Export SVG and netlist. In
   dev mode, designs in `designs/` open with `/?open=<file>.json`, save back to the same file, and reload by themselves when the file changes on disk.
 
 Schematic keys: `W` wire · `N` label · `P`/`G` power/ground · `Q` no-connect · `R` rotate ·
-`X` mirror · `Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate.
+`X` mirror · `Del` delete · `F` fit · `L` toggle library · `⌘Z`/`⌘⇧Z` undo/redo · `⌘D` duplicate · `⌘G` group ·
+`⌘S`/`⌘⇧S` save / save as · `⌘O` open.
 PCB keys: `W` route · `V` via · `M` routing mode (push / walk around / ignore) · `1`/`2` top/bottom layer · `⇧1`/`⇧2` inner layers · `R` rotate · `X` flip side · `⌫` remove last
 corner / delete · `Esc` finish. Space-drag or middle-drag pans, the wheel zooms.
 
 ## WebMCP
 
-On load the app registers 63 tools. It uses `document.modelContext` (current spec) when present,
+The Assistant tab uses the tools below from inside the app. On load the app also registers the
+67 tools with WebMCP. It uses `document.modelContext` (current spec) when present,
 otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyfill):
 
 - **Parts:** `search_parts`, `get_part_details`, `place_part`, `place_passive`, `set_passive`, `replace_part`
@@ -112,6 +158,7 @@ otherwise `navigator.modelContext` (older Chrome builds such as 147, MCP-B polyf
   - `insert_block` (circuit blocks), `add_decoupling`, `rename_net`
   - `update_component`, `delete_components`, `annotate`, `focus_components` (in the schematic or on the PCB), `check_pin`, `new_schematic`
   - `list_sheets`, `add_sheet`, `switch_sheet`, `place_block` (hierarchical block for a sheet)
+  - `add_group` (a named frame around parts), `list_groups`, `update_group`, `remove_group`
 - **Custom parts:** `create_symbol` (from a pin list), `create_footprint` (IPC-7351 from a package name, or pad by pad), `create_part`, `place_custom_part`, `set_footprint` (a project footprint for placed parts), `list_custom_parts`, `delete_custom_item`
 - **Checks:** `get_netlist`, `check_design`, `get_bom` (JSON or JLCPCB CSV)
 - **PCB:** `pcb_update`, `pcb_get_state`, `pcb_set_board` (size or custom outline with arcs), `pcb_import_dxf` (outline, cutouts and holes from a DXF drawing), `pcb_add_mounting_holes`, `pcb_add_keepout`, `pcb_add_cutout`, `pcb_add_text`, `pcb_add_logo`, `pcb_update_silkscreen`, `pcb_set_designator`, `pcb_remove_features`, `pcb_move_part`, `pcb_autoroute` (optionally at a given width; differential pairs first), `pcb_net_lengths`, `pcb_add_diff_pair`, `pcb_remove_diff_pair`, `pcb_route_diff_pair`, `pcb_tune_length` (meanders to a length, another net's or the pair's), `pcb_add_vias` (thermal and stitching vias), `pcb_clear_routing`, `pcb_add_pour` (whole board or a zone), `pcb_remove_pours`, `pcb_check`, `pcb_jlcpcb_check` (JLCPCB manufacturing checklist), `pcb_render` (board picture with mm rulers), `pcb_export_step` (assembled board as STEP), `pcb_export` (optionally without through-hole parts in the assembly files)

@@ -5,6 +5,7 @@ import { useEditor } from '../store/editor';
 import { nextDesignator, splitDesignator, annotate } from './schematic/designators';
 import { componentBox, samePoint, snap, unionBoxes } from './schematic/geometry';
 import { blockBox, onSheet, sheetOf, sheetView } from './schematic/sheets';
+import { groupBox, withGroupContents } from './schematic/groups';
 import { portBox } from './schematic/hit';
 import { alignItems, deleteItems, dropNoConnects, duplicateItems, mirrorItems, rotateItems, addWire, newId, type AlignMode, type Doc } from './schematic/ops';
 import { connectionNear } from './schematic/hit';
@@ -17,6 +18,8 @@ import { downloadText, endByKey, planPinRoute, safeFileName, type PinEnd } from 
 const st = () => useEditor.getState();
 const selectedSet = () => new Set(st().selection);
 const symbols = () => resolverFor(st().project);
+/** The selection with the contents of any selected group frames: copies and duplicates take them along. */
+const selectedWithContents = () => withGroupContents(currentView(), selectedSet(), symbols());
 
 /** The project as seen on the sheet being drawn on. */
 export const currentView = (): Project => sheetView(st().project, st().currentSheet);
@@ -52,7 +55,7 @@ const renameCopy = (c: Component, placed: Component[]) => {
 };
 
 export function duplicateSelection() {
-  const ids = selectedSet();
+  const ids = selectedWithContents();
   if (ids.size === 0) return;
   let created: string[] = [];
   commitSheet((doc) => {
@@ -66,13 +69,14 @@ export function duplicateSelection() {
 let clipboard: Doc | null = null;
 
 export function copySelection() {
-  const ids = selectedSet();
+  const ids = selectedWithContents();
   if (ids.size === 0) return;
   const { project } = st();
   clipboard = {
     components: project.components.filter((c) => ids.has(c.id)),
     wires: project.wires.filter((w) => ids.has(w.id)),
     ports: project.ports.filter((p) => ids.has(p.id)),
+    groups: (project.groups ?? []).filter((g) => ids.has(g.id)),
     symbols: project.symbols,
   };
 }
@@ -102,10 +106,17 @@ export function paste(at?: Vec) {
     });
     const wires = clip.wires.map((w) => ({ id: newId('w'), points: w.points.map(([x, y]) => [x + off[0], y + off[1]] as Vec) }));
     const ports = clip.ports.map((p) => ({ ...p, id: newId('n'), x: p.x + off[0], y: p.y + off[1] }));
-    created = [...components, ...wires, ...ports].map((i) => i.id);
+    const groups = (clip.groups ?? []).map((g) => ({ ...g, id: newId('g'), x: g.x + off[0], y: g.y + off[1] }));
+    created = [...components, ...wires, ...ports, ...groups].map((i) => i.id);
     // Repeated pastes cascade instead of stacking.
-    clipboard = { ...clip, components, wires, ports };
-    return { ...doc, components: [...doc.components, ...components], wires: [...doc.wires, ...wires], ports: [...doc.ports, ...ports] };
+    clipboard = { ...clip, components, wires, ports, groups };
+    return {
+      ...doc,
+      components: [...doc.components, ...components],
+      wires: [...doc.wires, ...wires],
+      ports: [...doc.ports, ...ports],
+      ...(groups.length ? { groups: [...(doc.groups ?? []), ...groups] } : {}),
+    };
   });
   st().setSelection(created);
 }
@@ -118,7 +129,7 @@ export function alignSelection(mode: AlignMode) {
 
 export function selectAll() {
   const project = currentView();
-  st().setSelection([...project.components, ...project.wires, ...project.ports, ...(project.blocks ?? [])].map((i) => i.id));
+  st().setSelection([...project.components, ...project.wires, ...project.ports, ...(project.blocks ?? []), ...(project.groups ?? [])].map((i) => i.id));
 }
 
 export function finishWireDraft() {
@@ -168,6 +179,7 @@ export function contentBounds(project: Project) {
     ...project.components.map((c) => componentBox(c, resolve(c.symbolKey))),
     ...project.ports.map(portBox),
     ...(project.blocks ?? []).map(blockBox),
+    ...(project.groups ?? []).map(groupBox),
     ...project.wires.map((w) => {
       const xs = w.points.map((p) => p[0]);
       const ys = w.points.map((p) => p[1]);
@@ -183,7 +195,7 @@ const TOOLBAR_HEIGHT = 56;
 /** Bounds of the given items on the sheet shown, after switching to their sheet when none are on it. */
 function itemBounds(ids: string[]) {
   const whole = st().project;
-  const items = [...whole.components, ...whole.wires, ...whole.ports, ...(whole.blocks ?? [])].filter((i) => ids.includes(i.id));
+  const items = [...whole.components, ...whole.wires, ...whole.ports, ...(whole.blocks ?? []), ...(whole.groups ?? [])].filter((i) => ids.includes(i.id));
   if (items.length && !items.some((i) => sheetOf(i, whole) === st().currentSheet)) st().setCurrentSheet(sheetOf(items[0], whole));
   const project = currentView();
   return contentBounds({
@@ -192,8 +204,12 @@ function itemBounds(ids: string[]) {
     wires: project.wires.filter((w) => ids.includes(w.id)),
     ports: project.ports.filter((p) => ids.includes(p.id)),
     blocks: (project.blocks ?? []).filter((b) => ids.includes(b.id)),
+    groups: (project.groups ?? []).filter((g) => ids.includes(g.id)),
   });
 }
+
+/** Bounds of the given items on the sheet shown (null when none are drawn there). */
+export const boundsOfItems = (ids: string[]) => itemBounds(ids);
 
 /** Zooms to fit the sheet, or the given items (switching to their sheet first). */
 export function fitView(ids?: string[]) {
@@ -253,25 +269,10 @@ export function reannotate() {
   });
 }
 
+/** An empty project in the editor (the one before stays in the browser's library). */
 export function newProject(name = 'Untitled') {
   st().loadProject(emptyProject(name));
   fitView();
-}
-
-export function saveProjectFile() {
-  const { project } = st();
-  downloadText(`${safeFileName(project.name)}.schematic.json`, JSON.stringify(project, null, 1), 'application/json');
-}
-
-export async function openProjectFile(file: File) {
-  try {
-    const p = JSON.parse(await file.text()) as Project;
-    if (p.version !== 1 || !Array.isArray(p.components) || !Array.isArray(p.wires)) throw new Error('Not a schematic project file');
-    st().loadProject({ ...p, ports: p.ports ?? [], symbols: p.symbols ?? {}, id: p.id ?? newId('prj') });
-    requestAnimationFrame(() => fitView());
-  } catch (err) {
-    st().notify(`Could not open file: ${(err as Error).message}`, 'error');
-  }
 }
 
 /** Serializes the drawing (not the grid) as a standalone SVG. */

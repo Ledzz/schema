@@ -6,10 +6,44 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 
 ## Next up
 
-1. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
+The current direction is making boards easy for people without an electronics background, with
+the assistant as the entry point; the professional side (buses, net classes, more layers,
+importers) follows.
+
+1. **Design review with fixes** — rules of thumb beyond the electrical check: an IC without
+   decoupling, I2C without pull-ups, an LED without its resistor, a regulator without its output
+   capacitor, USB-C without CC resistors, exposed USB data without ESD protection, no mounting
+   holes; each with a one-line why and a button that runs the existing action.
+2. **A maker-sized block library** — a few dozen modules (ESP32-C3, RP2040, TP4056 charging,
+   buck converters, WS2812, common sensors, motor drivers, relays, OLED headers) with their
+   support circuits, and quick add treating "esp32" as a module.
+3. **One-click board** — a pipeline from schematic to checked Gerbers with placement that puts
+   connectors at edges, decoupling at its pins and parts grouped by block.
+4. **Starters** — complete, checked, routed example projects to modify, offered on the start
+   screen (which exists now, with recent projects and "describe what to build").
+5. **Running cost** in the status bar as parts are added.
+6. **Height and clearance checks against an enclosure** — import the enclosure's STEP and flag
    parts that collide with it.
 
 ## Done
+
+- **Groups** (2026-10-27): named, coloured frames around the parts that belong together
+  (`⌘G` on a selection, `⇧G` to drag one), moved as one, resized by their corners, renamed on
+  the canvas; a group is a region, so deleting the frame leaves the parts. Circuit blocks arrive
+  framed. Agents use `add_group`, `list_groups`, `update_group`, `remove_group`, and
+  `list_components` says which group each part is in.
+- **Project library, start screen and files** (2026-10-27): every project is autosaved in the
+  browser's database and listed on the start screen with a sketch; Save and Open write and read
+  real files (File System Access API in Chrome and Edge, downloads elsewhere), a dropped `.json`
+  opens, and the title shows unsaved changes against the linked file.
+- **Saved assistant chats** (2026-10-27): every chat is saved under its project as it goes, comes
+  back after a reload or a switch to another project and back, and earlier chats of a project
+  can be reopened or deleted from the panel.
+- **In-app assistant** (2026-10-27): an Assistant tab that drives the editor's tools from a chat,
+  streaming its replies, thinking summaries and every tool call with its result (board pictures
+  inline); its system prompt is the two Claude Code skills and the recipes. The server route
+  calls Claude or Gemini (translated on the server, models listed live) with the server's key or
+  one the user enters; provider, model, effort, token count and cost are in the panel.
 
 - **Differential pairs and length tuning** (2026-10-27): pairs found by net name and routed side
   by side on one layer (straight out of the pads, coupled at the gap, crossing-free pad choice on
@@ -156,4 +190,5 @@ comparison is against EasyEDA Pro 2.x as known in late 2026.
 - Basic / Preferred / Extended filters and live stock in part search.
 - Passives that pick the cheapest part to assemble by themselves.
 - Setup-fee and cost estimates in the order sheet.
-- WebMCP and command-line tools, and Claude skills that design and lay out boards end to end.
+- A built-in design assistant, WebMCP and command-line tools, and Claude skills that design and
+  lay out boards end to end.

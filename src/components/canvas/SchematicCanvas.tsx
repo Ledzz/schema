@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { MousePointerClick, Search } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { MousePointerClick, Search, Sparkles } from 'lucide-react';
 import { useEditor } from '../../store/editor';
-import { addPort, commitAttach, endByKey, placeComponent, planAttach } from '../../lib/actions';
+import { addPort, commitAttach, connectivity, endByKey, placeComponent, planAttach } from '../../lib/actions';
 import { finishWireDraft, fitView, openSheet, wireDraftTo, zoomBy } from '../../lib/editing';
 import { normBox, samePoint, snapVec } from '../../lib/schematic/geometry';
 import { connectionNear, hitTest, itemsInBox, wireGrabAt } from '../../lib/schematic/hit';
-import { analyze } from '../../lib/schematic/netlist';
+import type { Connectivity } from '../../lib/schematic/netlist';
 import { dragWire, moveItems, type WireGrab } from '../../lib/schematic/ops';
 import { onSheet, sheetsOf, sheetView } from '../../lib/schematic/sheets';
 import { portRotationFor } from '../../lib/schematic/route';
-import { resolverFor } from '../../lib/schematic/symbols';
-import type { Component, NetPort, PortKind, Vec } from '../../lib/schematic/types';
-import { BlockGraphic, ComponentGraphic, PortGraphic } from './graphics';
+import { resolverFor, type SymbolResolver } from '../../lib/schematic/symbols';
+import { groupBox, groupCornerAt, groupTab, resizeGroup } from '../../lib/schematic/groups';
+import { addGroup, freeGroupName, updateGroup } from '../../lib/grouping';
+import type { Component, NetPort, PortKind, Project, SchematicGroup, Vec, Wire } from '../../lib/schematic/types';
+import { BlockGraphic, ComponentGraphic, GroupGraphic, PortGraphic } from './graphics';
 import { SheetTabs } from './SheetTabs';
 import { cx, inputClass, Kbd } from '../ui';
 import { QuickEdit } from '../passives/QuickEdit';
@@ -30,7 +32,11 @@ type Interaction =
   /** Pressed on a no-connect marker on a pin: a click selects the marker, a drag draws a wire. */
   | { mode: 'press-pin'; start: Vec; at: Vec; portId: string }
   /** Dragging a segment, corner or end of one wire. */
-  | { mode: 'wire-edit'; wireId: string; grab: WireGrab; start: Vec; from: Vec; delta: Vec };
+  | { mode: 'wire-edit'; wireId: string; grab: WireGrab; start: Vec; from: Vec; delta: Vec }
+  /** Drawing a group frame with the group tool. */
+  | { mode: 'group-draw'; start: Vec }
+  /** Dragging a corner of the selected group's frame. */
+  | { mode: 'group-resize'; id: string; corner: number };
 
 type NamedPort = Exclude<PortKind, 'noconnect'>;
 const isNamedPortTool = (tool: string): tool is NamedPort => tool === 'label' || tool === 'power' || tool === 'ground' || tool === 'hier';
@@ -65,11 +71,14 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const [box, setBox] = useState<{ a: Vec; b: Vec } | null>(null);
   const [hover, setHover] = useState<{ text: string; at: Vec } | null>(null);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  /** The group whose name is being typed over its tab. */
+  const [groupEdit, setGroupEdit] = useState<string | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
 
   const symbols = useMemo(() => resolverFor(whole), [whole.symbols]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Shared with the panels, and kept from before a drag while one is in progress.
   const conn = useMemo(
-    () => analyze(whole, symbols),
+    () => connectivity(whole),
     [whole.components, whole.wires, whole.ports, whole.sheets, whole.blocks, symbols], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const sheetName = useMemo(() => new Map(sheetsOf(whole).map((sh) => [sh.id, sh.name])), [whole.sheets]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -159,7 +168,19 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     if (e.button !== 0) return;
 
     switch (s.tool) {
+      case 'group':
+        interaction.current = { mode: 'group-draw', start: snapVec(w) };
+        setBox({ a: snapVec(w), b: snapVec(w) });
+        return;
       case 'select': {
+        // A corner of the one selected group resizes its frame.
+        const selectedGroup = selection.length === 1 ? project.groups?.find((g) => g.id === selection[0]) : undefined;
+        const corner = selectedGroup ? groupCornerAt(selectedGroup, w, tolerance() * 1.5) : null;
+        if (selectedGroup && corner !== null) {
+          s.beginTransient();
+          interaction.current = { mode: 'group-resize', id: selectedGroup.id, corner };
+          return;
+        }
         const id = hitTest(project, symbols, w, tolerance());
         const mod = e.shiftKey || e.metaKey || e.ctrlKey;
         // Pressing on a pin end (not on a label or flag sitting there) starts a wire.
@@ -282,6 +303,14 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       setBox({ a: it.start, b: w });
       return;
     }
+    if (it.mode === 'group-draw') {
+      setBox({ a: it.start, b: snapVec(w) });
+      return;
+    }
+    if (it.mode === 'group-resize') {
+      s.updateTransient((base) => onSheet(base, s.currentSheet, (v) => ({ ...v, groups: (v.groups ?? []).map((g) => (g.id === it.id ? resizeGroup(g, it.corner, w) : g)) })));
+      return;
+    }
     if (it.mode === 'wire-edit') {
       const base = s.transientBase;
       if (!base) return;
@@ -318,9 +347,19 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     const it = interaction.current;
     interaction.current = { mode: 'none' };
     svgRef.current?.releasePointerCapture(e.pointerId);
-    if (it.mode === 'drag' || it.mode === 'wire-edit') s.endTransient();
+    if (it.mode === 'drag' || it.mode === 'wire-edit' || it.mode === 'group-resize') s.endTransient();
     if (it.mode === 'wire' && Math.hypot(e.clientX - it.start[0], e.clientY - it.start[1]) >= 5) wireClick(toWorld(e.clientX, e.clientY), false);
     if (it.mode === 'press-pin') s.setSelection([it.portId]);
+    if (it.mode === 'group-draw') {
+      setBox(null);
+      const b = normBox(it.start, snapVec(toWorld(e.clientX, e.clientY)));
+      if (b.x2 - b.x1 < 20 || b.y2 - b.y1 < 20) return;
+      // The frame is drawn with a stand-in name; typing replaces it.
+      const group = addGroup(freeGroupName(), { x: b.x1, y: b.y1, width: b.x2 - b.x1, height: b.y2 - b.y1 });
+      s.setTool('select');
+      s.setSelection([group.id]);
+      setGroupEdit(group.id);
+    }
     if (it.mode === 'box') {
       const w = toWorld(e.clientX, e.clientY);
       setBox(null);
@@ -351,6 +390,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
     // On a block: open its sheet.
     const block = project.blocks?.find((b) => b.id === id);
     if (block) return openSheet(block.child);
+    // On a group's tab or border: rename it.
+    if (id && project.groups?.some((g) => g.id === id)) return setGroupEdit(id);
     // On a wire or label: highlight its net, or stop highlighting it.
     const net = id ? conn.itemNet.get(id) : undefined;
     if (net) s.setHighlightNet(s.highlightNet === net ? null : net);
@@ -386,6 +427,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
   const wireCursor = wireHover ? ('vertex' in wireHover.grab ? 'move' : wireHover.horizontal ? 'ns-resize' : 'ew-resize') : 'default';
   const cursor = tool === 'select' ? (interaction.current.mode === 'pan' ? 'grabbing' : near?.kind === 'pin' ? 'crosshair' : wireCursor) : 'crosshair';
   const empty = project.components.length === 0 && project.wires.length === 0 && project.ports.length === 0;
+  const selectedGroup = selection.length === 1 ? project.groups?.find((g) => g.id === selection[0]) : undefined;
+  const editingGroup = groupEdit ? project.groups?.find((g) => g.id === groupEdit) : undefined;
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden" style={{ background: 'var(--canvas-bg)' }}>
@@ -420,39 +463,8 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         <rect width="100%" height="100%" fill="url(#grid-major)" />
 
         <g data-layer="world" transform={`translate(${view.x} ${view.y}) scale(${view.zoom})`}>
-          {project.wires.map((w) => {
-            const isSel = selected.has(w.id);
-            const isHi = !!highlightNet && conn.itemNet.get(w.id) === highlightNet;
-            return (
-              <polyline
-                key={w.id}
-                points={w.points.map((p) => p.join(',')).join(' ')}
-                fill="none"
-                stroke={isSel ? 'var(--select)' : isHi ? 'var(--highlight)' : 'var(--wire)'}
-                strokeWidth={isSel || isHi ? 1.8 : 1.2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
-            );
-          })}
-          {project.components.map((c) => (
-            <ComponentGraphic key={c.id} component={c} symbol={symbols(c.symbolKey)} selected={selected.has(c.id)} highlightPins={highlightPins.get(c.id)} />
-          ))}
-          {(project.blocks ?? []).map((b) => (
-            <BlockGraphic key={b.id} block={b} name={sheetName.get(b.child) ?? 'Sheet'} selected={selected.has(b.id)} />
-          ))}
-          {project.ports.map((p) => (
-            <PortGraphic key={p.id} port={p} selected={selected.has(p.id)} highlight={!!highlightNet && conn.itemNet.get(p.id) === highlightNet} />
-          ))}
-          {conn.junctions
-            .filter((j) => j.sheet === currentSheet)
-            .map(({ at: j }) => (
-              <circle key={j.join(',')} cx={j[0]} cy={j[1]} r={1.8} fill="var(--junction)" />
-            ))}
+          <Drawing project={project} symbols={symbols} conn={conn} selected={selected} highlightNet={highlightNet} highlightPins={highlightPins} sheetName={sheetName} currentSheet={currentSheet} />
           <g data-ephemeral="">
-            {conn.unconnected.filter((u) => project.components.some((c) => c.id === u.componentId)).map((u) => (
-              <circle key={`${u.componentId}:${u.pinId}`} cx={u.at[0]} cy={u.at[1]} r={1.3} fill="none" stroke="var(--unconnected)" strokeWidth={0.5} opacity={0.8} />
-            ))}
             {draftPreview && (
               <polyline
                 points={draftPreview.points.map((p) => p.join(',')).join(' ')}
@@ -474,6 +486,17 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
               </g>
             )}
             {hover && <circle cx={hover.at[0]} cy={hover.at[1]} r={2.5} fill="none" stroke="var(--select)" strokeWidth={0.8} />}
+            {selectedGroup &&
+              (() => {
+                const b = groupBox(selectedGroup);
+                const r = 3 / view.zoom;
+                return [
+                  [b.x1, b.y1],
+                  [b.x2, b.y1],
+                  [b.x2, b.y2],
+                  [b.x1, b.y2],
+                ].map(([x, y], i) => <rect key={i} x={x - r} y={y - r} width={r * 2} height={r * 2} fill="var(--panel)" stroke="var(--select)" strokeWidth={1 / view.zoom} />);
+              })()}
             {box && (
               <rect
                 x={Math.min(box.a[0], box.b[0])}
@@ -510,6 +533,12 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
               <span className="font-semibold text-sky-500">Preferred</span> or <span className="font-semibold text-amber-500">Extended</span> — then
               double-click a result to place it.
             </p>
+            <button
+              onClick={() => useEditor.getState().setRightTab('assistant')}
+              className="pointer-events-auto mt-3 inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-500"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Or describe what you want to build
+            </button>
             <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-muted">
               <span>
                 <Kbd>/</Kbd> search
@@ -533,6 +562,7 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
       <QuickEdit />
       <QuickAdd />
       <SheetTabs />
+      {editingGroup && <GroupNameEditor key={editingGroup.id} group={editingGroup} view={view} onDone={() => setGroupEdit(null)} />}
       {menu && <ContextMenu menu={menu} onClose={closeMenu} />}
       {isNamedPortTool(tool) && <PortNameBar kind={tool} />}
       {tool === 'place' && placing?.template.generic && (
@@ -561,6 +591,112 @@ export function SchematicCanvas({ svgRef }: { svgRef: React.RefObject<SVGSVGElem
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The sheet itself: groups, wires, parts, blocks, labels, junctions and unconnected-pin
+ * markers. Its props only change when the drawing, the selection or the highlighted net does,
+ * so moving the pointer (ghosts, hover, the box) re-renders none of these thousands of
+ * elements.
+ */
+const Drawing = memo(function Drawing({
+  project,
+  symbols,
+  conn,
+  selected,
+  highlightNet,
+  highlightPins,
+  sheetName,
+  currentSheet,
+}: {
+  project: Project;
+  symbols: SymbolResolver;
+  conn: Connectivity;
+  selected: ReadonlySet<string>;
+  highlightNet: string | null;
+  highlightPins: Map<string, Set<string>>;
+  sheetName: Map<string, string>;
+  currentSheet: string;
+}) {
+  // Junctions and markers change only with the nets, so the same elements are handed back
+  // while parts are dragged and React leaves them alone.
+  const junctions = useMemo(
+    () =>
+      conn.junctions
+        .filter((j) => j.sheet === currentSheet)
+        .map(({ at: j }) => <circle key={j.join(',')} cx={j[0]} cy={j[1]} r={1.8} fill="var(--junction)" />),
+    [conn, currentSheet],
+  );
+  const unconnected = useMemo(() => {
+    const here = new Set(project.components.map((c) => c.id));
+    return conn.unconnected
+      .filter((u) => here.has(u.componentId))
+      .map((u) => <circle key={`${u.componentId}:${u.pinId}`} cx={u.at[0]} cy={u.at[1]} r={1.3} fill="none" stroke="var(--unconnected)" strokeWidth={0.5} opacity={0.8} />);
+  }, [conn, project.components]);
+  return (
+    <>
+      {(project.groups ?? []).map((g) => (
+        <GroupGraphic key={g.id} group={g} selected={selected.has(g.id)} />
+      ))}
+      {project.wires.map((w) => (
+        <WireGraphic key={w.id} wire={w} selected={selected.has(w.id)} highlight={!!highlightNet && conn.itemNet.get(w.id) === highlightNet} />
+      ))}
+      {project.components.map((c) => (
+        <ComponentGraphic key={c.id} component={c} symbol={symbols(c.symbolKey)} selected={selected.has(c.id)} highlightPins={highlightPins.get(c.id)} />
+      ))}
+      {(project.blocks ?? []).map((b) => (
+        <BlockGraphic key={b.id} block={b} name={sheetName.get(b.child) ?? 'Sheet'} selected={selected.has(b.id)} />
+      ))}
+      {project.ports.map((p) => (
+        <PortGraphic key={p.id} port={p} selected={selected.has(p.id)} highlight={!!highlightNet && conn.itemNet.get(p.id) === highlightNet} />
+      ))}
+      {junctions}
+      <g data-ephemeral="">{unconnected}</g>
+    </>
+  );
+});
+
+/** One wire; memoised so the hundreds that don't move in a drag are not touched. */
+const WireGraphic = memo(function WireGraphic({ wire, selected, highlight }: { wire: Wire; selected: boolean; highlight: boolean }) {
+  return (
+    <polyline
+      points={wire.points.map((p) => p.join(',')).join(' ')}
+      fill="none"
+      stroke={selected ? 'var(--select)' : highlight ? 'var(--highlight)' : 'var(--wire)'}
+      strokeWidth={selected || highlight ? 1.8 : 1.2}
+      strokeLinejoin="round"
+      strokeLinecap="round"
+    />
+  );
+});
+
+/** The group's name typed over its tab; Enter or clicking away keeps it, Escape leaves it as it was. */
+function GroupNameEditor({ group, view, onDone }: { group: SchematicGroup; view: { x: number; y: number; zoom: number }; onDone: () => void }) {
+  const [name, setName] = useState(group.name);
+  const tab = groupTab(group);
+  const commit = () => {
+    const next = name.trim();
+    if (next && next !== group.name) updateGroup(group.id, { name: next });
+    onDone();
+  };
+  return (
+    <input
+      autoFocus
+      aria-label="Group name"
+      value={name}
+      spellCheck={false}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => setName(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') onDone();
+        e.stopPropagation();
+      }}
+      style={{ left: tab.x1 * view.zoom + view.x, top: tab.y1 * view.zoom + view.y - 4 }}
+      className="absolute z-10 h-6 w-40 rounded-md border border-indigo-500 bg-panel px-1.5 text-xs outline-none shadow-lg"
+    />
   );
 }
 

@@ -9,11 +9,12 @@ import type { PassiveKind } from '../shared/passives';
 import type { PartClass } from '../shared/parts';
 import { attachPort, connectPins, markNoConnect, placePartAt } from './actions';
 import { contentBounds, currentView } from './editing';
+import { freeGroupName, groupItems } from './grouping';
 import { placePassiveAt } from './passives';
 import { nextDesignator } from './schematic/designators';
 import { snap, worldPins, type WorldPin } from './schematic/geometry';
 import { symbolFor } from './schematic/symbols';
-import type { Component, Rotation, Vec } from './schematic/types';
+import type { Component, Rotation, SchematicGroup, Vec } from './schematic/types';
 
 const st = () => useEditor.getState();
 
@@ -269,6 +270,8 @@ export interface InsertedBlock {
   nets: string[];
   /** Ids of everything the block added, to select it. */
   ids: string[];
+  /** The frame drawn around it, when one was asked for. */
+  group?: SchematicGroup;
 }
 
 /** Where a block goes when no position is given: right of the whole drawing, top-aligned with it. */
@@ -290,9 +293,10 @@ const SIDES: Record<string, (a: WorldPin, b: WorldPin) => number> = {
 
 /**
  * Inserts a block at `at` (default: right of the drawing). Parameters left out take their
- * defaults; unknown ones are refused. If any step fails, nothing of the block is kept.
+ * defaults; unknown ones are refused. With `group`, a frame of that name is drawn around what
+ * was inserted. If any step fails, nothing of the block is kept.
  */
-export async function insertBlock(id: string, params: Record<string, string> = {}, at?: Vec): Promise<InsertedBlock> {
+export async function insertBlock(id: string, params: Record<string, string> = {}, at?: Vec, group?: string): Promise<InsertedBlock> {
   const block = BLOCKS.find((b) => b.id === id);
   if (!block) throw new Error(`No block "${id}". Blocks: ${BLOCKS.map((b) => b.id).join(', ')}`);
   const unknown = Object.keys(params).filter((k) => !block.params.some((p) => p.key === k));
@@ -349,10 +353,11 @@ export async function insertBlock(id: string, params: Record<string, string> = {
         nets.add(name);
       }
     }
-    st().squashHistory(mark);
     const project = st().project;
     const ids = [...project.components, ...project.wires, ...project.ports].map((i) => i.id).filter((i) => !before.has(i));
-    return { parts: Object.fromEntries([...placed].map(([ref, c]) => [ref, c.designator])), nets: [...nets], ids };
+    const frame = group?.trim() ? groupItems(ids, freeGroupName(group.trim())) : undefined;
+    st().squashHistory(mark);
+    return { parts: Object.fromEntries([...placed].map(([ref, c]) => [ref, c.designator])), nets: [...nets], ids, group: frame };
   } catch (err) {
     st().revertHistory(mark);
     throw err;

@@ -2,9 +2,10 @@ import type { Box } from '../easyeda/symbol';
 import { boxContains, boxIntersects, componentBox, distToSegment, normBox, rotate, samePoint, worldPins } from './geometry';
 import type { SymbolResolver } from './symbols';
 import { blockBox, blockPins } from './sheets';
+import { groupBox, hitGroup } from './groups';
 import type { NetPort, Project, Vec } from './types';
 
-type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'blocks'>;
+type Doc = Pick<Project, 'components' | 'wires' | 'ports' | 'blocks' | 'groups'>;
 
 export function portBox(p: NetPort): Box {
   if (p.kind === 'noconnect') return { x1: p.x - 4, y1: p.y - 4, x2: p.x + 4, y2: p.y + 4 };
@@ -38,7 +39,8 @@ export function hitTest(doc: Doc, symbols: SymbolResolver, p: Vec, tol: number):
     const c = doc.components[i];
     if (boxContains(componentBox(c, symbols(c.symbolKey)), p, 1)) return c.id;
   }
-  return null;
+  // A group only by its tab or border, so clicking inside it still reaches what is there.
+  return doc.groups?.length ? hitGroup(doc.groups, p, tol) : null;
 }
 
 /** The part of a wire under a point: a vertex within `tol`, otherwise a segment. */
@@ -60,6 +62,11 @@ export function itemsInBox(doc: Doc, symbols: SymbolResolver, box: Box): string[
   for (const w of doc.wires) if (w.points.some((pt) => boxContains(box, pt))) ids.push(w.id);
   for (const p of doc.ports) if (boxContains(box, [p.x, p.y])) ids.push(p.id);
   for (const b of doc.blocks ?? []) if (boxIntersects(blockBox(b), box)) ids.push(b.id);
+  // A group frame only when the box takes in the whole of it; a box inside it selects its parts.
+  for (const g of doc.groups ?? []) {
+    const gb = groupBox(g);
+    if (boxContains(box, [gb.x1, gb.y1]) && boxContains(box, [gb.x2, gb.y2])) ids.push(g.id);
+  }
   return ids;
 }
 

@@ -3,7 +3,8 @@ import type { SymbolShape, SymbolUnit } from '../../lib/easyeda/symbol';
 import { dirToWorld, toWorld, transformBox, unitOf } from '../../lib/schematic/geometry';
 import type { SymbolDef } from '../../lib/easyeda/symbol';
 import { blockBox, blockPins } from '../../lib/schematic/sheets';
-import type { Component, NetPort, SheetBlock, Vec } from '../../lib/schematic/types';
+import { GROUP_TAB_HEIGHT, groupBox, groupColor, groupTab } from '../../lib/schematic/groups';
+import type { Component, NetPort, SchematicGroup, SheetBlock, Vec } from '../../lib/schematic/types';
 
 const STROKE = 1;
 
@@ -246,6 +247,23 @@ function PowerText({ port, color, vertical }: { port: NetPort; color: string; ve
     </text>
   );
 }
+
+/** A group: a tinted frame with its name on a tab at the top-left corner, drawn under everything else. */
+export const GroupGraphic = memo(function GroupGraphic({ group, selected }: { group: SchematicGroup; selected?: boolean }) {
+  const color = groupColor(group);
+  const b = groupBox(group);
+  const tab = groupTab(group);
+  const stroke = selected ? 'var(--select)' : color;
+  return (
+    <g>
+      <rect x={b.x1} y={b.y1} width={b.x2 - b.x1} height={b.y2 - b.y1} rx={2} fill={color} fillOpacity={0.07} stroke={stroke} strokeWidth={selected ? 1.2 : 0.8} strokeOpacity={selected ? 1 : 0.8} />
+      <rect x={tab.x1} y={tab.y1} width={tab.x2 - tab.x1} height={GROUP_TAB_HEIGHT} rx={1.5} fill={stroke} />
+      <text x={tab.x1 + 4} y={tab.y1 + 6.6} fontSize={6} fontWeight={600} fill="#fff" className="canvas-text">
+        {group.name}
+      </text>
+    </g>
+  );
+});
 
 /** A hierarchical block: a box named after its sheet, with a pin per hierarchical port down the left. */
 export const BlockGraphic = memo(function BlockGraphic({ block, name, selected }: { block: SheetBlock; name: string; selected?: boolean }) {

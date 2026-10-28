@@ -28,7 +28,7 @@ export function partsIn(ids: string[], project: Pick<Project, 'components'>): st
   return [...new Set(ids.map((id) => (id.startsWith('label:') ? id.slice(6) : id)).filter((id) => parts.has(id)))];
 }
 
-export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'hier' | 'place';
+export type Tool = 'select' | 'wire' | 'label' | 'power' | 'ground' | 'noconnect' | 'hier' | 'place' | 'group';
 /** How routing and track dragging treat other nets' tracks in the way. */
 export type RouteMode = 'push' | 'walk' | 'ignore';
 export const ROUTE_MODE_NAMES: Record<RouteMode, string> = { push: 'Push', walk: 'Walk around', ignore: 'Ignore' };
@@ -73,29 +73,24 @@ export interface AgentLogEntry {
 }
 
 export type LeftTab = 'project' | 'bom' | 'check';
-export type RightTab = 'properties' | 'agent';
+export type RightTab = 'properties' | 'assistant' | 'agent';
 
 const HISTORY_LIMIT = 200;
-const STORAGE_KEY = 'schematics:project';
+
+/** The file on disk the open project is linked to (lib/projects.ts holds the file itself). */
+export interface FileLink {
+  name: string;
+  /** updatedAt of the project as last written to the file; later edits are unsaved. */
+  savedAt: number;
+  /** Save writes the file in place; otherwise it downloads a new copy. */
+  writable: boolean;
+}
 
 export function emptyProject(name = 'Untitled'): Project {
   return { version: 1, id: newId('prj'), name, updatedAt: Date.now(), components: [], wires: [], ports: [], symbols: {} };
 }
 
-function loadProject(): Project {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const p = JSON.parse(raw) as Project;
-      if (p.version === 1 && Array.isArray(p.components)) return p;
-    }
-  } catch {
-    /* storage unavailable or corrupt */
-  }
-  return emptyProject();
-}
-
-const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, footprints: p.footprints, parts: p.parts, pcb: p.pcb, sheets: p.sheets, blocks: p.blocks });
+const docOf = (p: Project): Doc => ({ components: p.components, wires: p.wires, ports: p.ports, symbols: p.symbols, footprints: p.footprints, parts: p.parts, pcb: p.pcb, sheets: p.sheets, blocks: p.blocks, groups: p.groups });
 
 /** Symbols and footprints are append-only caches, so history never removes them. */
 function keepCaches(target: Doc, current: Project): Doc {
@@ -204,6 +199,13 @@ interface EditorState {
   setRouteMode: (mode: RouteMode) => void;
   /** designs/<file> the project was opened from (dev only). */
   sourceFile: string | null;
+  /** The file on disk the project is linked to; null while it only lives in this browser. */
+  file: FileLink | null;
+  /** The last project has been brought back from the browser's library (or there was none). */
+  booted: boolean;
+  /** The start screen (recent projects, new, open) is shown instead of the editor. */
+  startOpen: boolean;
+  setStartOpen: (open: boolean) => void;
   beginTransient: () => void;
   updateTransient: (fn: (base: Doc) => Doc) => void;
   endTransient: () => void;
@@ -269,7 +271,7 @@ function defaultPortName(kind: PortKind, project: Project): string {
 }
 
 export const useEditor = create<EditorState>()((set, get) => ({
-  project: loadProject(),
+  project: emptyProject(),
   past: [],
   future: [],
   transientBase: null,
@@ -287,7 +289,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setCurrentSheet: (currentSheet) => {
     // Keep only the selected items that are on the new sheet.
     const v = sheetView(get().project, currentSheet);
-    const here = new Set([...v.components, ...v.wires, ...v.ports, ...(v.blocks ?? [])].map((i) => i.id));
+    const here = new Set([...v.components, ...v.wires, ...v.ports, ...(v.blocks ?? []), ...(v.groups ?? [])].map((i) => i.id));
     set({ currentSheet, selection: get().selection.filter((id) => here.has(id)), wireDraft: null, quickEditId: null });
   },
   wireFlip: false,
@@ -310,7 +312,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
     if (changed === before) return;
     // Blocks follow the hierarchical ports on their sheets.
     const after = syncBlocks(changed);
-    const ids = new Set([...after.components, ...after.wires, ...after.ports, ...(after.blocks ?? [])].map((i) => i.id));
+    const ids = new Set([...after.components, ...after.wires, ...after.ports, ...(after.blocks ?? []), ...(after.groups ?? [])].map((i) => i.id));
     set({
       project: { ...project, ...after, updatedAt: Date.now() },
       past: [...past.slice(-HISTORY_LIMIT + 1), before],
@@ -419,6 +421,10 @@ export const useEditor = create<EditorState>()((set, get) => ({
     set({ routeMode });
   },
   sourceFile: null,
+  file: null,
+  booted: false,
+  startOpen: false,
+  setStartOpen: (startOpen) => set({ startOpen }),
 
   beginTransient: () => set({ transientBase: docOf(get().project) }),
   updateTransient: (fn) => {
@@ -433,6 +439,7 @@ export const useEditor = create<EditorState>()((set, get) => ({
       transientBase.components !== project.components ||
       transientBase.wires !== project.wires ||
       transientBase.ports !== project.ports ||
+      transientBase.groups !== project.groups ||
       transientBase.pcb !== project.pcb;
     set({
       transientBase: null,
@@ -450,8 +457,8 @@ export const useEditor = create<EditorState>()((set, get) => ({
     const { past, project } = get();
     const i = past.findLastIndex((d) => d.components === mark.components && d.wires === mark.wires && d.ports === mark.ports);
     if (i < 0) return;
-    const { components, wires, ports, sheets, blocks, footprints, parts } = mark;
-    set({ project: { ...project, components, wires, ports, sheets, blocks, footprints, parts, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
+    const { components, wires, ports, sheets, blocks, groups, footprints, parts } = mark;
+    set({ project: { ...project, components, wires, ports, sheets, blocks, groups, footprints, parts, updatedAt: Date.now() }, past: past.slice(0, i), selection: [] });
   },
   undo: () => {
     const { past, future, project } = get();
@@ -479,7 +486,9 @@ export const useEditor = create<EditorState>()((set, get) => ({
   },
   addSymbols: (symbols) => set({ project: { ...get().project, symbols: { ...get().project.symbols, ...symbols } } }),
 
-  loadProject: (p) => set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null, currentSheet: sheetsOf(p)[0].id }),
+  // Another project is never linked to the file the last one was; whoever loads it relinks after.
+  loadProject: (p) =>
+    set({ project: p, past: [], future: [], selection: [], pcbSelection: [], tool: 'select', placing: null, routeDraft: null, shapeDraft: null, currentSheet: sheetsOf(p)[0].id, file: null, startOpen: false }),
   renameProject: (name) => set({ project: { ...get().project, name, updatedAt: Date.now() } }),
 
   setTool: (tool) => set({ tool, placing: tool === 'place' ? get().placing : null, wireDraft: null, wireFlip: false, wireOneShot: false }),
@@ -504,7 +513,11 @@ export const useEditor = create<EditorState>()((set, get) => ({
   setSelection: (selection) => set({ selection, pcbSelection: partsIn(selection, get().project) }),
   setView: (view) => set({ view }),
   setCanvasSize: (canvasSize) => set({ canvasSize }),
-  setCursor: (cursor) => set({ cursor }),
+  // Only a real change: the status bar re-renders on every move otherwise.
+  setCursor: (cursor) => {
+    const c = get().cursor;
+    if (c[0] !== cursor[0] || c[1] !== cursor[1]) set({ cursor });
+  },
   setWireDraft: (wireDraft) => set({ wireDraft, wireFlip: false }),
   toggleTheme: () => {
     const theme = get().theme === 'dark' ? 'light' : 'dark';
@@ -529,17 +542,3 @@ export const useEditor = create<EditorState>()((set, get) => ({
     get().commit((doc) => ({ ...doc, components: doc.components.map((c) => (c.id === id ? { ...c, ...patch } : c)) })),
   updatePort: (id, patch) => get().commit((doc) => ({ ...doc, ports: doc.ports.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
 }));
-
-// Autosave the current project.
-let saveTimer: ReturnType<typeof setTimeout> | undefined;
-useEditor.subscribe((state, prev) => {
-  if (state.project === prev.project || state.transientBase) return;
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(useEditor.getState().project));
-    } catch {
-      useEditor.getState().notify('Could not autosave: browser storage is full or unavailable', 'error');
-    }
-  }, 400);
-});

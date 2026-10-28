@@ -39,6 +39,8 @@ function apiDevServer(): Plugin {
 }
 
 export default defineConfig({
+  // BASE_PATH is the sub-path the app is served from (GitHub Pages serves it at /<repo>/).
+  base: process.env.BASE_PATH ?? '/',
   plugins: [react(), tailwindcss(), apiDevServer()],
   server: { port: 5173 },
   test: { environment: 'node', include: ['tests/**/*.test.ts'] },

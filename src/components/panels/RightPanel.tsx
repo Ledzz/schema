@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bot, Box, ExternalLink, FlipHorizontal2, PenTool, Play, Plus, Replace, RotateCcw, Sparkles, Trash2, Waypoints } from 'lucide-react';
+import { AssistantPanel } from './AssistantPanel';
 import { useEditor } from '../../store/editor';
 import { useWebMcp } from '../../store/webmcp';
 import { connectivity, findNoFeeAlternative, nameNet, renameNet } from '../../lib/actions';
@@ -7,9 +8,11 @@ import { alignSelection, deleteSelection, fitView, mirrorSelection, rotateSelect
 import { ALIGN_ACTIONS } from '../align';
 import { addDecoupling, planDecoupling, supplyPins, type PlannedCap } from '../../lib/decoupling';
 import { editFootprintOf, editSymbolOf, setFootprint } from '../../lib/library';
+import { fitGroup, partsInGroup, removeGroup, selectGroupContents, updateGroup } from '../../lib/grouping';
 import { worldPins } from '../../lib/schematic/geometry';
+import { GROUP_COLORS, GROUP_COLOR_NAMES } from '../../lib/schematic/groups';
 import { symbolFor } from '../../lib/schematic/symbols';
-import type { Component, NetPort, Rotation } from '../../lib/schematic/types';
+import type { Component, NetPort, Rotation, SchematicGroup } from '../../lib/schematic/types';
 import { TOOLS, runTool, type ToolDefinition } from '../../lib/webmcp';
 import { CLASS_HINT, ClassBadge, Field, IconButton, Tabs, cx, formatPrice, formatStock, inputClass } from '../ui';
 import { PassiveEditor } from '../passives/PassiveEditor';
@@ -30,6 +33,14 @@ export function RightPanel() {
         tabs={[
           { value: 'properties', label: 'Properties' },
           {
+            value: 'assistant',
+            label: (
+              <span className="inline-flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5" /> Assistant
+              </span>
+            ),
+          },
+          {
             value: 'agent',
             label: (
               <span className="inline-flex items-center gap-1.5">
@@ -40,7 +51,7 @@ export function RightPanel() {
           },
         ]}
       />
-      <div className="min-h-0 flex-1 overflow-auto">{tab === 'agent' ? <AgentPanel /> : mode === 'pcb' ? <PcbInspector /> : <Inspector />}</div>
+      <div className="min-h-0 flex-1 overflow-auto">{tab === 'assistant' ? <AssistantPanel /> : tab === 'agent' ? <AgentPanel /> : mode === 'pcb' ? <PcbInspector /> : <Inspector />}</div>
     </aside>
   );
 }
@@ -87,7 +98,60 @@ function Inspector() {
   if (port) return <PortInspector key={id} p={port} />;
   const wire = project.wires.find((w) => w.id === id);
   if (wire) return <WireInspector id={id} />;
+  const group = project.groups?.find((g) => g.id === id);
+  if (group) return <GroupInspector key={id} g={group} />;
   return null;
+}
+
+function GroupInspector({ g }: { g: SchematicGroup }) {
+  const project = useEditor((s) => s.project);
+  const [name, setName] = useState(g.name);
+  useEffect(() => setName(g.name), [g.name]);
+  const parts = useMemo(() => partsInGroup(g), [g, project]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commit = () => {
+    const next = name.trim();
+    if (next && next !== g.name) updateGroup(g.id, { name: next });
+    else setName(g.name);
+  };
+  const button = 'inline-flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5';
+  return (
+    <div className="space-y-3 p-3 text-xs">
+      <div className="text-sm font-semibold">Group</div>
+      <Field label="Name">
+        <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+      </Field>
+      <Field label="Colour">
+        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Group colour">
+          {GROUP_COLOR_NAMES.map((c) => (
+            <button
+              key={c}
+              role="radio"
+              aria-checked={(g.color ?? 'indigo') === c}
+              aria-label={c}
+              onClick={() => updateGroup(g.id, { color: c })}
+              style={{ background: GROUP_COLORS[c] }}
+              className={cx('h-5 w-5 rounded-full border-2', (g.color ?? 'indigo') === c ? 'border-[var(--text)]' : 'border-transparent')}
+            />
+          ))}
+        </div>
+      </Field>
+      <p className="leading-relaxed text-muted">
+        {parts.length === 0 ? 'Nothing inside yet: drag parts into the frame, or resize it by its corners.' : `${parts.length} part${parts.length === 1 ? '' : 's'} inside: ${parts.map((c) => c.designator).join(', ')}.`}{' '}
+        Dragging the frame moves what is inside; deleting it leaves the parts.
+      </p>
+      <div className="flex gap-1.5">
+        <button onClick={() => selectGroupContents(g.id)} className={button} disabled={parts.length === 0}>
+          Select contents
+        </button>
+        <button onClick={() => fitGroup(g.id)} className={button} disabled={parts.length === 0}>
+          Fit to contents
+        </button>
+      </div>
+      <button onClick={() => removeGroup(g.id)} className={cx(button, 'w-full text-rose-500 hover:bg-rose-500/10')}>
+        <Trash2 className="h-3.5 w-3.5" /> Delete frame
+      </button>
+    </div>
+  );
 }
 
 function SelectionActions() {
@@ -117,12 +181,17 @@ function ActionButton({ onClick, icon, label, danger }: { onClick: () => void; i
 
 function ProjectSummary() {
   const project = useEditor((s) => s.project);
+  const file = useEditor((s) => s.file);
+  const sourceFile = useEditor((s) => s.sourceFile);
   const conn = useMemo(() => connectivity(project), [project]);
+  const where = sourceFile ? `Synced with designs/${sourceFile}` : file ? (project.updatedAt > file.savedAt ? `Unsaved changes to ${file.name}` : `Saved to ${file.name}`) : 'Kept in this browser';
   return (
     <div className="space-y-3 p-3 text-xs">
       <div>
         <div className="text-sm font-semibold">{project.name}</div>
-        <div className="text-muted">Saved in this browser · {new Date(project.updatedAt).toLocaleTimeString()}</div>
+        <div className="text-muted">
+          {where} · {new Date(project.updatedAt).toLocaleTimeString()}
+        </div>
       </div>
       <div className="grid grid-cols-3 gap-1.5">
         {[

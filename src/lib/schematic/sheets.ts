@@ -4,11 +4,11 @@
  * a wire may run — only ever looks at one sheet; nets join across sheets through labels and power
  * flags of the same name, and through hierarchical blocks.
  */
-import type { Component, NetPort, Project, Sheet, SheetBlock, Vec, Wire } from './types';
+import type { Component, NetPort, Project, SchematicGroup, Sheet, SheetBlock, Vec, Wire } from './types';
 
 export const FIRST_SHEET = 's1';
 
-type SheetDoc = Pick<Project, 'components' | 'wires' | 'ports' | 'sheets' | 'blocks'>;
+type SheetDoc = Pick<Project, 'components' | 'wires' | 'ports' | 'sheets' | 'blocks' | 'groups'>;
 type Placed = { sheet?: string };
 
 /** The project's sheets, in order (one when it has never had more). */
@@ -22,7 +22,14 @@ export const sheetOf = (item: Placed, doc: Pick<Project, 'sheets'>): string => i
 /** The document as seen on one sheet: only that sheet's parts, wires, labels and blocks. */
 export function sheetView<T extends SheetDoc>(doc: T, sheet: string): T {
   const on = (item: Placed) => sheetOf(item, doc) === sheet;
-  return { ...doc, components: doc.components.filter(on), wires: doc.wires.filter(on), ports: doc.ports.filter(on), blocks: (doc.blocks ?? []).filter(on) };
+  return {
+    ...doc,
+    components: doc.components.filter(on),
+    wires: doc.wires.filter(on),
+    ports: doc.ports.filter(on),
+    blocks: (doc.blocks ?? []).filter(on),
+    groups: doc.groups?.length ? doc.groups.filter(on) : doc.groups,
+  };
 }
 
 /** Puts a sheet view (after an edit) back into the whole document; new items land on that sheet. */
@@ -32,12 +39,15 @@ export function mergeSheet<T extends SheetDoc>(doc: T, sheet: string, view: T): 
   const tag = <I extends Placed>(item: I): I => (item.sheet === sheet ? item : { ...item, sheet });
   // Keep tags off on the first sheet of a one-sheet project, as it was saved.
   const keep = !doc.sheets?.length && sheet === FIRST_SHEET ? <I extends Placed>(item: I) => item : tag;
+  const groups = [...(doc.groups ?? []).filter(other), ...(view.groups ?? []).map(keep)];
   return {
     ...view,
     components: [...doc.components.filter(other), ...view.components.map(keep)],
     wires: [...doc.wires.filter(other), ...view.wires.map(keep)],
     ports: [...doc.ports.filter(other), ...view.ports.map(keep)],
     blocks: [...(doc.blocks ?? []).filter(other), ...(view.blocks ?? []).map(keep)],
+    // Projects without groups keep their JSON as it was.
+    groups: groups.length || doc.groups ? groups : undefined,
   };
 }
 
@@ -66,7 +76,7 @@ export const hierNames = (doc: Pick<Project, 'ports' | 'sheets'>, sheet: string)
   [...new Set(doc.ports.filter((p) => p.kind === 'hier' && p.name.trim() && sheetOf(p, doc) === sheet).map((p) => p.name.trim()))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
 /** Everything on a sheet, for counting and deleting. */
-export const itemsOnSheet = (doc: SheetDoc, sheet: string): (Component | Wire | NetPort | SheetBlock)[] => {
+export const itemsOnSheet = (doc: SheetDoc, sheet: string): (Component | Wire | NetPort | SheetBlock | SchematicGroup)[] => {
   const v = sheetView(doc, sheet);
-  return [...v.components, ...v.wires, ...v.ports, ...(v.blocks ?? [])];
+  return [...v.components, ...v.wires, ...v.ports, ...(v.blocks ?? []), ...(v.groups ?? [])];
 };

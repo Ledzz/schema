@@ -11,14 +11,14 @@ import {
   paste,
   removeWirePoint,
   rotateSelection,
-  saveProjectFile,
   selectAll,
   zoomBy,
 } from '../lib/editing';
 import { moveItems } from '../lib/schematic/ops';
 import { resolverFor } from '../lib/schematic/symbols';
 import { focusLibrarySearch } from '../lib/libraryFocus';
-import { saveDesign } from '../lib/designs';
+import { openFile, saveFile, saveFileAs } from '../lib/projects';
+import { groupSelection } from '../lib/grouping';
 import { startPassive } from '../lib/passives';
 import type { PassiveKind } from '../shared/passives';
 import { changeRouteMode, currentPcb, deleteSelectedCopper, finishDraft, finishShape, flipSelected, rotateSelected, viaInDraft } from '../lib/pcb/actions';
@@ -137,8 +137,18 @@ export function useShortcuts() {
           a: selectAll,
           c: copySelection,
           v: paste,
-          s: () => (s.sourceFile ? void saveDesign() : saveProjectFile()),
-          o: () => (document.querySelector('input[type=file]') as HTMLInputElement | null)?.click(),
+          s: () => void (e.shiftKey ? saveFileAs() : saveFile()),
+          o: () => void openFile(),
+          // ⌘G frames the selection; with nothing selected it starts the group tool.
+          g: () => {
+            if (s.mode !== 'schematic') return;
+            if (!s.selection.length) return s.setTool('group');
+            try {
+              groupSelection();
+            } catch (err) {
+              s.notify((err as Error).message, 'error');
+            }
+          },
         };
         const command = commands[key];
         if (command) {
@@ -163,6 +173,11 @@ export function useShortcuts() {
       if (e.shiftKey && PASSIVE_KEYS[key]) {
         e.preventDefault();
         startPassive(PASSIVE_KEYS[key]);
+        return;
+      }
+      if (e.shiftKey && key === 'g') {
+        e.preventDefault();
+        s.setTool('group');
         return;
       }
 

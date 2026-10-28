@@ -141,21 +141,55 @@ export function analyze(project: Pick<Project, 'components' | 'wires' | 'ports' 
   // Coincident connection points.
   for (const nodes of atPoint.values()) for (let i = 1; i < nodes.length; i++) uf.union(nodes[0], nodes[i]);
 
-  // T-junctions: wire ends and port anchors anywhere on a wire of the same sheet.
+  // T-junctions: wire ends and port anchors anywhere on a wire of the same sheet. Candidates
+  // come from a coarse grid of cells, so a sheet with hundreds of wires is not every end
+  // against every segment (which took ~100 ms and made big schematics stutter).
   const passThrough = new Map<string, number>();
   const anchored = project.ports.filter((p) => p.kind !== 'noconnect');
+  const CELL = 50;
+  const cellOf = (sheet: string, p: Vec) => `${sheet}|${Math.floor(p[0] / CELL)},${Math.floor(p[1] / CELL)}`;
+  const endsByCell = new Map<string, number[]>();
+  wireEnds.forEach((e, i) => {
+    const k = cellOf(sheetOf(e.wire, project), e.at);
+    const list = endsByCell.get(k);
+    if (list) list.push(i);
+    else endsByCell.set(k, [i]);
+  });
+  const portsByCell = new Map<string, NetPort[]>();
+  for (const p of anchored) {
+    const k = cellOf(sheetOf(p, project), [p.x, p.y]);
+    const list = portsByCell.get(k);
+    if (list) list.push(p);
+    else portsByCell.set(k, [p]);
+  }
+  // The cells a segment's bounding box touches, one further on each side for points on a boundary.
+  const cellsAlong = (sheet: string, a: Vec, b: Vec): string[] => {
+    const x1 = Math.floor(Math.min(a[0], b[0]) / CELL) - 1;
+    const x2 = Math.floor(Math.max(a[0], b[0]) / CELL) + 1;
+    const y1 = Math.floor(Math.min(a[1], b[1]) / CELL) - 1;
+    const y2 = Math.floor(Math.max(a[1], b[1]) / CELL) + 1;
+    const out: string[] = [];
+    for (let cx = x1; cx <= x2; cx++) for (let cy = y1; cy <= y2; cy++) out.push(`${sheet}|${cx},${cy}`);
+    return out;
+  };
   for (const w of project.wires) {
     const sheet = sheetOf(w, project);
     for (const [a, b] of segments(w)) {
-      for (const e of wireEnds) {
-        if (e.wire === w || sheetOf(e.wire, project) !== sheet || !onSegment(e.at, a, b)) continue;
-        uf.union(`w:${w.id}`, `w:${e.wire.id}`);
-        if (!samePoint(e.at, a) && !samePoint(e.at, b)) {
-          const k = at(sheet, e.at);
-          passThrough.set(k, (passThrough.get(k) ?? 0) + 2);
+      const seenEnds = new Set<number>();
+      for (const k of cellsAlong(sheet, a, b)) {
+        for (const i of endsByCell.get(k) ?? []) {
+          if (seenEnds.has(i)) continue;
+          seenEnds.add(i);
+          const e = wireEnds[i];
+          if (e.wire === w || !onSegment(e.at, a, b)) continue;
+          uf.union(`w:${w.id}`, `w:${e.wire.id}`);
+          if (!samePoint(e.at, a) && !samePoint(e.at, b)) {
+            const key = at(sheet, e.at);
+            passThrough.set(key, (passThrough.get(key) ?? 0) + 2);
+          }
         }
+        for (const p of portsByCell.get(k) ?? []) if (onSegment([p.x, p.y], a, b)) uf.union(`w:${w.id}`, `n:${p.id}`);
       }
-      for (const p of anchored) if (sheetOf(p, project) === sheet && onSegment([p.x, p.y], a, b)) uf.union(`w:${w.id}`, `n:${p.id}`);
     }
   }
 

@@ -82,6 +82,24 @@ export interface SheetBlock {
   pins: string[];
 }
 
+export type GroupColor = 'indigo' | 'emerald' | 'amber' | 'rose' | 'sky' | 'violet' | 'slate';
+
+/**
+ * A group: a named frame around a functional part of the drawing ("Power", "MCU", "Sensors").
+ * It is a region, not a list: whatever sits inside it belongs to it and moves with it, and
+ * deleting the frame leaves the parts where they are.
+ */
+export interface SchematicGroup {
+  id: string;
+  sheet?: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color?: GroupColor;
+}
+
 export interface StoredSymbol {
   title: string;
   dataStr: string;
@@ -118,6 +136,7 @@ export interface Project {
   /** Sheets in order; a project without them has a single sheet. */
   sheets?: Sheet[];
   blocks?: SheetBlock[];
+  groups?: SchematicGroup[];
   symbols: Record<string, StoredSymbol>;
   /** Footprints made in the app, keyed like symbols ("user:…"). */
   footprints?: Record<string, StoredFootprint>;

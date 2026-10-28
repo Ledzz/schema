@@ -4,6 +4,7 @@ import { addPort, commitAttach, connectivity, disconnectPin, endByKey, findNoFee
 import { addDecoupling, supplyPins } from '../../lib/decoupling';
 import { editFootprintOf, editSymbolOf } from '../../lib/library';
 import { partsOnNet, showOnPcb } from '../../lib/crossprobe';
+import { fitGroup, freeGroupName, groupSelection, removeGroup, selectGroupContents, updateGroup } from '../../lib/grouping';
 import { openQuickAdd } from '../../lib/quickadd';
 import { copySelection, deleteSelection, duplicateSelection, fitView, hasClipboard, mirrorSelection, openSheet, paste, rotateSelection, selectAll } from '../../lib/editing';
 import { samePoint } from '../../lib/schematic/geometry';
@@ -151,7 +152,22 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
   ];
   const remove: ContextItem = { label: 'Delete', shortcut: 'Del', danger: true, separatorBefore: true, onSelect: deleteSelection };
   const saveBlock: ContextItem = { label: 'Save as block…', onSelect: () => s.setSaveBlockOpen(true) };
-  if (count > 1) return { title: `${count} items`, items: [...common, saveBlock, remove] };
+  // A named frame around the selection, typed right here.
+  const group: ContextItem = { label: 'Group as', separatorBefore: true, input: { initial: freeGroupName(), placeholder: 'Group name', onSubmit: (v) => groupSelection(v) } };
+  if (count > 1) return { title: `${count} items`, items: [...common, group, saveBlock, remove] };
+
+  const frame = project.groups?.find((g) => g.id === id);
+  if (frame) {
+    return {
+      title: `Group · ${frame.name}`,
+      items: [
+        { label: 'Rename', input: { initial: frame.name, onSubmit: (v) => updateGroup(frame.id, { name: v }) } },
+        { label: 'Select contents', onSelect: () => selectGroupContents(frame.id) },
+        { label: 'Fit to contents', onSelect: () => fitGroup(frame.id) },
+        { label: 'Delete frame (keeps the parts)', shortcut: 'Del', danger: true, separatorBefore: true, onSelect: () => removeGroup(frame.id) },
+      ],
+    };
+  }
 
   const component = project.components.find((c) => c.id === id);
   if (component) {
@@ -169,6 +185,7 @@ export function schematicMenu(w: Vec, tol: number): Omit<ContextMenuState, 'at'>
         { label: 'Show on PCB', shortcut: '⇧X', separatorBefore: true, onSelect: () => showOnPcb([component.id]) },
         { label: 'Edit symbol…', onSelect: () => editSymbolOf(component) },
         { label: 'Edit footprint…', onSelect: () => editFootprintOf(component).catch((err: Error) => s.notify(err.message, 'error')) },
+        group,
         saveBlock,
         remove,
       ],

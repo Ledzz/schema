@@ -2,8 +2,9 @@ import { Suspense, lazy, useEffect, useRef, useState, type RefObject } from 'rea
 import { useEditor } from './store/editor';
 import { useWebMcp } from './store/webmcp';
 import { ensureWebMcp } from './lib/webmcp';
-import { openFromUrl } from './lib/designs';
+import { bootWorkspace, openDropped } from './lib/projects';
 import { useShortcuts } from './hooks/useShortcuts';
+import { StartScreen } from './components/StartScreen';
 import { SchematicCanvas } from './components/canvas/SchematicCanvas';
 import { LibraryPanel } from './components/library/LibraryPanel';
 import { LeftPanel } from './components/panels/LeftPanel';
@@ -125,6 +126,10 @@ export default function App() {
   const libraryOpen = useEditor((s) => s.libraryOpen);
   const mode = useEditor((s) => s.mode);
   const split = useEditor((s) => s.split);
+  const booted = useEditor((s) => s.booted);
+  const startOpen = useEditor((s) => s.startOpen);
+  const name = useEditor((s) => s.project.name);
+  const dirty = useEditor((s) => !!s.file && s.project.updatedAt > s.file.savedAt);
   const svgRef = useRef<SVGSVGElement>(null);
   useShortcuts();
 
@@ -133,12 +138,43 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    openFromUrl();
+    document.title = `${dirty ? '• ' : ''}${name} · Schematics`;
+  }, [name, dirty]);
+
+  useEffect(() => {
+    void bootWorkspace();
+  }, []);
+
+  // A project file dropped anywhere on the window opens.
+  useEffect(() => {
+    const over = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
+    };
+    const drop = (e: DragEvent) => {
+      if (openDropped(e)) e.preventDefault();
+    };
+    window.addEventListener('dragover', over);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('drop', drop);
+    };
   }, []);
 
   useEffect(() => {
     ensureWebMcp().then((r) => useWebMcp.getState().set({ api: r.api, registered: r.registered, errors: r.errors }));
   }, []);
+
+  if (!booted) return <div className="h-full" />;
+  if (startOpen) {
+    return (
+      <>
+        <StartScreen />
+        <Toast />
+        <TooltipLayer />
+      </>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">

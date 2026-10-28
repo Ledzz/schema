@@ -17,6 +17,7 @@ import { countInStockByClass, getPart, searchFacets, searchParts } from './jlcpc
 import { getDevice, getModel, getStepModel, getStock } from './easyeda';
 import { matchPassive, type PassiveMatch } from './match';
 import { PASSIVE_KINDS, type PassiveKind } from '../src/shared/passives';
+import { assistant } from './assistant';
 
 const MINUTE = 60_000;
 const searchCache = new TtlCache<SearchResult>(500, 10 * MINUTE);
@@ -87,6 +88,7 @@ api.onError((err, c) => {
 });
 
 api.get('/health', (c) => c.json({ ok: true }));
+api.route('/assistant', assistant);
 
 api.get('/parts/search', async (c) => {
   const query = parseSearchQuery(new URL(c.req.url).searchParams);

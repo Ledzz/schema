@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 import {
   Blocks,
   Bot,
+  Group,
   Split,
   Cable,
   CircleOff,
@@ -20,6 +21,7 @@ import {
   Undo2,
   ZoomIn,
   ZoomOut,
+  Sparkles,
 } from 'lucide-react';
 import { ROUTE_MODE_NAMES, useEditor, type Tool } from '../store/editor';
 import { useWebMcp } from '../store/webmcp';
@@ -31,14 +33,13 @@ import {
   exportSvg,
   fitView,
   mirrorSelection,
-  newProject,
-  openProjectFile,
   reannotate,
   rotateSelection,
-  saveProjectFile,
   selectAll,
   zoomBy,
 } from '../lib/editing';
+import { downloadCopy, openFile, saveFile, saveFileAs, startNewProject } from '../lib/projects';
+import { groupSelection } from '../lib/grouping';
 import { formatNetlist } from '../lib/schematic/netlist';
 import { crossProbe } from '../lib/crossprobe';
 import { openQuickAdd } from '../lib/quickadd';
@@ -97,33 +98,40 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
   const split = useEditor((s) => s.split);
   const status = useWebMcp((s) => s.status);
   const sourceFile = useEditor((s) => s.sourceFile);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const file = useEditor((s) => s.file);
   const s = useEditor.getState;
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-panel px-2">
-      <div className="flex items-center gap-2 pl-1 pr-2">
+      <button
+        onClick={() => s().setStartOpen(true)}
+        data-tip="Start screen: recent projects, new, open"
+        data-tip-side="bottom"
+        className="flex items-center gap-2 rounded-md py-0.5 pl-1 pr-2 hover:bg-black/5 dark:hover:bg-white/5"
+      >
         <div className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-600 text-white">
           <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 12h4l2-5 4 10 2-5h6" />
           </svg>
         </div>
         <span className="text-sm font-semibold tracking-tight">Schematics</span>
-      </div>
+      </button>
       <nav className="flex items-center">
         <MenuButton
           label="File"
           items={[
-            { label: 'New schematic', onSelect: () => (s().project.components.length === 0 || confirm('Discard the current schematic?')) && newProject() },
-            { label: 'Open…', shortcut: `${mod}O`, onSelect: () => fileInput.current?.click() },
+            { label: 'New project', onSelect: () => startNewProject() },
+            { label: 'Open…', shortcut: `${mod}O`, onSelect: () => void openFile() },
+            { label: 'Recent projects…', onSelect: () => s().setStartOpen(true) },
             ...(sourceFile
               ? [
-                  { label: `Save to designs/${sourceFile}`, shortcut: `${mod}S`, onSelect: () => void saveDesign() },
+                  { label: `Save to designs/${sourceFile}`, shortcut: `${mod}S`, separatorBefore: true, onSelect: () => void saveDesign() },
                   { label: `Reload designs/${sourceFile}`, onSelect: () => void openDesign(sourceFile) },
-                  { label: 'Download a copy', onSelect: saveProjectFile },
                   { label: 'Stop syncing with file', onSelect: detachDesign },
                 ]
-              : [{ label: 'Save to file', shortcut: `${mod}S`, onSelect: saveProjectFile }]),
+              : [{ label: file?.writable ? `Save ${file.name}` : 'Save to file…', shortcut: `${mod}S`, separatorBefore: true, onSelect: () => void saveFile() }]),
+            { label: 'Save as…', shortcut: `${mod}⇧S`, onSelect: () => void saveFileAs() },
+            { label: 'Download a copy', onSelect: downloadCopy },
             {
               label: 'Export BOM (JLCPCB CSV)',
               separatorBefore: true,
@@ -149,6 +157,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Delete', shortcut: 'Del', onSelect: deleteSelection },
             { label: 'Select all', shortcut: `${mod}A`, separatorBefore: true, onSelect: selectAll },
             { label: 'Find…', shortcut: `${mod}F`, onSelect: () => s().setFindOpen(true) },
+            { label: 'Group selection', shortcut: `${mod}G`, separatorBefore: true, disabled: selectionCount === 0 || mode !== 'schematic', onSelect: () => runAction(() => groupSelection()) },
             { label: 'Save selection as block…', disabled: selectionCount === 0 || mode !== 'schematic', onSelect: () => s().setSaveBlockOpen(true) },
             ...ALIGN_ACTIONS.map((a, i) => ({ label: a.label, separatorBefore: i === 0, disabled: selectionCount < a.min || mode !== 'schematic', onSelect: () => alignSelection(a.mode) })),
           ]}
@@ -166,6 +175,7 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Power flag', shortcut: 'P', onSelect: () => s().startPort('power') },
             { label: 'Ground flag', shortcut: 'G', onSelect: () => s().startPort('ground') },
             { label: 'No-connect flag', shortcut: 'Q', onSelect: () => s().startPort('noconnect') },
+            { label: 'Group frame (drag one out)', shortcut: '⇧G', separatorBefore: true, onSelect: () => (s().setMode('schematic'), s().setTool('group')) },
             { label: 'Sheet', separatorBefore: true, onSelect: () => runAction(() => addSheet()) },
             { label: 'Hierarchical block (new sheet)', onSelect: () => runAction(() => placeBlockHere()) },
             { label: 'Hierarchical port', shortcut: 'H', onSelect: () => s().startPort('hier') },
@@ -189,21 +199,11 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
             { label: 'Re-annotate designators', onSelect: reannotate },
             { label: 'Refresh stock & part types', onSelect: () => refreshStock().then((n) => s().notify(`Updated ${n} parts`)) },
             { label: 'Design check', onSelect: () => s().setLeftTab('check') },
-            { label: 'Agent tools (WebMCP)', separatorBefore: true, onSelect: () => s().setRightTab('agent') },
+            { label: 'Assistant', separatorBefore: true, onSelect: () => s().setRightTab('assistant') },
+            { label: 'Agent tools (WebMCP)', onSelect: () => s().setRightTab('agent') },
           ]}
         />
       </nav>
-      <input
-        ref={fileInput}
-        type="file"
-        accept=".json,application/json"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) openProjectFile(f);
-          e.target.value = '';
-        }}
-      />
       <div className="mx-auto flex min-w-0 items-center gap-3">
         <ModeSwitch />
         <input
@@ -211,9 +211,9 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           onChange={(e) => s().renameProject(e.target.value)}
           aria-label="Project name"
           className="w-56 truncate rounded-md bg-transparent px-2 py-1 text-center text-[13px] font-medium outline-none hover:bg-black/5 focus:bg-panel-2 focus:ring-2 focus:ring-indigo-500/30 dark:hover:bg-white/5"
-          title={sourceFile ? `Synced with designs/${sourceFile}` : undefined}
+          title={sourceFile ? `Synced with designs/${sourceFile}` : file ? `Linked to ${file.name}` : 'Kept in this browser; save it to a file from the File menu'}
         />
-        {sourceFile && <span className="hidden font-mono text-[10px] text-muted xl:inline">designs/{sourceFile}</span>}
+        <FileStatus />
       </div>
       <div className="flex items-center gap-1">
         <IconButton label="Undo" shortcut={`${mod}Z`} onClick={() => s().undo()} disabled={!canUndo}>
@@ -223,6 +223,14 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
           <Redo2 className="h-4 w-4" />
         </IconButton>
         <div className="mx-1 h-5 w-px bg-[var(--line)]" />
+        <button
+          onClick={() => s().setRightTab('assistant')}
+          data-tip="Assistant: describe what to build or change"
+          className="inline-flex h-7 items-center gap-1.5 rounded-full border border-indigo-500/40 px-2.5 text-xs text-indigo-600 dark:text-indigo-300"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Assistant
+        </button>
         <button
           onClick={() => s().setRightTab('agent')}
           data-tip={status?.api ? `WebMCP: ${status.registered.length} tools registered via ${status.api}` : 'WebMCP not detected in this browser'}
@@ -240,6 +248,26 @@ export function TopBar({ svgRef }: { svgRef: React.RefObject<SVGSVGElement | nul
         </IconButton>
       </div>
     </header>
+  );
+}
+
+/** The file the project is linked to, with a dot while it has edits the file lacks. */
+function FileStatus() {
+  const sourceFile = useEditor((s) => s.sourceFile);
+  const file = useEditor((s) => s.file);
+  const dirty = useEditor((s) => !!s.file && s.project.updatedAt > s.file.savedAt);
+  if (sourceFile) return <span className="hidden font-mono text-[10px] text-muted xl:inline">designs/{sourceFile}</span>;
+  if (!file) return null;
+  return (
+    <button
+      onClick={() => void saveFile()}
+      data-tip={dirty ? `Unsaved changes · ${mod}S ${file.writable ? 'saves' : 'downloads a copy'}` : `Saved to ${file.name}`}
+      data-tip-side="bottom"
+      className="hidden max-w-48 items-center gap-1 truncate font-mono text-[10px] text-muted hover:text-[var(--text)] xl:inline-flex"
+    >
+      {file.name}
+      {dirty && <span className="text-amber-500">•</span>}
+    </button>
   );
 }
 
@@ -332,6 +360,9 @@ export function SchematicToolbar() {
       <IconButton label="Circuit block" shortcut="B" className="shrink-0" onClick={() => s().setBlocksOpen(true)}>
         <Blocks className="h-4 w-4" />
       </IconButton>
+      <IconButton label={hasSelection ? 'Group the selection (⌘G), or drag a frame' : 'Group: drag a frame around parts and name it'} shortcut="⇧G" active={tool === 'group'} className="shrink-0" onClick={() => s().setTool('group')}>
+        <Group className="h-4 w-4" />
+      </IconButton>
       {separator}
       <IconButton label="Rotate" shortcut="R" className="shrink-0" onClick={rotateSelection} disabled={!hasSelection && tool === 'select'}>
         <RotateCcw className="h-4 w-4" />
@@ -368,6 +399,7 @@ const TOOL_HINT: Record<Tool, string> = {
   noconnect: 'Click a pin to mark it as not connected',
   hier: 'Click a pin or wire to drop the hierarchical port (a pin of this sheet’s blocks) · Tab renames · R rotates',
   place: 'Click to place · R rotate · X mirror · Esc to stop',
+  group: 'Drag a frame around the parts that belong together, then type its name · Esc to stop',
 };
 
 function PcbStatusBar() {

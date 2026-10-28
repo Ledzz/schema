@@ -562,8 +562,24 @@ export async function refreshStock(): Promise<number> {
   return rows.length;
 }
 
+type ConnKey = [Project['components'], Project['wires'], Project['ports'], Project['sheets'], Project['blocks'], Project['symbols']];
+let connCache: { key: ConnKey; conn: ReturnType<typeof analyze> } | null = null;
+
+/**
+ * The project's connectivity. One analysis is shared by every panel that asks for the same
+ * document (the canvas, the status bar, the project tree and the inspector all do), and while a
+ * drag is in progress the result from before it is kept: analysing hundreds of wires on every
+ * pointer move is what made big schematics stutter, and the nets don't change mid-drag.
+ */
 export function connectivity(project: Project = state().project) {
-  return analyze(project, resolverFor(project));
+  const key: ConnKey = [project.components, project.wires, project.ports, project.sheets, project.blocks, project.symbols];
+  if (connCache) {
+    const live = project === state().project || project.components === state().project.components;
+    if (key.every((k, i) => k === connCache!.key[i]) || (live && state().transientBase)) return connCache.conn;
+  }
+  const conn = analyze(project, resolverFor(project));
+  connCache = { key, conn };
+  return conn;
 }
 
 export function downloadText(filename: string, text: string, mime = 'text/plain') {
@@ -609,6 +625,7 @@ export function deleteSheet(id: string) {
       wires: doc.wires.filter(keep),
       ports: doc.ports.filter(keep),
       blocks: (doc.blocks ?? []).filter((b) => keep(b) && b.child !== id),
+      groups: doc.groups?.filter(keep),
       sheets: sheetsOf(doc).filter((s) => s.id !== id),
     };
   });

@@ -3,6 +3,7 @@ import { Blocks, Download, Trash2, Upload, X } from 'lucide-react';
 import { useEditor } from '../store/editor';
 import { BLOCKS, insertBlock, type CircuitBlock } from '../lib/blocks';
 import { fitView } from '../lib/editing';
+import { freeGroupName, groupItems } from '../lib/grouping';
 import { blockNets, deleteUserBlock, exportUserBlocks, importUserBlocks, insertUserBlock, loadUserBlocks, saveUserBlock, type UserBlock } from '../lib/userBlocks';
 import { PASSIVES } from '../shared/passives';
 import { Button, ClassBadge, cx, inputClass } from './ui';
@@ -44,11 +45,14 @@ function BlocksSheet() {
   const [values, setValues] = useState<Record<string, Record<string, string>>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Frame the inserted parts as a group named after the block. */
+  const [frame, setFrame] = useState(true);
   const fileInput = useRef<HTMLInputElement>(null);
   const builtIn = BLOCKS.find((b) => b.id === id);
   const saved = mine.find((b) => b.id === id);
   const params = values[id] ?? {};
   const setParam = (key: string, value: string) => setValues((v) => ({ ...v, [id]: { ...params, [key]: value } }));
+  const title = builtIn?.title ?? saved?.title ?? '';
 
   const done = (ids: string[], message: string) => {
     const s = useEditor.getState();
@@ -62,9 +66,16 @@ function BlocksSheet() {
     setError(null);
     try {
       if (builtIn) {
-        const r = await insertBlock(builtIn.id, params);
-        done(r.ids, `Inserted ${builtIn.title}: ${Object.values(r.parts).join(', ')} · drag it into place`);
-      } else if (saved) done(insertUserBlock(saved, params), `Inserted ${saved.title} · drag it into place`);
+        const r = await insertBlock(builtIn.id, params, undefined, frame ? builtIn.title : undefined);
+        done(r.group ? [r.group.id] : r.ids, `Inserted ${builtIn.title}: ${Object.values(r.parts).join(', ')} · drag it into place`);
+      } else if (saved) {
+        const ids = insertUserBlock(saved, params);
+        const s = useEditor.getState();
+        const mark = s.past[s.past.length - 1];
+        const g = frame ? groupItems(ids, freeGroupName(saved.title)) : undefined;
+        if (g && mark) s.squashHistory(mark);
+        done(g ? [g.id] : ids, `Inserted ${saved.title} · drag it into place`);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -147,6 +158,10 @@ function BlocksSheet() {
             <div className={cx('min-w-0 flex-1 text-xs', error ? 'text-rose-500' : 'text-muted')}>
               {error ?? 'Goes to the right of the drawing, selected, as one undo step; drag it into place.'}
             </div>
+            <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted" data-tip={`A named frame around the parts, which moves as one; rename it on the canvas`}>
+              <input type="checkbox" checked={frame} onChange={(e) => setFrame(e.target.checked)} />
+              Frame as “{title}”
+            </label>
             <Button type="submit" variant="primary" disabled={busy}>
               {busy ? 'Inserting…' : 'Insert block'}
             </Button>
