@@ -171,7 +171,8 @@ export const useAssistant = create<AssistantState>()((set, get) => {
       set({ chats: [meta, ...get().chats.filter((c) => c.id !== chatId)] });
     };
     if (now) return write().catch(() => undefined);
-    persistTimer = setTimeout(() => void write().catch(() => undefined), 300);
+    // A chat with many board pictures is megabytes; writing it after every tool round adds up.
+    persistTimer = setTimeout(() => void write().catch(() => undefined), 2000);
     return undefined;
   };
 

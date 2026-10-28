@@ -3,7 +3,7 @@
  * numbered lists, fenced code, tables, and inline code, bold, italic and links. Enough for a
  * design summary without pulling in a Markdown library.
  */
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 export type MdBlock =
   | { kind: 'p'; text: string }
@@ -102,9 +102,10 @@ export function inline(text: string): ReactNode[] {
 }
 
 export function Markdown({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
   return (
     <div className="space-y-1.5 text-xs leading-relaxed [overflow-wrap:anywhere]">
-      {parseMarkdown(text).map((b, i) => {
+      {blocks.map((b, i) => {
         switch (b.kind) {
           case 'p':
             return <p key={i}>{inline(b.text)}</p>;

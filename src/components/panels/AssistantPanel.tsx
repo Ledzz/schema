@@ -3,7 +3,7 @@
  * (Markdown), its thinking summaries and every tool call with its result, streamed as they
  * happen; settings for the API key, model and effort; and the token count and cost so far.
  */
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { Check, ChevronDown, ChevronRight, CircleAlert, History, Loader2, Plus, Send, Settings2, Sparkles, Square, Trash2, Wrench } from 'lucide-react';
 import type Anthropic from '@anthropic-ai/sdk';
 import { activeModel, keyFor, useAssistant } from '../../store/assistant';
@@ -110,7 +110,7 @@ export function AssistantPanel() {
   const needsKey = serverKeys !== null && !serverKeys[settings.provider] && !keyFor(settings);
   // Gemini also needs a model picked from the live list.
   const needsSetup = needsKey || !activeModel(settings);
-  const results = toolResults(messages);
+  const results = useMemo(() => toolResults(messages), [messages]);
   const modelLabel = settings.provider === 'gemini' ? (geminiModels?.find((m) => m.id === settings.geminiModel)?.label ?? settings.geminiModel) : modelById(settings.model)?.label;
   const cost = estimateCost(usage, activeModel(settings));
   const totalIn = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -146,13 +146,9 @@ export function AssistantPanel() {
         className="min-h-0 flex-1 space-y-3 overflow-auto px-3 py-3"
       >
         {messages.length === 0 && !live && <Starters disabled={needsSetup} onPick={(t) => void send(t)} />}
-        {messages.map((m, i) => {
-          if (m.role === 'user') {
-            const text = userText(m.content);
-            return text === null ? null : <UserBubble key={i} text={text} />;
-          }
-          return <AssistantBlocks key={i} blocks={displayBlocks(m.content)} results={results} toolState={toolState} />;
-        })}
+        {messages.map((m, i) => (
+          <MessageView key={i} message={m} results={results} toolState={toolState} />
+        ))}
         {live && <AssistantBlocks blocks={liveBlocks(live)} results={results} toolState={toolState} streaming />}
         {running && (!live || live.length === 0) && (
           <div className="flex items-center gap-1.5 text-muted">
@@ -329,6 +325,19 @@ function Starters({ disabled, onPick }: { disabled: boolean; onPick: (text: stri
     </div>
   );
 }
+
+/**
+ * One message of the conversation. Memoised, so the stream of deltas while a reply is written
+ * re-renders only the live blocks, not every earlier message's Markdown and pictures (a long
+ * chat about a board carries dozens of them).
+ */
+const MessageView = memo(function MessageView({ message, results, toolState }: { message: Message; results: Map<string, ToolResult>; toolState: Record<string, 'running' | 'done'> }) {
+  if (message.role === 'user') {
+    const text = userText(message.content);
+    return text === null ? null : <UserBubble text={text} />;
+  }
+  return <AssistantBlocks blocks={displayBlocks(message.content)} results={results} toolState={toolState} />;
+});
 
 function UserBubble({ text }: { text: string }) {
   return (
