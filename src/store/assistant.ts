@@ -15,6 +15,7 @@ import { applyEvent, type LiveBlock } from '../lib/assistant/stream';
 import { assistantTools, editorState, executeAssistantTool } from '../lib/assistant/tools';
 import { systemPrompt } from '../lib/assistant/prompt';
 import { dbAll, dbDelete, dbGet, dbPut } from '../lib/db';
+import { cancelOffloaded } from '../lib/pcb/offload';
 import { newId } from '../lib/schematic/ops';
 import { useEditor } from './editor';
 import { apiUrl } from '../lib/api';
@@ -249,7 +250,11 @@ export const useAssistant = create<AssistantState>()((set, get) => {
       }
     },
 
-    stop: () => abort?.abort(),
+    stop: () => {
+      abort?.abort();
+      // A route or check running in the PCB worker is thrown away too.
+      cancelOffloaded('Stopped by the user');
+    },
 
     reset: () => {
       abort?.abort();

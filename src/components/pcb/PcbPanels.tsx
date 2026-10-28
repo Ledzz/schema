@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Ban, Box, CircleAlert, CircleCheck, CircleDot, Download, Eye, EyeOff, FileUp, FlipHorizontal2, Image as ImageIcon, Layers, Maximize, MousePointer2, PaintBucket, Pentagon, Plus, RefreshCcw, RotateCcw, Route, Scissors, ShoppingCart, Trash2, Type, Wand2, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEditor } from '../../store/editor';
+import { autorouteAsync, checkBoardAsync } from '../../lib/pcb/background';
 import {
   addLogo,
   addMountingHoles,
   addPours,
-  autoroute,
   boardModel,
   boardNets,
   removePours,
   updatePour,
-  checkPcb,
   currentPcb,
   deleteSelectedCopper,
   exportFabrication,
@@ -250,8 +249,9 @@ function NetsList({ conn, board }: { conn: ReturnType<typeof boardModel>['conn']
               <button
                 data-tip={`Auto-route ${open} connection${open > 1 ? 's' : ''}`}
                 onClick={() => {
-                  const r = autoroute(net);
-                  useEditor.getState().notify(r.failed.length ? `Routed ${r.routed}; ${r.failed.length} could not be routed` : `Routed ${r.routed} connection${r.routed === 1 ? '' : 's'}`);
+                  autorouteAsync(net)
+                    .then((r) => useEditor.getState().notify(r.failed.length ? `Routed ${r.routed}; ${r.failed.length} could not be routed` : `Routed ${r.routed} connection${r.routed === 1 ? '' : 's'}`))
+                    .catch((err: Error) => useEditor.getState().notify(err.message, 'error'));
                 }}
                 className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600 hover:bg-amber-500/25 dark:text-amber-300"
               >
@@ -272,8 +272,7 @@ function DrcList() {
   const issues = useEditor((s) => s.pcbIssues);
   const [ran, setRan] = useState(false);
   const run = () => {
-    useEditor.getState().setPcbIssues(checkPcb().issues);
-    setRan(true);
+    void checkBoardAsync().then(() => setRan(true));
   };
   useEffect(() => {
     run();
@@ -336,7 +335,7 @@ function DxfImportButton() {
           try {
             const r = importDxfOutline(await file.text());
             fitPcbView();
-            s.setPcbIssues(checkPcb().issues);
+            void checkBoardAsync();
             const arcs = r.bulges.filter((b) => b !== 0).length;
             const parts = [`${r.width} × ${r.height} mm`, arcs && `${arcs} arc${arcs === 1 ? '' : 's'}`, r.cutouts.length && `${r.cutouts.length} cutout${r.cutouts.length === 1 ? '' : 's'}`, r.holes.length && `${r.holes.length} mounting hole${r.holes.length === 1 ? '' : 's'}`].filter(Boolean);
             s.notify(`Board outline from ${file.name} (${r.units}): ${parts.join(', ')}${r.warnings.length ? ` · ${r.warnings.join('; ')}` : ''}`);
@@ -450,6 +449,19 @@ export function PcbInspector() {
   const component = placement ? project.components.find((c) => c.id === placement.componentId) : undefined;
   const unrouted = [...conn.unrouted.values()].reduce((a, b) => a + b, 0);
 
+  const [routing, setRouting] = useState(false);
+  const route = async () => {
+    setRouting(true);
+    try {
+      const r = await autorouteAsync();
+      useEditor.getState().notify(r.failed.length ? `Routed ${r.routed}; ${r.failed.length} connections need manual routing` : `Routed ${r.routed} connections`);
+      await checkBoardAsync();
+    } catch (err) {
+      useEditor.getState().notify(`Routing failed: ${(err as Error).message}`, 'error');
+    } finally {
+      setRouting(false);
+    }
+  };
   const sync = async () => {
     setBusy(true);
     try {
@@ -475,24 +487,20 @@ export function PcbInspector() {
           <RefreshCcw className={cx('h-3.5 w-3.5', busy && 'animate-spin')} /> Update
         </button>
         <button
-          disabled={unrouted === 0}
-          onClick={() => {
-            const r = autoroute();
-            useEditor.getState().notify(r.failed.length ? `Routed ${r.routed}; ${r.failed.length} connections need manual routing` : `Routed ${r.routed} connections`);
-            useEditor.getState().setPcbIssues(checkPcb().issues);
-          }}
+          disabled={unrouted === 0 || routing}
+          onClick={() => void route()}
           className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-line hover:bg-black/5 disabled:opacity-40 dark:hover:bg-white/5"
-          data-tip="Experimental grid router"
+          data-tip="Grid router with rip-up and retry; runs in the background, so you can keep working"
         >
-          <Wand2 className="h-3.5 w-3.5" /> Auto-route
+          <Wand2 className={cx('h-3.5 w-3.5', routing && 'animate-pulse')} /> {routing ? 'Routing…' : 'Auto-route'}
         </button>
         <button
           onClick={() => {
-            const issues = checkPcb().issues;
-            useEditor.getState().setPcbIssues(issues);
-            const errors = issues.filter((i) => i.severity === 'error').length;
-            if (errors && !confirm(`DRC reports ${errors} error${errors > 1 ? 's' : ''}. Export anyway?`)) return;
-            exportFabrication();
+            void checkBoardAsync().then((issues) => {
+              const errors = issues.filter((i) => i.severity === 'error').length;
+              if (errors && !confirm(`DRC reports ${errors} error${errors > 1 ? 's' : ''}. Export anyway?`)) return;
+              exportFabrication();
+            });
           }}
           className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"
           data-tip="Download the Gerber zip, BOM and pick-and-place files"
@@ -651,7 +659,7 @@ export function PcbInspector() {
                 const free = cornerHolePositions(pcb.board, inset).filter((p) => !(pcb.holes ?? []).some((h) => Math.hypot(h.x - p[0], h.y - p[1]) < 1));
                 if (!free.length) return useEditor.getState().notify('Every corner already has a mounting hole');
                 const added = addMountingHoles(free);
-                useEditor.getState().setPcbIssues(checkPcb().issues);
+                void checkBoardAsync();
                 useEditor.getState().notify(`Added ${added.length} M3 mounting holes ${inset} mm from the edges`);
               }}
               className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-line hover:bg-black/5 dark:hover:bg-white/5"

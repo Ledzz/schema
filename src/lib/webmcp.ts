@@ -48,7 +48,7 @@ import { diffImpedance, outerDielectric } from './pcb/diffpair';
 import { dim, generateFootprint, packageSpec, PACKAGE_EXAMPLES, padNumbers } from './pcb/ipc';
 import type { FootprintGeom, PadGeom } from './pcb/footprint';
 import { icSymbol, type PinSpec } from './schematic/symbolgen';
-import { enterPcb, importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, autoroute, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
+import { enterPcb, importDxfOutline, addCutout, addKeepout, addLogo, addMountingHoles, addPours, addText, addVias, boardModel, boardNets, checkPcb, currentPcb, exportFabrication, removePcbItems, removePours, planeLayers, setBoardOutline, setLayerCount, exportStep, syncPcb, throughHoleParts, updateBoard, updateLabel, updateLogo, updatePlacement, updateText } from './pcb/actions';
 import { designatorLabel, logoBox, silkTextBox, TEXT_SIZE } from './pcb/silk';
 import { checklistReady, drilledHoles, jlcpcbChecklist, viaHoleConflict } from './pcb/jlcpcb';
 import { supportedChar } from './pcb/font';
@@ -56,8 +56,9 @@ import { rasterizeInBrowser, traceBitmap, type Bitmap } from './pcb/logo';
 import type { Box } from './pcb/geometry';
 import type { DxfUnits } from './pcb/dxf';
 import { boardEdges, circlePolygon, cornerHolePositions, edgeDistance, insideBoard, rectOutline, selfIntersects } from './pcb/outline';
-import { runDrc, shellAreas } from './pcb/drc';
-import { renderPcbSvg } from './pcb/render';
+import { shellAreas } from './pcb/drc';
+import { autorouteAsync, checkBoardAsync, renderPictureAsync } from './pcb/background';
+import { pcbPictureOf, type PictureInput } from './pcb/picture';
 import { fitPcbView } from './pcb/view';
 import { DEFAULT_HOLE, copperLayers, type Side, type CopperLayer, type Pcb, type Pour, type SilkText } from './pcb/types';
 
@@ -150,18 +151,8 @@ export function throughHoleIds(): Set<string> {
   return new Set(throughHoleParts(boardModel().board).map((c) => c.id));
 }
 
-/** The board picture pcb_render draws, from the tool's input. */
-export function pcbPicture(input: Record<string, unknown>) {
-  const { pcb, board, conn } = boardModel();
-  if (!pcb.placements.length) throw new Error('The PCB is empty; run pcb_update first');
-  const net = input.highlight_net === undefined ? null : String(input.highlight_net);
-  if (net && !board.pads.some((p) => p.net === net)) throw new Error(`No pad is on net "${net}"`);
-  return renderPcbSvg(pcb, board, conn, runDrc(board, pcb, conn), {
-    layers: (input.layers as 'both' | 'top' | 'bottom' | undefined) ?? 'both',
-    highlightNet: net,
-    widthPx: input.width_px === undefined ? undefined : Number(input.width_px),
-  });
-}
+/** The board picture pcb_render draws, from the tool's input (on this thread; the page draws it in the worker). */
+export const pcbPicture = (input: Record<string, unknown>) => pcbPictureOf(st().project, input as PictureInput);
 
 const pointSchema = { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 };
 const outlineSchema = (description: string) => ({ type: 'array', items: pointSchema, minItems: 3, description: `${description} Closed polygon as [x, y] points in mm (the last point joins the first).` });
@@ -1297,7 +1288,7 @@ export const TOOLS: ToolDefinition[] = [
     },
     annotations: { readOnlyHint: true },
     execute: async (input) => {
-      const { svg, widthPx, heightPx } = pcbPicture(input);
+      const { svg, widthPx, heightPx } = await renderPictureAsync(input as PictureInput);
       return { svg, width_px: widthPx, height_px: heightPx };
     },
   },
@@ -1633,7 +1624,7 @@ export const TOOLS: ToolDefinition[] = [
       },
     },
     execute: async (input) => {
-      const r = autoroute(input.net ? String(input.net) : undefined, input.width === undefined ? undefined : Number(input.width));
+      const r = await autorouteAsync(input.net ? String(input.net) : undefined, input.width === undefined ? undefined : Number(input.width));
       return { routed: r.routed, failed: r.failed.map((f) => f.net), planes: r.planes || undefined, plane_failed: r.planeFailed.length ? r.planeFailed : undefined, pairs_not_coupled: r.pairFailed };
     },
   },
@@ -1880,8 +1871,7 @@ export const TOOLS: ToolDefinition[] = [
     inputSchema: { type: 'object', properties: {} },
     annotations: { readOnlyHint: true },
     execute: async () => {
-      const { issues } = checkPcb();
-      st().setPcbIssues(issues);
+      const issues = await checkBoardAsync();
       return { ok: !issues.some((i) => i.severity === 'error'), issues: issues.map((i) => ({ severity: i.severity, message: i.message, at: i.at })) };
     },
   },

@@ -48,6 +48,9 @@ Pages build can point at a server elsewhere; the server allows those origins wit
   (`router.ts`), editing actions (`actions.ts`), Gerber/drill/CPL (`gerber.ts`), board pictures
   (`render.ts`), push-and-shove and segment dragging (`shove.ts`), silkscreen text, logos and
   designator labels (`silk.ts`, `font.ts`, `logo.ts`),
+  the PCB worker (`tasks.ts` lists the pure jobs: routing, DRC, the board picture; `worker.ts`
+  runs them; `offload.ts` sends work there or runs it in place without a Worker; `background.ts`
+  is what the page calls: `autorouteAsync`, `checkBoardAsync`, `renderPictureAsync`),
   3D (`model3d.ts`, `viewer3d.ts`), STEP export (`step.ts`), IPC-7351 footprints (`ipc.ts`),
   differential pairs and length tuning (`diffpair.ts` geometry, `tuning.ts` actions), ordering (`order.ts`) and the JLCPCB checklist (`jlcpcb.ts`,
   whose `JLC` constants hold JLCPCB's published limits).
@@ -98,6 +101,12 @@ Pages build can point at a server elsewhere; the server allows those origins wit
   `analyze` finds T-junctions through a grid of cells, not every wire end against every segment.
   Measure with a duplicated STM32 sheet (⌘A, ⌘D a few times gives ~250 parts) before and after
   touching the canvas or the netlist.
+- **Heavy PCB work stays off the main thread.** The router can search for tens of seconds, so
+  in the page it runs in the PCB worker (`pcb/offload.ts`) together with DRC and the board
+  picture: keep `autorouteProject`, `checkPcb` and `pcbPictureOf` pure (project in, data out),
+  call them from the page through `pcb/background.ts`, and give a new heavy job the same shape
+  and a line in `tasks.ts`. `boardModel()` caches one build (pour fills included) per board
+  state, like `connectivity()`. The CLI and tests run everything in place.
 - **UI and tools share actions.** Put new behaviour in `src/lib/**/actions.ts` (or a lib module)
   and call it from both the component and the tool, rather than writing it twice.
 - **Sides vs layers.** `Side` (`top`/`bottom`) is where parts, silkscreen, mask and paste are;

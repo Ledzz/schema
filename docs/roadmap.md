@@ -27,6 +27,10 @@ importers) follows.
 
 ## Done
 
+- **A responsive editor on big boards and sheets** (2026-10-28): routing, DRC and the board
+  picture run in a Web Worker, so the page keeps drawing while the assistant lays out a board
+  (routing used to freeze it for up to 20 s a pass); one board model and one netlist analysis
+  per edit are shared by every panel; the schematic canvas re-renders only what changed.
 - **Groups** (2026-10-27): named, coloured frames around the parts that belong together
   (`⌘G` on a selection, `⇧G` to drag one), moved as one, resized by their corners, renamed on
   the canvas; a group is a region, so deleting the frame leaves the parts. Circuit blocks arrive

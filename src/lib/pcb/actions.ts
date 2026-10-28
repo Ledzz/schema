@@ -36,10 +36,22 @@ export function currentPcb(project: Project = st().project): Pcb {
   return project.pcb ?? emptyPcb();
 }
 
+type BoardKey = [Pcb | undefined, Project['components'], Project['footprints'], Project['parts']];
+let boardCache: { key: BoardKey; model: { pcb: Pcb; board: BoardModel; conn: ReturnType<typeof pcbConnectivity> } } | null = null;
+
+/**
+ * The board model, connectivity and pour fills for a project. The last result is kept by the
+ * identity of what it was built from, so the canvas, the panels, the status bar and the tools
+ * share one build per edit instead of each filling the pours again.
+ */
 export function boardModel(project: Project = st().project) {
+  const key: BoardKey = [project.pcb, project.components, project.footprints, project.parts];
+  if (boardCache && key.every((k, i) => k === boardCache!.key[i])) return boardCache.model;
   const pcb = currentPcb(project);
   const board = buildBoard(project, pcb);
-  return { pcb, board, conn: pcbConnectivity(board, pcb) };
+  const model = { pcb, board, conn: pcbConnectivity(board, pcb) };
+  boardCache = { key, model };
+  return model;
 }
 
 function commitPcb(fn: (pcb: Pcb) => Pcb) {
@@ -1021,15 +1033,19 @@ function ripUpAndRetry(project: Project, want: (a: Airwire) => boolean, width: n
 /** Time the rip-up pass may take; the greedy pass before it has no limit. */
 const RIP_UP_BUDGET_MS = 20_000;
 
-export function autoroute(net?: string, width?: number): AutorouteReport {
+/**
+ * Routes a project's board without touching the store: the routed board (null when nothing
+ * was routed) and the report. Pure, so the worker can run it; `autoroute` commits its result.
+ */
+export function autorouteProject(start: Project, net?: string, width?: number): { pcb: Pcb | null; report: AutorouteReport } {
   const report: AutorouteReport = { routed: 0, failed: [], planes: 0, planeFailed: [] };
-  const planeNets = new Set(planeLayers(currentPcb()).values());
+  const planeNets = new Set(planeLayers(currentPcb(start)).values());
   const wanted = (a: Airwire) => !net || a.net === net;
   const signals = (a: Airwire) => wanted(a) && !planeNets.has(a.net);
-  const before = unroutedCount(st().project, signals);
+  const before = unroutedCount(start, signals);
   // Differential pairs first, side by side; what doesn't fit is routed net by net below.
-  let project = st().project;
-  for (const pair of currentPcb().diffPairs ?? []) {
+  let project = start;
+  for (const pair of currentPcb(start).diffPairs ?? []) {
     if (net && pair.positive !== net && pair.negative !== net) continue;
     const r = routePairOn(project, pair);
     project = r.project;
@@ -1057,10 +1073,13 @@ export function autoroute(net?: string, width?: number): AutorouteReport {
       report.failed = [...report.failed.slice(0, failedBefore), ...conn.airwires.filter(plane).map((a) => ({ net: a.net, a: a.a, b: a.b }))];
     }
   }
-  if (report.routed > 0 || report.planes > 0) {
-    const routedPcb = project.pcb!;
-    st().commit((doc) => ({ ...doc, pcb: routedPcb }));
-  }
+  return { pcb: report.routed > 0 || report.planes > 0 ? project.pcb! : null, report };
+}
+
+/** Routes the open board on this thread (the page uses `autorouteAsync` in background.ts). */
+export function autoroute(net?: string, width?: number): AutorouteReport {
+  const { pcb, report } = autorouteProject(st().project, net, width);
+  if (pcb) st().commit((doc) => ({ ...doc, pcb }));
   return report;
 }
 

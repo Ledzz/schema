@@ -7,7 +7,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { useEditor } from '../../store/editor';
 import { sheetsOf } from '../schematic/sheets';
-import { TOOLS, pcbPicture, runTool, validateInput, type ToolDefinition } from '../webmcp';
+import { TOOLS, runTool, validateInput, type ToolDefinition } from '../webmcp';
+import { renderPictureAsync } from '../pcb/background';
+import type { PictureInput } from '../pcb/picture';
 import type { ToolCall, ToolResult } from './loop';
 
 const st = () => useEditor.getState();
@@ -49,7 +51,8 @@ export async function executeAssistantTool(call: ToolCall): Promise<ToolResult> 
 /** The board picture as a PNG image block, with its size as text. */
 async function renderForAssistant(tool: ToolDefinition, input: Record<string, unknown>): Promise<Anthropic.Beta.BetaToolResultBlockParam['content']> {
   try {
-    const picture = pcbPicture(validateInput(tool, input));
+    // Drawn in the PCB worker; only the rasterising needs the page.
+    const picture = await renderPictureAsync(validateInput(tool, input) as PictureInput);
     const png = await svgToPng(picture.svg, picture.widthPx, picture.heightPx, MAX_PICTURE_WIDTH);
     st().logAgent({ tool: tool.name, input, ok: true, summary: `${png.width}×${png.height} px picture` });
     return [
